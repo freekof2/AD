@@ -1,0 +1,2 @@
+# Optional parser used for PE import tables and CLR directory detection.
+pefile==2024.8.26

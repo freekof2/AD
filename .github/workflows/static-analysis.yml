@@ -1,0 +1,65 @@
+name: Static sample analysis
+
+on:
+  workflow_dispatch:
+    inputs:
+      sample_url:
+        description: "HTTPS URL of an authorized sample"
+        required: true
+        default: "https://github.com/freekof2/AD/releases/download/1.0.0.1/AdsPower.Global.exe"
+        type: string
+      sample_sha256:
+        description: "Expected SHA-256 digest"
+        required: true
+        default: "c9ac99bb20ef2121a4e1c4331af249c4db4edd81b7482a2e3a04c7ee59d309cb"
+        type: string
+      enable_decompile:
+        description: "Run an installed optional decompiler when CLR metadata is detected"
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out workflow source
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install static-analysis dependencies
+        run: |
+          python -m pip install --requirement requirements-static.txt
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends --yes p7zip-full
+
+      - name: Download, verify, and analyze without execution
+        env:
+          SAMPLE_URL: ${{ inputs.sample_url }}
+          SAMPLE_SHA256: ${{ inputs.sample_sha256 }}
+        run: |
+          python scripts/static_decompile.py full \
+            --url "$SAMPLE_URL" \
+            --sha256 "$SAMPLE_SHA256" \
+            --sample samples/input.exe \
+            --analysis-dir analysis/report \
+            --unpack \
+            ${{ inputs.enable_decompile && '--decompile' || '' }}
+
+      - name: Upload static-analysis artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: static-analysis-report
+          path: analysis/
+          if-no-files-found: warn
+          retention-days: 7
