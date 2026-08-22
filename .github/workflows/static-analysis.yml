@@ -554,56 +554,86 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
 
-          $strings = Get-Content `
-            "analysis\strings\ascii.txt" `
-            -ErrorAction SilentlyContinue
+          # Do not infer .NET from strings. Electron applications often contain
+          # words such as ".NET" or "Microsoft.NET" in resources and metadata.
+          # A managed PE is identified by a non-empty IMAGE_DIRECTORY_ENTRY_COM_DESCRIPTOR
+          # (data-directory index 14) in the PE optional header.
+          $file = "analysis\downloads\${env:TARGET_NAME}"
+          $bytes = [System.IO.File]::ReadAllBytes($file)
+          $isDotNet = $false
+          $reason = ""
 
-          $dotnetIndicators = @(
-            "mscoree.dll",
-            "_CorExeMain",
-            "_CorDllMain",
-            "System.Private.CoreLib",
-            "mscorlib",
-            ".NET",
-            "Microsoft.NET"
-          )
+          if ($bytes.Length -lt 64 -or $bytes[0] -ne 0x4D -or $bytes[1] -ne 0x5A) {
+            $reason = "Missing DOS MZ signature."
+          }
+          else {
+            $peOffset = [System.BitConverter]::ToInt32($bytes, 0x3C)
+            if ($peOffset -lt 0 -or $peOffset + 24 -gt $bytes.Length) {
+              $reason = "Invalid PE header offset."
+            }
+            elseif ([System.Text.Encoding]::ASCII.GetString($bytes, $peOffset, 4) -ne "PE`0`0") {
+              $reason = "Missing PE signature."
+            }
+            else {
+              $optionalHeaderSize = [System.BitConverter]::ToUInt16($bytes, $peOffset + 20)
+              $optionalOffset = $peOffset + 24
+              $optionalEnd = $optionalOffset + $optionalHeaderSize
 
-          $found = @()
-
-          foreach ($indicator in $dotnetIndicators) {
-
-            $result = $strings |
-              Where-Object {
-                $_ -like "*$indicator*"
+              if ($optionalEnd -gt $bytes.Length -or $optionalHeaderSize -lt 2) {
+                $reason = "Invalid PE optional header."
               }
+              else {
+                $optionalMagic = [System.BitConverter]::ToUInt16($bytes, $optionalOffset)
+                if ($optionalMagic -eq 0x10B) {
+                  $numberOfRvaAndSizesOffset = $optionalOffset + 92
+                  $dataDirectoryOffset = $optionalOffset + 96
+                }
+                elseif ($optionalMagic -eq 0x20B) {
+                  $numberOfRvaAndSizesOffset = $optionalOffset + 108
+                  $dataDirectoryOffset = $optionalOffset + 112
+                }
+                else {
+                  $numberOfRvaAndSizesOffset = -1
+                  $dataDirectoryOffset = -1
+                  $reason = "Unsupported PE optional-header format."
+                }
 
-            foreach ($item in $result) {
-              $found += $item
+                $cliDirectoryOffset = $dataDirectoryOffset + (14 * 8)
+                if (
+                  $dataDirectoryOffset -ge 0 -and
+                  $numberOfRvaAndSizesOffset -ge 0 -and
+                  $numberOfRvaAndSizesOffset + 4 -le $optionalEnd -and
+                  [System.BitConverter]::ToUInt32($bytes, $numberOfRvaAndSizesOffset) -ge 15 -and
+                  $cliDirectoryOffset + 8 -le $optionalEnd
+                ) {
+                  $cliRva = [System.BitConverter]::ToUInt32($bytes, $cliDirectoryOffset)
+                  $cliSize = [System.BitConverter]::ToUInt32($bytes, $cliDirectoryOffset + 4)
+                  $isDotNet = $cliRva -ne 0 -and $cliSize -ne 0
+                  $reason = "CLR directory RVA: 0x{0:X8}; size: {1}." -f $cliRva, $cliSize
+                }
+                elseif ($dataDirectoryOffset -ge 0) {
+                  $reason = "PE optional header does not expose a complete CLR data-directory entry."
+                }
+              }
             }
           }
 
-          if ($found.Count -gt 0) {
+          @(
+            "=== .NET / CLR DETECTION ==="
+            "File: $file"
+            "Managed CLR: $isDotNet"
+            "Reason: $reason"
+          ) | Out-File `
+            "analysis\dotnet\dotnet-indicators.txt" `
+            -Encoding utf8
 
+          if ($isDotNet) {
             "DOTNET_FOUND=true" >> $env:GITHUB_ENV
-
-            $found |
-              Sort-Object -Unique |
-              Out-File `
-                "analysis\dotnet\dotnet-indicators.txt" `
-                -Encoding utf8
-
-            Write-Host ".NET / CLR indicators found."
-
+            Write-Host ".NET / CLR metadata detected."
           }
           else {
-
             "DOTNET_FOUND=false" >> $env:GITHUB_ENV
-
-            "No obvious CLR indicators found." |
-              Out-File `
-                "analysis\dotnet\dotnet-indicators.txt" `
-                -Encoding utf8
-
+            Write-Host "No CLR metadata detected; skipping ILSpy."
           }
 
       # ------------------------------------------------------------
@@ -641,9 +671,8 @@ jobs:
       - name: Decompile .NET executable
         if: env.DOTNET_FOUND == 'true'
         shell: pwsh
-        continue-on-error: true
         run: |
-          $ErrorActionPreference = "Continue"
+          $ErrorActionPreference = "Stop"
 
           $exe = Resolve-Path `
             "analysis\downloads\${env:TARGET_NAME}"
@@ -651,13 +680,27 @@ jobs:
           $output = Resolve-Path `
             "analysis\dotnet"
 
+          $log = "analysis\reports\ilspy.log"
           Write-Host "Attempting .NET decompilation..."
 
-          ilspycmd `
+          & ilspycmd `
             -p `
             -o "$output" `
             "$exe" `
-            > "analysis\reports\ilspy.log" 2>&1
+            *> $log
+          $exitCode = $LASTEXITCODE
+
+          if ($exitCode -ne 0) {
+            Add-Content -Path $log -Value "ILSpy exited with code $exitCode."
+            Write-Warning "ILSpy could not decompile the detected managed PE; see $log."
+          }
+          else {
+            Write-Host "ILSpy decompilation completed."
+          }
+
+          # Decompilation is optional analysis. Preserve the report and do not
+          # turn a tool limitation into a failed workflow annotation.
+          exit 0
 
       # ------------------------------------------------------------
       # 20. Search for JavaScript source maps and source content
