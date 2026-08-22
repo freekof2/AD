@@ -1,66 +1,789 @@
-name: Static sample analysis
+name: Reverse Engineering Analysis
 
 on:
   workflow_dispatch:
-    inputs:
-      sample_url:
-        description: "HTTPS URL of an authorized sample"
-        required: true
-        default: "https://github.com/freekof2/AD/releases/download/1.0.0.1/AdsPower.Global.exe"
-        type: string
-      sample_sha256:
-        description: "Expected SHA-256 digest"
-        required: true
-        default: "c9ac99bb20ef2121a4e1c4331af249c4db4edd81b7482a2e3a04c7ee59d309cb"
-        type: string
-      enable_decompile:
-        description: "Run an installed optional decompiler when CLR metadata is detected"
-        required: true
-        default: false
-        type: boolean
+  push:
+    paths:
+      - ".github/workflows/static-analysis.yml"
 
 permissions:
   contents: read
 
+env:
+  TARGET_URL: "https://github.com/freekof2/AD/releases/download/1.0.0.1/AdsPower.Global.exe"
+  TARGET_NAME: "AdsPower.Global.exe"
+
 jobs:
   analyze:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    name: Analyze Windows executable
+    runs-on: windows-2025
+    timeout-minutes: 360
+
     steps:
-      - name: Check out workflow source
-        uses: actions/checkout@v4
+      # ------------------------------------------------------------
+      # 1. Checkout repository
+      # ------------------------------------------------------------
+      - name: Checkout repository
+        uses: actions/checkout@v6
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      # ------------------------------------------------------------
+      # 2. Prepare directories
+      # ------------------------------------------------------------
+      - name: Prepare workspace
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          New-Item -ItemType Directory -Force -Path "analysis" | Out-Null
+          New-Item -ItemType Directory -Force -Path "analysis\downloads" | Out-Null
+          New-Item -ItemType Directory -Force -Path "analysis\pe" | Out-Null
+          New-Item -ItemType Directory -Force -Path "analysis\strings" | Out-Null
+          New-Item -ItemType Directory -Force -Path "analysis\electron" | Out-Null
+          New-Item -ItemType Directory -Force -Path "analysis\asar" | Out-Null
+          New-Item -ItemType Directory -Force -Path "analysis\dotnet" | Out-Null
+          New-Item -ItemType Directory -Force -Path "analysis\resources" | Out-Null
+          New-Item -ItemType Directory -Force -Path "analysis\reports" | Out-Null
+
+      # ------------------------------------------------------------
+      # 3. Download target EXE
+      # ------------------------------------------------------------
+      - name: Download target EXE
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $url = "${env:TARGET_URL}"
+          $output = "analysis\downloads\${env:TARGET_NAME}"
+
+          Write-Host "Downloading:"
+          Write-Host $url
+
+          Invoke-WebRequest `
+            -Uri $url `
+            -OutFile $output `
+            -UseBasicParsing
+
+          if (!(Test-Path $output)) {
+            throw "Download failed."
+          }
+
+          $file = Get-Item $output
+
+          Write-Host "File:"
+          Write-Host $file.FullName
+          Write-Host "Size: $($file.Length) bytes"
+
+      # ------------------------------------------------------------
+      # 4. Calculate hashes
+      # ------------------------------------------------------------
+      - name: Calculate file hashes
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $file = "analysis\downloads\${env:TARGET_NAME}"
+
+          Get-FileHash $file -Algorithm SHA256 |
+            Format-List |
+            Out-File "analysis\reports\sha256.txt"
+
+          Get-FileHash $file -Algorithm SHA1 |
+            Format-List |
+            Out-File "analysis\reports\sha1.txt"
+
+          Get-FileHash $file -Algorithm MD5 |
+            Format-List |
+            Out-File "analysis\reports\md5.txt"
+
+          Write-Host "SHA256:"
+          (Get-FileHash $file -Algorithm SHA256).Hash
+
+      # ------------------------------------------------------------
+      # 5. PE basic analysis
+      # ------------------------------------------------------------
+      - name: PE analysis
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $file = Resolve-Path "analysis\downloads\${env:TARGET_NAME}"
+
+          $bytes = [System.IO.File]::ReadAllBytes($file)
+
+          $report = @()
+
+          $report += "=== PE ANALYSIS ==="
+          $report += ""
+
+          $report += "File: $file"
+          $report += "Size: $($bytes.Length) bytes"
+          $report += ""
+
+          # DOS header
+          if ($bytes.Length -ge 64) {
+            $mz = [System.Text.Encoding]::ASCII.GetString($bytes, 0, 2)
+            $report += "DOS Signature: $mz"
+
+            $peOffset = [BitConverter]::ToInt32($bytes, 0x3C)
+
+            $report += "PE Header Offset: 0x{0:X8}" -f $peOffset
+
+            if (
+              $peOffset -ge 0 -and
+              $peOffset + 4 -le $bytes.Length
+            ) {
+              $peSig = [System.Text.Encoding]::ASCII.GetString(
+                $bytes,
+                $peOffset,
+                4
+              )
+
+              $report += "PE Signature: $peSig"
+
+              if ($peSig -eq "PE`0`0") {
+                $machine = [BitConverter]::ToUInt16(
+                  $bytes,
+                  $peOffset + 4
+                )
+
+                $sections = [BitConverter]::ToUInt16(
+                  $bytes,
+                  $peOffset + 6
+                )
+
+                $report += "Machine: 0x{0:X4}" -f $machine
+                $report += "Sections: $sections"
+
+                $optionalHeaderSize = [BitConverter]::ToUInt16(
+                  $bytes,
+                  $peOffset + 20
+                )
+
+                $report += "Optional Header Size: $optionalHeaderSize"
+              }
+            }
+          }
+
+          $report | Out-File `
+            "analysis\reports\pe-analysis.txt" `
+            -Encoding utf8
+
+      # ------------------------------------------------------------
+      # 6. Extract ASCII and Unicode strings
+      # ------------------------------------------------------------
+      - name: Extract strings
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $file = "analysis\downloads\${env:TARGET_NAME}"
+          $bytes = [System.IO.File]::ReadAllBytes($file)
+
+          # ASCII strings >= 6 characters
+          $ascii = [System.Text.Encoding]::ASCII.GetString($bytes)
+
+          [regex]::Matches(
+            $ascii,
+            '[ -~]{6,}'
+          ) |
+          ForEach-Object {
+            $_.Value
+          } |
+          Sort-Object -Unique |
+          Out-File `
+            "analysis\strings\ascii.txt" `
+            -Encoding utf8
+
+          # UTF-16LE strings
+          $unicode = [System.Text.Encoding]::Unicode.GetString($bytes)
+
+          [regex]::Matches(
+            $unicode,
+            '[\u0020-\uFFFF]{4,}'
+          ) |
+          ForEach-Object {
+            $_.Value
+          } |
+          Sort-Object -Unique |
+          Out-File `
+            "analysis\strings\unicode.txt" `
+            -Encoding utf8
+
+          Write-Host "ASCII strings:"
+          (Get-Content "analysis\strings\ascii.txt").Count
+
+          Write-Host "Unicode strings:"
+          (Get-Content "analysis\strings\unicode.txt").Count
+
+      # ------------------------------------------------------------
+      # 7. Search for Electron / ASAR indicators
+      # ------------------------------------------------------------
+      - name: Detect Electron
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $asciiFile = "analysis\strings\ascii.txt"
+          $unicodeFile = "analysis\strings\unicode.txt"
+
+          $patterns = @(
+            "electron",
+            "app.asar",
+            "resources",
+            "node_modules",
+            "chrome",
+            "Chromium",
+            "BrowserWindow",
+            "ipcMain",
+            "ipcRenderer",
+            "electron.exe",
+            "node.exe",
+            "asar"
+          )
+
+          $matches = @()
+
+          foreach ($pattern in $patterns) {
+
+            $asciiMatches = Select-String `
+              -Path $asciiFile `
+              -Pattern $pattern `
+              -SimpleMatch `
+              -CaseSensitive:$false `
+              -ErrorAction SilentlyContinue
+
+            foreach ($m in $asciiMatches) {
+              $matches += "[ASCII] $($m.Line)"
+            }
+
+            $unicodeMatches = Select-String `
+              -Path $unicodeFile `
+              -Pattern $pattern `
+              -SimpleMatch `
+              -CaseSensitive:$false `
+              -ErrorAction SilentlyContinue
+
+            foreach ($m in $unicodeMatches) {
+              $matches += "[UNICODE] $($m.Line)"
+            }
+          }
+
+          $matches |
+            Sort-Object -Unique |
+            Out-File `
+              "analysis\electron\electron-indicators.txt" `
+              -Encoding utf8
+
+          if ($matches.Count -gt 0) {
+            "ELECTRON_INDICATORS_FOUND=true" >> $env:GITHUB_ENV
+            Write-Host "Electron indicators found."
+          }
+          else {
+            "ELECTRON_INDICATORS_FOUND=false" >> $env:GITHUB_ENV
+            Write-Host "No obvious Electron indicators found."
+          }
+
+      # ------------------------------------------------------------
+      # 8. Install 7-Zip
+      # ------------------------------------------------------------
+      - name: Install 7-Zip
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $sevenZip = Get-Command 7z.exe -ErrorAction SilentlyContinue
+
+          if ($sevenZip) {
+            Write-Host "7-Zip already installed."
+            exit 0
+          }
+
+          choco install 7zip -y --no-progress
+
+          if (!(Get-Command 7z.exe -ErrorAction SilentlyContinue)) {
+            throw "7-Zip installation failed."
+          }
+
+      # ------------------------------------------------------------
+      # 9. Try to extract EXE as an archive
+      # ------------------------------------------------------------
+      - name: Extract embedded archive data
+        shell: pwsh
+        continue-on-error: true
+        run: |
+          $ErrorActionPreference = "Continue"
+
+          $exe = Resolve-Path "analysis\downloads\${env:TARGET_NAME}"
+          $out = Resolve-Path "analysis\resources"
+
+          Write-Host "Attempting archive extraction..."
+
+          7z x `
+            "$exe" `
+            "-o$out" `
+            "-y" `
+            > "analysis\reports\7zip-extraction.log" 2>&1
+
+          Write-Host "7-Zip extraction completed."
+
+      # ------------------------------------------------------------
+      # 10. Search extracted files for ASAR
+      # ------------------------------------------------------------
+      - name: Locate ASAR files
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $asarFiles = Get-ChildItem `
+            "analysis\resources" `
+            -Recurse `
+            -File `
+            -Filter "*.asar" `
+            -ErrorAction SilentlyContinue
+
+          if ($asarFiles.Count -eq 0) {
+
+            Write-Host "No .asar files found."
+
+            "No ASAR file detected." |
+              Out-File `
+                "analysis\asar\asar-detection.txt" `
+                -Encoding utf8
+
+          }
+          else {
+
+            $asarFiles |
+              ForEach-Object {
+                $_.FullName
+              } |
+              Out-File `
+                "analysis\asar\asar-detection.txt" `
+                -Encoding utf8
+
+            "ASAR_FOUND=true" >> $env:GITHUB_ENV
+
+            foreach ($asar in $asarFiles) {
+              Write-Host "Found ASAR:"
+              Write-Host $asar.FullName
+            }
+          }
+
+      # ------------------------------------------------------------
+      # 11. Install Node.js
+      # ------------------------------------------------------------
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
         with:
-          python-version: "3.12"
-          cache: pip
-          cache-dependency-path: requirements-static.txt
+          node-version: 22
 
-      - name: Install static-analysis dependencies
+      # ------------------------------------------------------------
+      # 12. Install ASAR tool
+      # ------------------------------------------------------------
+      - name: Install ASAR extractor
+        shell: pwsh
         run: |
-          python -m pip install --requirement requirements-static.txt
-          sudo apt-get update
-          sudo apt-get install --no-install-recommends --yes p7zip-full
+          npm install --global @electron/asar
 
-      - name: Download, verify, and analyze without execution
-        env:
-          SAMPLE_URL: ${{ inputs.sample_url }}
-          SAMPLE_SHA256: ${{ inputs.sample_sha256 }}
+          asar --version
+
+      # ------------------------------------------------------------
+      # 13. Extract ASAR archives
+      # ------------------------------------------------------------
+      - name: Extract ASAR archives
+        shell: pwsh
+        continue-on-error: true
         run: |
-          python scripts/static_decompile.py full \
-            --url "$SAMPLE_URL" \
-            --sha256 "$SAMPLE_SHA256" \
-            --sample samples/input.exe \
-            --analysis-dir analysis/report \
-            --unpack \
-            ${{ inputs.enable_decompile && '--decompile' || '' }}
+          $ErrorActionPreference = "Continue"
 
-      - name: Upload static-analysis artifacts
+          $asarFiles = Get-ChildItem `
+            "analysis\resources" `
+            -Recurse `
+            -File `
+            -Filter "*.asar" `
+            -ErrorAction SilentlyContinue
+
+          $index = 0
+
+          foreach ($asar in $asarFiles) {
+
+            $index++
+
+            $name = [System.IO.Path]::GetFileNameWithoutExtension(
+              $asar.Name
+            )
+
+            $safeName = $name -replace '[^a-zA-Z0-9._-]', '_'
+
+            $destination = Join-Path `
+              "analysis\asar" `
+              "${index}_${safeName}"
+
+            New-Item `
+              -ItemType Directory `
+              -Force `
+              -Path $destination |
+              Out-Null
+
+            Write-Host "Extracting:"
+            Write-Host $asar.FullName
+            Write-Host "To:"
+            Write-Host $destination
+
+            asar extract `
+              "$($asar.FullName)" `
+              "$destination"
+          }
+
+      # ------------------------------------------------------------
+      # 14. Search extracted source files
+      # ------------------------------------------------------------
+      - name: Build source inventory
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $files = Get-ChildItem `
+            "analysis\asar" `
+            -Recurse `
+            -File `
+            -ErrorAction SilentlyContinue
+
+          $extensions = @(
+            ".js",
+            ".mjs",
+            ".cjs",
+            ".ts",
+            ".tsx",
+            ".jsx",
+            ".json",
+            ".html",
+            ".htm",
+            ".css",
+            ".scss",
+            ".less",
+            ".vue",
+            ".map",
+            ".wasm",
+            ".node"
+          )
+
+          $sourceFiles = $files |
+            Where-Object {
+              $extensions -contains $_.Extension.ToLower()
+            }
+
+          $sourceFiles |
+            Sort-Object FullName |
+            ForEach-Object {
+              $_.FullName
+            } |
+            Out-File `
+              "analysis\reports\source-inventory.txt" `
+              -Encoding utf8
+
+          $summary = @()
+
+          $summary += "=== SOURCE INVENTORY ==="
+          $summary += ""
+          $summary += "Total extracted files: $($files.Count)"
+          $summary += "Potential source/resource files: $($sourceFiles.Count)"
+          $summary += ""
+
+          foreach ($ext in $extensions) {
+
+            $count = @(
+              $sourceFiles |
+              Where-Object {
+                $_.Extension.ToLower() -eq $ext
+              }
+            ).Count
+
+            if ($count -gt 0) {
+              $summary += "$ext : $count"
+            }
+          }
+
+          $summary |
+            Out-File `
+              "analysis\reports\source-summary.txt" `
+              -Encoding utf8
+
+      # ------------------------------------------------------------
+      # 15. Detect source maps
+      # ------------------------------------------------------------
+      - name: Detect source maps
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $maps = Get-ChildItem `
+            "analysis\asar" `
+            -Recurse `
+            -File `
+            -Filter "*.map" `
+            -ErrorAction SilentlyContinue
+
+          if ($maps.Count -gt 0) {
+
+            $maps |
+              ForEach-Object {
+                $_.FullName
+              } |
+              Out-File `
+                "analysis\reports\source-maps.txt" `
+                -Encoding utf8
+
+            Write-Host "Source maps found: $($maps.Count)"
+
+          }
+          else {
+
+            "No source maps found." |
+              Out-File `
+                "analysis\reports\source-maps.txt" `
+                -Encoding utf8
+
+          }
+
+      # ------------------------------------------------------------
+      # 16. Detect .NET / CLR
+      # ------------------------------------------------------------
+      - name: Detect .NET CLR
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $strings = Get-Content `
+            "analysis\strings\ascii.txt" `
+            -ErrorAction SilentlyContinue
+
+          $dotnetIndicators = @(
+            "mscoree.dll",
+            "_CorExeMain",
+            "_CorDllMain",
+            "System.Private.CoreLib",
+            "mscorlib",
+            ".NET",
+            "Microsoft.NET"
+          )
+
+          $found = @()
+
+          foreach ($indicator in $dotnetIndicators) {
+
+            $result = $strings |
+              Where-Object {
+                $_ -like "*$indicator*"
+              }
+
+            foreach ($item in $result) {
+              $found += $item
+            }
+          }
+
+          if ($found.Count -gt 0) {
+
+            "DOTNET_FOUND=true" >> $env:GITHUB_ENV
+
+            $found |
+              Sort-Object -Unique |
+              Out-File `
+                "analysis\dotnet\dotnet-indicators.txt" `
+                -Encoding utf8
+
+            Write-Host ".NET / CLR indicators found."
+
+          }
+          else {
+
+            "DOTNET_FOUND=false" >> $env:GITHUB_ENV
+
+            "No obvious CLR indicators found." |
+              Out-File `
+                "analysis\dotnet\dotnet-indicators.txt" `
+                -Encoding utf8
+
+          }
+
+      # ------------------------------------------------------------
+      # 17. Install .NET SDK
+      # ------------------------------------------------------------
+      - name: Setup .NET
+        if: env.DOTNET_FOUND == 'true'
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: "8.x"
+
+      # ------------------------------------------------------------
+      # 18. Install ILSpy command line
+      # ------------------------------------------------------------
+      - name: Install ILSpy
+        if: env.DOTNET_FOUND == 'true'
+        shell: pwsh
+        continue-on-error: true
+        run: |
+          dotnet tool install `
+            --global `
+            ilspycmd
+
+          $toolPath = Join-Path `
+            $env:USERPROFILE `
+            ".dotnet\tools"
+
+          $toolPath >> $env:GITHUB_PATH
+
+          ilspycmd --help
+
+      # ------------------------------------------------------------
+      # 19. Decompile .NET executable
+      # ------------------------------------------------------------
+      - name: Decompile .NET executable
+        if: env.DOTNET_FOUND == 'true'
+        shell: pwsh
+        continue-on-error: true
+        run: |
+          $ErrorActionPreference = "Continue"
+
+          $exe = Resolve-Path `
+            "analysis\downloads\${env:TARGET_NAME}"
+
+          $output = Resolve-Path `
+            "analysis\dotnet"
+
+          Write-Host "Attempting .NET decompilation..."
+
+          ilspycmd `
+            -p `
+            -o "$output" `
+            "$exe" `
+            > "analysis\reports\ilspy.log" 2>&1
+
+      # ------------------------------------------------------------
+      # 20. Search for JavaScript source maps and source content
+      # ------------------------------------------------------------
+      - name: Analyze JavaScript source
+        shell: pwsh
+        continue-on-error: true
+        run: |
+          $ErrorActionPreference = "Continue"
+
+          $jsFiles = Get-ChildItem `
+            "analysis\asar" `
+            -Recurse `
+            -File `
+            -Include *.js,*.mjs,*.cjs `
+            -ErrorAction SilentlyContinue
+
+          $report = @()
+
+          $report += "=== JAVASCRIPT ANALYSIS ==="
+          $report += ""
+          $report += "JavaScript files: $($jsFiles.Count)"
+          $report += ""
+
+          foreach ($file in $jsFiles) {
+
+            $size = $file.Length
+
+            $report += "$($file.FullName) | $size bytes"
+          }
+
+          $report |
+            Out-File `
+              "analysis\reports\javascript-analysis.txt" `
+              -Encoding utf8
+
+      # ------------------------------------------------------------
+      # 21. Generate final report
+      # ------------------------------------------------------------
+      - name: Generate final report
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $report = @()
+
+          $report += "========================================"
+          $report += "AdsPower Global Static Analysis Report"
+          $report += "========================================"
+          $report += ""
+
+          $report += "Target:"
+          $report += "${env:TARGET_NAME}"
+          $report += ""
+
+          $report += "URL:"
+          $report += "${env:TARGET_URL}"
+          $report += ""
+
+          $report += "Electron indicators:"
+          $report += "${env:ELECTRON_INDICATORS_FOUND}"
+          $report += ""
+
+          $report += "ASAR detected:"
+          $report += "${env:ASAR_FOUND}"
+          $report += ""
+
+          $report += ".NET detected:"
+          $report += "${env:DOTNET_FOUND}"
+          $report += ""
+
+          $report += "Analysis directories:"
+          $report += "- downloads"
+          $report += "- pe"
+          $report += "- strings"
+          $report += "- electron"
+          $report += "- resources"
+          $report += "- asar"
+          $report += "- dotnet"
+          $report += "- reports"
+          $report += ""
+
+          $report += "Important:"
+          $report += "This is static extraction/decompilation."
+          $report += "It does not reconstruct the original developer project."
+          $report += "Obfuscated/minified code may remain obfuscated/minified."
+
+          $report |
+            Out-File `
+              "analysis\reports\FINAL-REPORT.txt" `
+              -Encoding utf8
+
+          Get-Content `
+            "analysis\reports\FINAL-REPORT.txt"
+
+      # ------------------------------------------------------------
+      # 22. Compress analysis result
+      # ------------------------------------------------------------
+      - name: Create analysis archive
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          if (Test-Path "analysis-result.zip") {
+            Remove-Item "analysis-result.zip" -Force
+          }
+
+          Compress-Archive `
+            -Path "analysis\*" `
+            -DestinationPath "analysis-result.zip" `
+            -CompressionLevel Optimal
+
+          Write-Host "Archive created:"
+          Get-Item "analysis-result.zip" |
+            Select-Object FullName, Length
+
+      # ------------------------------------------------------------
+      # 23. Upload all analysis files
+      # ------------------------------------------------------------
+      - name: Upload analysis artifact
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: static-analysis-report
-          path: analysis/
+          name: AdsPower-static-analysis
+          path: |
+            analysis/
+            analysis-result.zip
+          retention-days: 30
           if-no-files-found: warn
-          retention-days: 7
