@@ -1,0 +1,64 @@
+name: Build SunLauncher
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "launcher/**"
+      - ".github/workflows/build-launcher.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build SunLauncher.exe
+    runs-on: windows-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+
+      - name: Build
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          Set-Location launcher
+          go env GOVERSION GOOS GOARCH
+          go vet ./...
+          # 单文件 exe，无外部依赖（仅标准库）
+          go build -trimpath -ldflags "-s -w" -o SunLauncher.exe .
+          Get-Item SunLauncher.exe | Format-Table Name,Length
+
+      - name: Smoke test (help surface)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Continue"
+          # 只验证二进制可加载、监听端口逻辑无编译期问题；
+          # 不启动 SunBrowser（Runner 上没有浏览器目录）。
+          Set-Location launcher
+          $p = Start-Process -FilePath ".\SunLauncher.exe" -PassThru
+          Start-Sleep -Seconds 4
+          try {
+            $r = Invoke-WebRequest -Uri "http://127.0.0.1:18900/api/profiles" -UseBasicParsing -TimeoutSec 10
+            Write-Host "HTTP $($r.StatusCode): $($r.Content.Substring(0, [Math]::Min(200, $r.Content.Length)))"
+          } catch {
+            Write-Host "smoke request: $($_.Exception.Message)"
+          } finally {
+            Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+          }
+
+      - name: Upload artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: SunLauncher-windows-amd64
+          path: launcher/SunLauncher.exe
+          retention-days: 30
+          if-no-files-found: error

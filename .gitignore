@@ -23,3 +23,7 @@ venv/
 *.zip
 *.7z
 *.tar.gz
+
+# Launcher runtime files (built by CI / generated at runtime, not committed)
+launcher/sunlauncher.json
+launcher/ports.json
