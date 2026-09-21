@@ -58,8 +58,23 @@ static void RefreshLogView() {
 
 static void RefreshList() {
     std::lock_guard<std::mutex> lk(g.mu);
+    // 记住刷新前的选中项：定时器每 2 秒 LB_RESETCONTENT 会清空选择，
+    // 这就是“要点很快才能点启动”的根因。刷新后按名字恢复选中。
+    std::wstring keep;
+    {
+        int cur = (int)::SendMessageW(g.hList, LB_GETCURSEL, 0, 0);
+        if (cur >= 0) {
+            wchar_t tmp[512]{};
+            if (::SendMessageW(g.hList, LB_GETTEXT, cur, (LPARAM)tmp) != LB_ERR) {
+                keep = tmp;
+                size_t p = keep.find(L"  [");
+                if (p != std::wstring::npos) keep = keep.substr(0, p);
+            }
+        }
+    }
     auto profiles = ScanProfiles(g.cfg, g.procs, g.ports);
     ::SendMessageW(g.hList, LB_RESETCONTENT, 0, 0);
+    int restore = -1;
     for (auto& p : profiles) {
         std::wstring item = p.name;
         if (p.running) item += L"  [运行 pid=" + std::to_wstring(p.pid) +
@@ -67,9 +82,10 @@ static void RefreshList() {
         else if (p.port) item += L"  [停止 port=" + std::to_wstring(p.port) + L"]";
         else item += L"  [停止]";
         int idx = (int)::SendMessageW(g.hList, LB_ADDSTRING, 0, (LPARAM)item.c_str());
-        // 用 item data 存序号，取值时再扫一遍（简单可靠）
+        if (!keep.empty() && p.name == keep) restore = idx;
         (void)idx;
     }
+    if (restore >= 0) ::SendMessageW(g.hList, LB_SETCURSEL, restore, 0);
 }
 
 static int AllocPortLocked(const std::wstring& name) {

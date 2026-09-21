@@ -88,13 +88,21 @@ private:
         wcsftime(buf, 64, L"%Y-%m-%d %H:%M:%S", &tmv);
         return buf;
     }
+    static std::string ToUtf8(const std::wstring& w) {
+        if (w.empty()) return {};
+        int n = ::WideCharToMultiByte(CP_UTF8, 0, w.c_str(), -1, NULL, 0, NULL, NULL);
+        if (n <= 0) return {};
+        std::string a((size_t)(n - 1), 0);
+        ::WideCharToMultiByte(CP_UTF8, 0, w.c_str(), -1, &a[0], n, NULL, NULL);
+        return a;
+    }
     void WriteLocked(const std::wstring& line) {
         if (logPath_.empty()) return;
-        std::wofstream f(logPath_, std::ios::app);
-        // UTF-16LE 写出，记事本直接可读
-        f.imbue(std::locale(f.getloc(),
-            new std::codecvt_utf16<wchar_t, 0x10FFFF, std::little_endian>));
-        f << timestamp() << L" " << line << L"\r\n";
+        // UTF-8 落盘：记事本/GUI/CI 全部直接可读，不再写 UTF-16（之前乱码根因）。
+        std::ofstream f(logPath_, std::ios::app | std::ios::binary);
+        if (!f) return;
+        std::string u8 = ToUtf8(timestamp() + L" " + line + L"\r\n");
+        f.write(u8.data(), (std::streamsize)u8.size());
     }
     std::mutex mu_;
     std::wstring logPath_;
