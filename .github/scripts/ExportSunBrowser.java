@@ -50,7 +50,7 @@ public class ExportSunBrowser extends GhidraScript {
 
         FunctionManager fm = currentProgram.getFunctionManager();
         List<Function> funcs = new ArrayList<Function>();
-        FunctionIterator it = fm.getAllFunctions(true);
+        FunctionIterator it = fm.getAllFunctions();
         while (it.hasNext()) {
             funcs.add(it.next());
         }
