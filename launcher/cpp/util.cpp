@@ -1,7 +1,5 @@
 // util.cpp — 路径/JSON/端口/进程小工具 + DEBUG 日志落盘
 #include "SunLauncher.h"
-#include <codecvt>
-#include <locale>
 
 static std::wstring ExeDir() {
     wchar_t buf[MAX_PATH]{};

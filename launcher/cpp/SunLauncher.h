@@ -20,6 +20,8 @@
 #include <mutex>
 #include <fstream>
 #include <sstream>
+#include <codecvt>
+#include <locale>
 #include <thread>
 #include <chrono>
 #include <ctime>

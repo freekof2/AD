@@ -279,6 +279,7 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE, LPWSTR, int show) {
     AppendLog(L"日志文件：" + DebugLog::Instance().Path());
 
     // 轻量 HTTP 状态接口（给 RPA 用），失败不影响主窗口
+    // 注意：此线程读取 g.cfg.listen / g.mu，与 UI 线程共享，已加锁保护。
     std::thread([]() {
         WSADATA wd{};
         if (::WSAStartup(MAKEWORD(2, 2), &wd) != 0) return;
