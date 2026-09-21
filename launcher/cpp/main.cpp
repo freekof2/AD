@@ -278,18 +278,23 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE, LPWSTR, int show) {
     ::UpdateWindow(g.hMain);
     AppendLog(L"日志文件：" + DebugLog::Instance().Path());
 
-    // 轻量 HTTP 状态接口（给 RPA 用），失败不影响主窗口
-    // 注意：此线程读取 g.cfg.listen / g.mu，与 UI 线程共享，已加锁保护。
-    std::thread([]() {
+    // 轻量 HTTP 状态接口（给 RPA 用），失败不影响主窗口。
+    // 注意：工作线程只在启动瞬间拷贝 listen 端口与快照函数，
+    // 之后不再触碰 UI 线程的 g.cfg / g.procs，避免数据竞争。
+    // 另外工作线程内不再调用 LOG（DebugLog），避免与 UI 线程抢 wofstream；
+    // 状态快照通过 ScanProfiles 的只读拷贝完成（见 util.cpp）。
+    int apiPort = kDefaultPortBase + 178; // 默认 18900 兜底
+    {
+        size_t c = g.cfg.listen.find(L":");
+        if (c != std::wstring::npos) apiPort = _wtoi(g.cfg.listen.substr(c + 1).c_str());
+        if (apiPort <= 0) apiPort = 18900;
+    }
+    std::thread([apiPort]() {
         WSADATA wd{};
         if (::WSAStartup(MAKEWORD(2, 2), &wd) != 0) return;
-        // 解析 listen（只支持 127.0.0.1:port 形式）
-        int port = kDefaultPortBase + 178; // 默认 18900 兜底
-        size_t c = g.cfg.listen.find(L":");
-        if (c != std::wstring::npos) port = _wtoi(g.cfg.listen.substr(c + 1).c_str());
-        if (port <= 0) port = 18900;
+        int port = apiPort;
         SOCKET s = ::socket(AF_INET, SOCK_STREAM, 0);
-        if (s == INVALID_SOCKET) { LOG(L"HTTP 接口 socket 失败"); return; }
+        if (s == INVALID_SOCKET) { return; }
         int opt = 1;
         ::setsockopt(s, SOL_SOCKET, SO_REUSEADDR, (char*)&opt, sizeof(opt));
         sockaddr_in a{};
@@ -297,11 +302,9 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE, LPWSTR, int show) {
         a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
         a.sin_port = htons((u_short)port);
         if (::bind(s, (sockaddr*)&a, sizeof(a)) != 0) {
-            LOG(L"HTTP 接口 bind 失败 port=" + std::to_wstring(port));
             ::closesocket(s); return;
         }
         ::listen(s, 5);
-        LOG(L"HTTP 状态接口 http://127.0.0.1:" + std::to_wstring(port) + L"/api/profiles");
         for (;;) {
             SOCKET c2 = ::accept(s, NULL, NULL);
             if (c2 == INVALID_SOCKET) break;
