@@ -10,6 +10,12 @@ on:
         type: choice
         options: ['false', 'true']
 
+  push:
+    paths:
+      - ".github/workflows/ghidra-sunbrowser.yml"
+      - ".github/scripts/ExportSunBrowser.java"
+      - ".github/scripts/ExportSunBrowser.py"
+
 permissions:
   contents: read
 
@@ -159,12 +165,43 @@ jobs:
           Write-Host "headless: $headless"
           Write-Host "exe: $exe"
           Write-Host "full_decompile: $full"
-          & $headless "$proj" SunBrowserProj -import "$exe" -postScript ExportSunBrowser.py "$full" -deleteProject -scriptPath ".github/scripts" -max-cpu 4 *> "analysis/reports/ghidra.log"
+          # 注意: .py 后缀在 headless 默认走 PyGhidra 会报 Python is not available,
+          # 所以改用同目录的 ExportSunBrowser.java（Java GhidraScript，headless 可用）。
+          & $headless "$proj" SunBrowserProj -import "$exe" -postScript ExportSunBrowser.java "$full" -deleteProject -scriptPath ".github/scripts" -max-cpu 4 *> "analysis/reports/ghidra.log"
           Write-Host "Ghidra exit: $LASTEXITCODE"
           Get-Content "analysis/reports/ghidra.log" -Tail 80
 
       # ------------------------------------------------------------
-      # 8. FINAL-REPORT
+      # 8. 全量分片打包 + 编码修复（全静态，不执行样本）
+      # ------------------------------------------------------------
+      - name: Pack shards and fix encoding
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Continue"
+          # pe-triage 用 utf8 无 BOM 重写，避免下载后中文乱码
+          $tri = "analysis/reports/pe-triage.txt"
+          if (Test-Path $tri) {
+            $raw = [System.IO.File]::ReadAllBytes($tri)
+            # 去掉可能存在的 BOM 再按 UTF8 解析
+            if ($raw.Length -ge 3 -and $raw[0] -eq 0xEF -and $raw[1] -eq 0xBB -and $raw[2] -eq 0xBF) {
+              $raw = $raw[3..($raw.Length - 1)]
+            }
+            $text = [System.Text.Encoding]::UTF8.GetString($raw)
+            [System.IO.File]::WriteAllText($tri, $text, (New-Object System.Text.UTF8Encoding($false)))
+            Write-Host "pe-triage re-encoded to utf8-no-bom"
+          }
+          $shards = @(Get-ChildItem "analysis/ghidra/out" -Filter "full-decompiled-*.c" -ErrorAction SilentlyContinue)
+          if ($shards.Count -gt 0) {
+            Write-Host "Full shards: $($shards.Count)"
+            Compress-Archive -Path "analysis/ghidra/out/full-decompiled-*.c" -DestinationPath "analysis/ghidra/out/full-decompiled.zip" -CompressionLevel Optimal -Force
+            $z = Get-Item "analysis/ghidra/out/full-decompiled.zip"
+            Write-Host "Packed: $($z.Length) bytes"
+          } else {
+            Write-Host "No full shards, skip pack"
+          }
+
+      # ------------------------------------------------------------
+      # 9. FINAL-REPORT
       # ------------------------------------------------------------
       - name: Generate FINAL-REPORT
         shell: pwsh
@@ -185,7 +222,10 @@ jobs:
             "看这几个文件:",
             "- pe-triage.txt       : PE头/CLR/字符串速查,先看这个",
             "- ghidra.log          : headless运行日志",
-            "- ghidra/out/entry-decompiled.c : 入口+关键函数伪C",
+            "- ghidra/out/entry-decompiled.c : 入口+关键函数伪C(定向模式)",
+            "- ghidra/out/full-decompiled-*.c(.zip) : 全量伪C分片(仅full=true)",
+            "- ghidra/out/imports.txt : 外部导入表(KERNEL32/CHROME_ELF等)",
+            "- ghidra/out/sections.txt : 内存节表",
             "- ghidra/out/function-list.txt  : 函数清单",
             "",
             "注意: 纯静态反编译,不执行样本,不能当运行时证据。"
@@ -193,7 +233,7 @@ jobs:
           Get-Content "analysis/reports/FINAL-REPORT.txt"
 
       # ------------------------------------------------------------
-      # 9. 上传产物
+      # 10. 上传产物
       # ------------------------------------------------------------
       - name: Upload artifact
         if: always()
