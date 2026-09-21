@@ -5,12 +5,18 @@
 import ghidra.app.decompiler.DecompInterface;
 import ghidra.app.decompiler.DecompileResults;
 import ghidra.app.script.GhidraScript;
+import ghidra.program.model.address.Address;
 import ghidra.program.model.listing.Function;
 import ghidra.program.model.listing.FunctionIterator;
 import ghidra.program.model.listing.FunctionManager;
+import ghidra.program.model.listing.Instruction;
+import ghidra.program.model.listing.InstructionIterator;
+import ghidra.program.model.listing.Listing;
 import ghidra.program.model.mem.Memory;
 import ghidra.program.model.mem.MemoryBlock;
 import ghidra.program.model.symbol.ExternalLocation;
+import ghidra.program.model.symbol.Reference;
+import ghidra.program.model.symbol.ReferenceIterator;
 
 import java.io.BufferedWriter;
 import java.io.File;
@@ -120,6 +126,10 @@ public class ExportSunBrowser extends GhidraScript {
                 targets.add(funcs.get(i));
             }
         } else {
+            // 定向：入口链 entry -> FUN_xxx -> WinMain/wmain，
+            // 外加 chrome/elf/loadlibrary/createprocess/signal 相关的真实函数，
+            // 再用名称排序的前 N 个兜底，保证 entry-decompiled.c 可读且不爆炸。
+            java.util.Set<Function> picked = new java.util.LinkedHashSet<Function>();
             for (Function f : funcs) {
                 String n = f.getName().toLowerCase();
                 if (n.equals("entry") || n.equals("_entry") || n.equals("winmain")
@@ -127,20 +137,64 @@ public class ExportSunBrowser extends GhidraScript {
                         || n.equals("start") || n.equals("_start")
                         || n.equals("tls_callback") || n.equals("invoke_main")
                         || n.equals("__tmaincrtstartup")) {
-                    targets.add(f);
+                    picked.add(f);
+                }
+            }
+            String[] keys = {"chrome", "elf", "signal", "loadlibrary", "createprocess",
+                "getmodulefilename", "winmain", "wmain", "isbrowser", "crash"};
+            for (Function f : funcs) {
+                String n = f.getName().toLowerCase();
+                for (String k : keys) {
+                    if (n.indexOf(k) >= 0) {
+                        picked.add(f);
+                        break;
+                    }
                 }
             }
             for (Function f : funcs) {
-                if (targets.size() >= 30) {
+                if (picked.size() >= 40) {
                     break;
                 }
-                if (!targets.contains(f)) {
-                    targets.add(f);
+                picked.add(f);
+            }
+            targets.addAll(picked);
+            if (targets.size() > 40) {
+                targets = targets.subList(0, 40);
+            }
+        }
+
+        // 跟随入口调用链：entry 调用的前两层 FUN_xxx 也一并反编译，
+        // 这样能看到 WinMain 级别的 LoadLibrary(chrome.dll)/ExitProcess 逻辑。
+        {
+            java.util.Set<Function> chain = new java.util.LinkedHashSet<Function>(targets);
+            Listing listing = currentProgram.getListing();
+            int depth = 0;
+            java.util.List<Function> frontier = new java.util.ArrayList<Function>(targets);
+            while (depth < 2 && !frontier.isEmpty()
+                    && chain.size() < 60) {
+                java.util.List<Function> next = new java.util.ArrayList<Function>();
+                for (Function f : frontier) {
+                    InstructionIterator ins = listing.getInstructions(f.getBody(), true);
+                    while (ins.hasNext() && chain.size() < 60) {
+                        Instruction in = ins.next();
+                        for (Reference r : in.getReferencesFrom()) {
+                            if (r.getReferenceType().isCall()) {
+                                Address to = r.getToAddress();
+                                Function callee =
+                                    fm.getFunctionContaining(to);
+                                if (callee != null && !callee.isExternal()
+                                        && !chain.contains(callee)) {
+                                    chain.add(callee);
+                                    next.add(callee);
+                                }
+                            }
+                        }
+                    }
                 }
+                frontier = next;
+                depth++;
             }
-            if (targets.size() > 80) {
-                targets = targets.subList(0, 80);
-            }
+            targets = new java.util.ArrayList<Function>(chain);
         }
 
         if (full) {
