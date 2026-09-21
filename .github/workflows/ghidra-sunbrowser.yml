@@ -1,0 +1,205 @@
+name: Ghidra SunBrowser 分层诊断
+
+on:
+  workflow_dispatch:
+    inputs:
+      full_decompile:
+        description: '是否全量反编译(很慢很大,默认只反编译入口+关键函数)'
+        required: false
+        default: 'false'
+        type: choice
+        options: ['false', 'true']
+
+permissions:
+  contents: read
+
+env:
+  GHIDRA_URL: "https://github.com/NationalSecurityAgency/ghidra/releases/download/Ghidra_12.1.3_build/ghidra_12.1.3_PUBLIC_20260817.zip"
+  TARGET_URL: "https://github.com/freekof2/AD/releases/download/1.0.0.1/SunBrowser.exe"
+  TARGET_NAME: "SunBrowser.exe"
+  TARGET_SHA256: "63c2ee4116139dc95b4f955ae83df2b48c9795a48a56479dcd87699955c812b6"
+
+jobs:
+  ghidra-analyze:
+    name: Ghidra 分层诊断 SunBrowser
+    runs-on: windows-2022
+    timeout-minutes: 360
+
+    steps:
+      # ------------------------------------------------------------
+      # 1. Checkout
+      # ------------------------------------------------------------
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ------------------------------------------------------------
+      # 2. Java (Ghidra 需要 JDK 21+)
+      # ------------------------------------------------------------
+      - name: Setup Java for Ghidra
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '21'
+
+      # ------------------------------------------------------------
+      # 3. 目录准备
+      # ------------------------------------------------------------
+      - name: Prepare dirs
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          New-Item -ItemType Directory -Force -Path "analysis/downloads" | Out-Null
+          New-Item -ItemType Directory -Force -Path "analysis/reports" | Out-Null
+          New-Item -ItemType Directory -Force -Path "analysis/ghidra/proj" | Out-Null
+          New-Item -ItemType Directory -Force -Path "analysis/ghidra/out" | Out-Null
+
+      # ------------------------------------------------------------
+      # 4. 下载 Ghidra（官方 zip，只解压不执行样本）
+      # ------------------------------------------------------------
+      - name: Download Ghidra
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $zip = "$env:RUNNER_TEMP/ghidra.zip"
+          Write-Host "Downloading Ghidra from: ${env:GHIDRA_URL}"
+          try {
+            Invoke-WebRequest -Uri $env:GHIDRA_URL -OutFile $zip -UseBasicParsing
+          } catch {
+            Write-Warning "Ghidra 12.1.3 下载失败，切换到稳定版 11.3.2"
+            $fallback = "https://github.com/NationalSecurityAgency/ghidra/releases/download/Ghidra_11.3.2_build/ghidra_11.3.2_PUBLIC_20250415.zip"
+            Invoke-WebRequest -Uri $fallback -OutFile $zip -UseBasicParsing
+          }
+          Expand-Archive -Path $zip -DestinationPath "$env:RUNNER_TEMP/ghidra" -Force
+          $dir = Get-ChildItem "$env:RUNNER_TEMP/ghidra" -Directory | Select-Object -First 1
+          "GHIDRA_DIR=$($dir.FullName)" >> $env:GITHUB_ENV
+          Write-Host "GHIDRA_DIR=$($dir.FullName)"
+          Get-ChildItem (Join-Path $dir.FullName "support/analyzeHeadless.bat") -ErrorAction Stop
+          java -version
+
+      # ------------------------------------------------------------
+      # 5. 下载 + SHA256 校验 SunBrowser.exe（只读，不执行）
+      # ------------------------------------------------------------
+      - name: Download and verify SunBrowser.exe
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $out = "analysis/downloads/${env:TARGET_NAME}"
+          Invoke-WebRequest -Uri "${env:TARGET_URL}" -OutFile $out -UseBasicParsing
+          $f = Get-Item $out
+          Write-Host "Size: $($f.Length) bytes"
+          $h = (Get-FileHash $out -Algorithm SHA256).Hash.ToLower()
+          Write-Host "actual  : $h"
+          Write-Host "expected: ${env:TARGET_SHA256}"
+          if ($h -ne "${env:TARGET_SHA256}".ToLower()) { throw "SHA256 mismatch，拒绝分析" }
+          Write-Host "SHA256 OK"
+
+      # ------------------------------------------------------------
+      # 6. PE 分层 triage（头/CLR/字符串/可疑导入，全静态）
+      # ------------------------------------------------------------
+      - name: PE triage
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $exe = Resolve-Path "analysis/downloads/${env:TARGET_NAME}"
+          $bytes = [System.IO.File]::ReadAllBytes($exe)
+          $r = @()
+          $r += "=== SunBrowser PE triage ==="
+          $r += "File: $exe"
+          $r += "Size: $($bytes.Length) bytes"
+          $r += ""
+          if ($bytes.Length -lt 64 -or $bytes[0] -ne 0x4D -or $bytes[1] -ne 0x5A) {
+            $r += "判定: 不是有效 MZ PE，直接看 Ghidra 日志"
+            $r | Out-File "analysis/reports/pe-triage.txt" -Encoding utf8
+            Get-Content "analysis/reports/pe-triage.txt"
+            exit 0
+          }
+          $peOff = [System.BitConverter]::ToInt32($bytes, 0x3C)
+          $r += ("e_lfanew: 0x{0:X8}" -f $peOff)
+          $sig = [System.Text.Encoding]::ASCII.GetString($bytes, $peOff, 4)
+          $r += "PE sig: $sig"
+          $magic = [System.BitConverter]::ToUInt16($bytes, $peOff + 24)
+          $r += ("OptionalMagic: 0x{0:X4} (0x10B=x86, 0x20B=x64)" -f $magic)
+          $machine = [System.BitConverter]::ToUInt16($bytes, $peOff + 4)
+          $r += ("Machine: 0x{0:X4}" -f $machine)
+          # CLR 目录: DataDirectory[14]
+          if ($magic -eq 0x10B) { $dd = $peOff + 24 + 96 } else { $dd = $peOff + 24 + 112 }
+          $clrRva = [System.BitConverter]::ToUInt32($bytes, $dd + 14 * 8)
+          $clrSz  = [System.BitConverter]::ToUInt32($bytes, $dd + 14 * 8 + 4)
+          $r += ("CLR RVA: 0x{0:X8} Size: {1}" -f $clrRva, $clrSz)
+          if ($clrRva -ne 0 -and $clrSz -ne 0) {
+            $r += "判定: 疑似 .NET，Ghidra 效果差，应改用 ilspycmd/dnSpy"
+          } else {
+            $r += "判定: 非托管 PE，Ghidra 适用"
+          }
+          $r += ""
+          $r += "--- 可疑字符串计数(静态) ---"
+          $ascii = [System.Text.Encoding]::ASCII.GetString($bytes)
+          foreach ($p in @('chrome_proxy','chromedriver','CreateProcess','ShellExecute','LoadLibrary','UPX!','Themida','VMProtect','.NET','app.asar','Electron','IsDebuggerPresent','ExitProcess')) {
+            $c = ([regex]::Matches($ascii, $p, 'IgnoreCase')).Count
+            $r += "$p : $c"
+          }
+          $r += ""
+          $r += "解读: chrome_proxy/chromedriver/CreateProcess>0 说明可能是启动器，缺sidecar会静默退出；UPX!/Themida>0 说明加壳，入口反编译会失真。"
+          $r | Out-File "analysis/reports/pe-triage.txt" -Encoding utf8
+          Get-Content "analysis/reports/pe-triage.txt"
+
+      # ------------------------------------------------------------
+      # 7. Ghidra headless 分析 + 定向反编译（不执行样本）
+      # ------------------------------------------------------------
+      - name: Ghidra headless analyze
+        shell: pwsh
+        continue-on-error: true
+        run: |
+          $ErrorActionPreference = "Continue"
+          $exe = (Resolve-Path "analysis/downloads/${env:TARGET_NAME}").Path
+          $proj = (Resolve-Path "analysis/ghidra/proj").Path
+          $headless = Join-Path $env:GHIDRA_DIR "support/analyzeHeadless.bat"
+          $full = "${{ inputs.full_decompile }}"
+          "FULL_DECOMPILE=$full" >> $env:GITHUB_ENV
+          Write-Host "headless: $headless"
+          Write-Host "exe: $exe"
+          Write-Host "full_decompile: $full"
+          & $headless "$proj" SunBrowserProj -import "$exe" -postScript ExportSunBrowser.py "$full" -deleteProject -scriptPath ".github/scripts" -max-cpu 4 *> "analysis/reports/ghidra.log"
+          Write-Host "Ghidra exit: $LASTEXITCODE"
+          Get-Content "analysis/reports/ghidra.log" -Tail 80
+
+      # ------------------------------------------------------------
+      # 8. FINAL-REPORT
+      # ------------------------------------------------------------
+      - name: Generate FINAL-REPORT
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Continue"
+          Get-ChildItem "analysis/ghidra/out" -Recurse -ErrorAction SilentlyContinue |
+            ForEach-Object { $_.FullName } |
+            Out-File "analysis/reports/filelist.txt" -Encoding utf8
+          @(
+            "========================================",
+            "SunBrowser Ghidra 分层诊断报告",
+            "========================================",
+            "",
+            "Target: ${env:TARGET_NAME}",
+            "SHA256: ${env:TARGET_SHA256}",
+            "full_decompile: ${{ inputs.full_decompile }}",
+            "",
+            "看这几个文件:",
+            "- pe-triage.txt       : PE头/CLR/字符串速查,先看这个",
+            "- ghidra.log          : headless运行日志",
+            "- ghidra/out/entry-decompiled.c : 入口+关键函数伪C",
+            "- ghidra/out/function-list.txt  : 函数清单",
+            "",
+            "注意: 纯静态反编译,不执行样本,不能当运行时证据。"
+          ) | Out-File "analysis/reports/FINAL-REPORT.txt" -Encoding utf8
+          Get-Content "analysis/reports/FINAL-REPORT.txt"
+
+      # ------------------------------------------------------------
+      # 9. 上传产物
+      # ------------------------------------------------------------
+      - name: Upload artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: SunBrowser-ghidra-analysis
+          path: analysis/
+          retention-days: 30
+          if-no-files-found: warn
