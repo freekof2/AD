@@ -121,10 +121,30 @@ public class ExportSunBrowser extends GhidraScript {
 
         List<Function> targets = new ArrayList<Function>();
         if (full) {
-            int cap = Math.min(funcs.size(), 1500);
-            for (int i = 0; i < cap; i++) {
-                targets.add(funcs.get(i));
+            // 全量：关键词命中的函数优先（SunBrowser 启动链），再按名称顺序补齐到上限，
+            // 避免 Electron 类大二进制按纯字母排序截断丢掉关键函数。
+            java.util.Set<Function> ordered = new java.util.LinkedHashSet<Function>();
+            String[] prio = {"sunbrowser", "user-data", "user_data", "userdata",
+                "debugging", "chrome", "elf", "profile", "spawn", "execfile",
+                "createprocess", "shellexecute", "loadlibrary", "getmodulefilename",
+                "winmain", "wmain", "entry"};
+            for (String k : prio) {
+                for (Function f : funcs) {
+                    if (ordered.size() >= 1500) {
+                        break;
+                    }
+                    if (f.getName().toLowerCase().indexOf(k) >= 0) {
+                        ordered.add(f);
+                    }
+                }
             }
+            for (Function f : funcs) {
+                if (ordered.size() >= 1500) {
+                    break;
+                }
+                ordered.add(f);
+            }
+            targets.addAll(ordered);
         } else {
             // 定向：入口链 entry -> FUN_xxx -> WinMain/wmain，
             // 外加 chrome/elf/loadlibrary/createprocess/signal 相关的真实函数，
