@@ -12,7 +12,7 @@ permissions:
 
 jobs:
   build:
-    name: Build SunLauncher.exe
+    name: Build SunLauncher.exe (MSVC x64)
     runs-on: windows-latest
     timeout-minutes: 30
 
@@ -20,36 +20,40 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Setup Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: "1.22"
+      - name: Setup MSBuild
+        uses: microsoft/setup-msbuild@v2
 
-      - name: Build
+      - name: Build (C++ Win32, no third-party deps)
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          Set-Location launcher
-          go env GOVERSION GOOS GOARCH
-          go vet ./...
-          # 单文件 exe，无外部依赖（仅标准库）
-          go build -trimpath -ldflags "-s -w" -o SunLauncher.exe .
-          Get-Item SunLauncher.exe | Format-Table Name,Length
+          msbuild launcher\cpp\SunLauncher.vcxproj /p:Configuration=Release /p:Platform=x64
+          $exe = Get-ChildItem launcher\cpp\x64\Release\SunLauncher.exe -ErrorAction Stop
+          Copy-Item $exe.FullName launcher\SunLauncher.exe -Force
+          Get-Item launcher\SunLauncher.exe | Format-Table Name,Length
 
-      - name: Smoke test (help surface)
+      - name: Smoke test (window process starts, no SunBrowser needed)
         shell: pwsh
         run: |
           $ErrorActionPreference = "Continue"
-          # 只验证二进制可加载、监听端口逻辑无编译期问题；
-          # 不启动 SunBrowser（Runner 上没有浏览器目录）。
-          Set-Location launcher
-          $p = Start-Process -FilePath ".\SunLauncher.exe" -PassThru
-          Start-Sleep -Seconds 4
+          # 只验证 exe 可加载、debug.log 能生成；不启动 SunBrowser。
+          $tmp = Join-Path $env:RUNNER_TEMP "sunlaunch-smoke"
+          New-Item -ItemType Directory -Force -Path $tmp | Out-Null
+          Copy-Item launcher\SunLauncher.exe (Join-Path $tmp "SunLauncher.exe") -Force
+          $p = Start-Process -FilePath (Join-Path $tmp "SunLauncher.exe") -WorkingDirectory $tmp -PassThru
+          Start-Sleep -Seconds 5
           try {
+            $log = Join-Path $tmp "debug.log"
+            if (Test-Path $log) {
+              Write-Host "debug.log exists, tail:"
+              Get-Content $log -Tail 10
+            } else {
+              Write-Host "debug.log NOT found"
+            }
             $r = Invoke-WebRequest -Uri "http://127.0.0.1:18900/api/profiles" -UseBasicParsing -TimeoutSec 10
             Write-Host "HTTP $($r.StatusCode): $($r.Content.Substring(0, [Math]::Min(200, $r.Content.Length)))"
           } catch {
-            Write-Host "smoke request: $($_.Exception.Message)"
+            Write-Host "smoke: $($_.Exception.Message)"
           } finally {
             Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
           }
