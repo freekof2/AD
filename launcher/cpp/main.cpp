@@ -131,6 +131,33 @@ static void OnStart() {
         std::wstring m = L"找不到 SunBrowser.exe：" + exe;
         LOG(m); SetStatus(m); return;
     }
+    // 预检：版本子目录 + chrome.dll 是否存在（静默退出的头号嫌疑）。
+    // 枚举浏览器目录下的 */chrome.dll，找到就记录路径和大小，找不到直接 abort。
+    {
+        WIN32_FIND_DATAW fd{};
+        HANDLE fh = ::FindFirstFileW((g.cfg.sunBrowserDir + L"\\*").c_str(), &fd);
+        bool found = false;
+        if (fh != INVALID_HANDLE_VALUE) {
+            do {
+                if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) continue;
+                std::wstring n = fd.cFileName;
+                if (n == L"." || n == L"..") continue;
+                std::wstring cand = g.cfg.sunBrowserDir + L"\\" + n + L"\\chrome.dll";
+                WIN32_FILE_ATTRIBUTE_DATA ad{};
+                if (::GetFileAttributesExW(cand.c_str(), GetFileExInfoStandard, &ad)) {
+                    ULARGE_INTEGER sz{};
+                    sz.HighPart = ad.nFileSizeHigh; sz.LowPart = ad.nFileSizeLow;
+                    LOG(L"预检 chrome.dll: " + cand + L" size=" + std::to_wstring(sz.QuadPart));
+                    found = true;
+                }
+            } while (::FindNextFileW(fh, &fd));
+            ::FindClose(fh);
+        }
+        if (!found) {
+            std::wstring m = L"预检失败：浏览器目录下找不到 */chrome.dll（版本子目录缺失或损坏）";
+            LOG(m); SetStatus(m); return;
+        }
+    }
     std::wstring dataDir = g.cfg.dataDir + L"\\" + name;
     ::CreateDirectoryW(g.cfg.dataDir.c_str(), NULL);
     ::CreateDirectoryW(dataDir.c_str(), NULL);
@@ -143,7 +170,8 @@ static void OnStart() {
     }
     std::wstring args = L"--user-data-dir=\"" + dataDir +
         L"\" --profile-directory=Default --remote-debugging-port=" + std::to_wstring(port) +
-        L" --no-first-run --no-default-browser-check about:blank";
+        L" --no-first-run --no-default-browser-check"
+        L" --enable-logging=stderr --v=0 about:blank";
 
     HANDLE hProc = NULL; DWORD pid = 0, err = 0;
     LOG(L"---- 启动 " + name + L" ----");
@@ -151,12 +179,16 @@ static void OnStart() {
         std::wstring m = L"CreateProcess 失败 err=" + std::to_wstring(err) + L"，见 debug.log";
         LOG(m); SetStatus(m); return;
     }
-    // 3 秒存活检查：Chromium 启动器静默退出分支会在 2 秒内结束
+    // 存活检查：Chromium 启动器静默退出分支会在 2 秒内结束。
+    // 注意 exit=4294967295 即 0xFFFFFFFF = STILL_ACTIVE(259)? 不，STILL_ACTIVE=259；
+    // 0xFFFFFFFF 是 Chromium 约定的“通用初始化失败”退出码，见 chrome exit_codes。
     ::Sleep(3000);
     DWORD code = 0;
     if (::GetExitCodeProcess(hProc, &code) && code != STILL_ACTIVE) {
+        // exit 码转 signed 显示，方便对照 Chromium 的 exit_codes.h
+        LONG scode = (LONG)code;
         std::wstring m = L"SunBrowser 3 秒内退出 exit=" + std::to_wstring(code) +
-            L"（版本子目录/参数问题），完整命令行见 debug.log";
+            L" (signed=" + std::to_wstring(scode) + L")，[browser] 输出与完整命令见 debug.log";
         LOG(m + L" pid=" + std::to_wstring(pid));
         ::CloseHandle(hProc);
         SetStatus(m);
