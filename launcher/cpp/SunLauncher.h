@@ -10,6 +10,7 @@
 #include <windows.h>
 #include <windowsx.h>
 #include <commctrl.h>
+#include <shellapi.h>
 #include <shlobj.h>
 #include <winsock2.h>
 #include <ws2tcpip.h>
@@ -100,8 +101,21 @@ private:
 };
 
 #define LOG(msg) DebugLog::Instance().Write(msg)
-static std::wstring W(const std::string& s);
-static std::string  N(const std::wstring& s);
+
+// ---------- util.cpp 实现的工具函数（声明在此，供 main.cpp 使用） ----------
+std::wstring AppDir();
+std::wstring W(const std::string& s);
+std::string  N(const std::wstring& s);
+Config LoadConfig();
+bool SaveConfig(const Config& c);
+std::map<std::wstring, int> LoadPorts();
+void SavePorts(const std::map<std::wstring, int>& m);
+bool PortFree(int port);
+std::vector<ProfileInfo> ScanProfiles(const Config& cfg,
+    const std::map<std::wstring, ProcHandle>& procs,
+    const std::map<std::wstring, int>& ports);
+bool LaunchSunBrowser(const std::wstring& exe, const std::wstring& workDir,
+    const std::wstring& cmdline, HANDLE* outProcess, DWORD* outPid, DWORD* outErr);
 
 // ---------- 全局状态 ----------
 struct AppState {

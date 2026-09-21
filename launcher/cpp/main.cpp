@@ -11,9 +11,8 @@ enum {
 
 static std::wstring GetEdit(HWND h) {
     int n = ::GetWindowTextLengthW(h);
-    std::wstring s(n + 1, 0);
-    ::GetWindowTextW(h, s.data(), n + 1);
-    s.resize(n);
+    std::wstring s((size_t)(n > 0 ? n : 0), 0);
+    if (n > 0) ::GetWindowTextW(h, &s[0], n + 1);
     return s;
 }
 static void AppendLog(const std::wstring& s) {
@@ -41,9 +40,9 @@ static void RefreshLogView() {
     LARGE_INTEGER li{}; li.QuadPart = off;
     ::SetFilePointerEx(h, li, NULL, FILE_BEGIN);
     DWORD left = (DWORD)(sz.QuadPart - off);
-    std::string buf(left, 0);
+    std::string buf((size_t)left, 0);
     DWORD got = 0;
-    ::ReadFile(h, buf.data(), left, &got, NULL);
+    if (left > 0) ::ReadFile(h, &buf[0], left, &got, NULL);
     ::CloseHandle(h);
     buf.resize(got);
     std::wstring w = W(buf);

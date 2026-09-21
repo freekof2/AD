@@ -10,18 +10,20 @@ static std::wstring ExeDir() {
 }
 std::wstring AppDir() { return ExeDir(); }
 
+// 注意：s.data()/a.data() 在 C++17 起返回可写指针；
+// vcxproj 指定 /std:c++17（见 AdditionalOptions），故此处直接写目标缓冲。
 std::wstring W(const std::string& s) {
     if (s.empty()) return L"";
     int n = ::MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, NULL, 0);
-    std::wstring w(n - 1, 0);
-    ::MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, w.data(), n);
+    std::wstring w((size_t)(n > 0 ? n - 1 : 0), 0);
+    if (n > 0) ::MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, &w[0], n);
     return w;
 }
 std::string N(const std::wstring& s) {
     if (s.empty()) return "";
     int n = ::WideCharToMultiByte(CP_UTF8, 0, s.c_str(), -1, NULL, 0, NULL, NULL);
-    std::string a(n - 1, 0);
-    ::WideCharToMultiByte(CP_UTF8, 0, s.c_str(), -1, a.data(), n, NULL, NULL);
+    std::string a((size_t)(n > 0 ? n - 1 : 0), 0);
+    if (n > 0) ::WideCharToMultiByte(CP_UTF8, 0, s.c_str(), -1, &a[0], n, NULL, NULL);
     return a;
 }
 
@@ -221,7 +223,7 @@ bool LaunchSunBrowser(const std::wstring& exe, const std::wstring& workDir,
     LOG(L"CreateProcess exe=" + exe);
     LOG(L"CreateProcess workDir=" + workDir);
     LOG(L"CreateProcess cmd=" + cmd);
-    BOOL ok = ::CreateProcessW(exe.c_str(), cmd.data(), NULL, NULL, TRUE,
+    BOOL ok = ::CreateProcessW(exe.c_str(), &cmd[0], NULL, NULL, TRUE,
         CREATE_NO_WINDOW | CREATE_UNICODE_ENVIRONMENT,
         NULL, workDir.c_str(), &si, &pi);
     ::CloseHandle(hWrite);
