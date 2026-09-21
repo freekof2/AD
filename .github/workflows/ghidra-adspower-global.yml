@@ -1,61 +1,54 @@
 name: Ghidra Adspower-Global 全量反编译
 
+# 24 分片全量：triage(1) + shards(matrix 24, 每片 timeout 360) + collect(1)
+# 一片超时不影响其他片 (fail-fast:false + continue-on-error + if:always()上传)
 on:
   workflow_dispatch:
     inputs:
-      full_decompile:
-        description: '是否全量反编译(默认true,很慢很大)'
-        required: false
-        default: 'true'
-        type: choice
-        options: ['true', 'false']
       sample_url:
-        description: '样本下载地址'
+        description: '样本下载地址(留空用默认值)'
         required: false
-        default: 'https://github.com/freekof2/AD/releases/download/1.0.0.1/AdsPower.Global.exe'
+        default: ''
       sample_sha256:
-        description: '样本SHA256'
+        description: '样本SHA256(留空用默认值)'
         required: false
-        default: 'c9ac99bb20ef2121a4e1c4331af249c4db4edd81b7482a2e3a04c7ee59d309cb'
-
-  push:
-    paths:
-      - ".github/workflows/ghidra-adspower-global.yml"
+        default: ''
+      shards:
+        description: '分片数(默认24)'
+        required: false
+        default: '24'
+      func_timeout:
+        description: '单函数反编译超时秒(默认30)'
+        required: false
+        default: '30'
 
 permissions:
   contents: read
 
 env:
   GHIDRA_URL: "https://github.com/NationalSecurityAgency/ghidra/releases/download/Ghidra_12.1.3_build/ghidra_12.1.3_PUBLIC_20260817.zip"
+  GHIDRA_FALLBACK_URL: "https://github.com/NationalSecurityAgency/ghidra/releases/download/Ghidra_11.3.2_build/ghidra_11.3.2_PUBLIC_20250415.zip"
   TARGET_URL: "https://github.com/freekof2/AD/releases/download/1.0.0.1/AdsPower.Global.exe"
   TARGET_NAME: "AdsPower.Global.exe"
   TARGET_SHA256: "c9ac99bb20ef2121a4e1c4331af249c4db4edd81b7482a2e3a04c7ee59d309cb"
 
 jobs:
-  ghidra-analyze:
-    name: Ghidra 全量反编译 AdsPower.Global
+  # ================================================================
+  # Job 1: triage（约15分钟，必跑）：下载+校验+PE+字符串命中+7z+CLR判定
+  # 不含 Ghidra，不含原 exe 上传
+  # ================================================================
+  triage:
+    name: Triage 静态分层
     runs-on: windows-2022
-    timeout-minutes: 360
+    timeout-minutes: 60
+
+    outputs:
+      func_total: ${{ steps.count.outputs.func_total }}
 
     steps:
-      # ------------------------------------------------------------
-      # 1. Checkout
-      # ------------------------------------------------------------
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # ------------------------------------------------------------
-      # 2. Java (Ghidra 需要 JDK 21+)
-      # ------------------------------------------------------------
-      - name: Setup Java for Ghidra
-        uses: actions/setup-java@v4
-        with:
-          distribution: 'temurin'
-          java-version: '21'
-
-      # ------------------------------------------------------------
-      # 3. 目录准备
-      # ------------------------------------------------------------
       - name: Prepare dirs
         shell: pwsh
         run: |
@@ -69,32 +62,6 @@ jobs:
           New-Item -ItemType Directory -Force -Path "analysis/strings" | Out-Null
           New-Item -ItemType Directory -Force -Path "analysis/dotnet" | Out-Null
 
-      # ------------------------------------------------------------
-      # 4. 下载 Ghidra（官方 zip，只解压不执行样本）
-      # ------------------------------------------------------------
-      - name: Download Ghidra
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-          $zip = "$env:RUNNER_TEMP/ghidra.zip"
-          Write-Host "Downloading Ghidra from: ${env:GHIDRA_URL}"
-          try {
-            Invoke-WebRequest -Uri $env:GHIDRA_URL -OutFile $zip -UseBasicParsing
-          } catch {
-            Write-Warning "Ghidra 12.1.3 下载失败，切换到稳定版 11.3.2"
-            $fallback = "https://github.com/NationalSecurityAgency/ghidra/releases/download/Ghidra_11.3.2_build/ghidra_11.3.2_PUBLIC_20250415.zip"
-            Invoke-WebRequest -Uri $fallback -OutFile $zip -UseBasicParsing
-          }
-          Expand-Archive -Path $zip -DestinationPath "$env:RUNNER_TEMP/ghidra" -Force
-          $dir = Get-ChildItem "$env:RUNNER_TEMP/ghidra" -Directory | Select-Object -First 1
-          "GHIDRA_DIR=$($dir.FullName)" >> $env:GITHUB_ENV
-          Write-Host "GHIDRA_DIR=$($dir.FullName)"
-          Get-ChildItem (Join-Path $dir.FullName "support/analyzeHeadless.bat") -ErrorAction Stop
-          java -version
-
-      # ------------------------------------------------------------
-      # 5. 下载 + SHA256 校验 AdsPower.Global.exe（只读，不执行）
-      # ------------------------------------------------------------
       - name: Download and verify sample
         shell: pwsh
         run: |
@@ -115,10 +82,6 @@ jobs:
           if ($h -ne $exp) { throw "SHA256 mismatch，拒绝分析" }
           Write-Host "SHA256 OK"
 
-      # ------------------------------------------------------------
-      # 6. PE 分层 triage（头/CLR/字符串/可疑导入，全静态）
-      #    重点找 SunBrowser 启动痕迹
-      # ------------------------------------------------------------
       - name: PE triage
         shell: pwsh
         run: |
@@ -131,7 +94,7 @@ jobs:
           $r += "Size: $($bytes.Length) bytes"
           $r += ""
           if ($bytes.Length -lt 64 -or $bytes[0] -ne 0x4D -or $bytes[1] -ne 0x5A) {
-            $r += "判定: 不是有效 MZ PE，直接看 Ghidra 日志"
+            $r += "判定: 不是有效 MZ PE"
             $r | Out-File "analysis/reports/pe-triage.txt" -Encoding utf8
             Get-Content "analysis/reports/pe-triage.txt"
             exit 0
@@ -166,43 +129,37 @@ jobs:
           $r | Out-File "analysis/reports/pe-triage.txt" -Encoding utf8
           Get-Content "analysis/reports/pe-triage.txt"
 
-      # ------------------------------------------------------------
-      # 7. 字符串提取（ASCII + UTF-16LE，全静态）
-      # ------------------------------------------------------------
-      - name: Extract strings
+      # 流式字符串命中：不写全量 ascii.txt/unicode.txt(上次260万行×2是 artifact 大头)，
+      # 只输出关键词 ± 200 字节上下文。
+      - name: Extract string hits (streaming, no full dump)
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
           $file = "analysis/downloads/${env:TARGET_NAME}"
           $bytes = [System.IO.File]::ReadAllBytes($file)
-          $ascii = [System.Text.Encoding]::ASCII.GetString($bytes)
-          [regex]::Matches($ascii, '[ -~]{6,}') |
-            ForEach-Object { $_.Value } |
-            Sort-Object -Unique |
-            Out-File "analysis/strings/ascii.txt" -Encoding utf8
-          $unicode = [System.Text.Encoding]::Unicode.GetString($bytes)
-          [regex]::Matches($unicode, '[\u0020-\uFFFF]{4,}') |
-            ForEach-Object { $_.Value } |
-            Sort-Object -Unique |
-            Out-File "analysis/strings/unicode.txt" -Encoding utf8
-          Write-Host "ASCII strings:"
-          (Get-Content "analysis/strings/ascii.txt").Count
-          Write-Host "Unicode strings:"
-          (Get-Content "analysis/strings/unicode.txt").Count
-          # SunBrowser 快速命中（只列命中行，不证明运行时行为）
-          $pats = @('SunBrowser','user-data-dir','remote-debugging','chrome_152','profile-directory','no-first-run','about:blank')
+          $text = [System.Text.Encoding]::ASCII.GetString($bytes)
+          $pats = @('SunBrowser','user-data-dir','remote-debugging','chrome_152','profile-directory','no-first-run','about:blank','spawn','execFile')
           $hits = @()
           foreach ($p in $pats) {
-            $m = Select-String -Path "analysis/strings/ascii.txt","analysis/strings/unicode.txt" -Pattern $p -SimpleMatch -CaseSensitive:$false -ErrorAction SilentlyContinue
-            foreach ($x in $m) { $hits += "[$p] $($x.Line)" }
+            $idx = 0
+            $count = 0
+            while ($count -lt 50) {
+              $found = $text.IndexOf($p, $idx, [System.StringComparison]::OrdinalIgnoreCase)
+              if ($found -lt 0) { break }
+              $s = [Math]::Max(0, $found - 200)
+              $e = [Math]::Min($text.Length, $found + $p.Length + 200)
+              $ctx = $text.Substring($s, $e - $s) -replace '[^\x20-\x7E]+', ' '
+              $ctx = $ctx.Trim()
+              if ($ctx.Length -gt 10) { $hits += "[$p @0x$($found.ToString('X8'))] $ctx" }
+              $idx = $found + 1
+              $count++
+            }
           }
-          $hits | Sort-Object -Unique | Out-File "analysis/reports/string-hits-sunbrowser.txt" -Encoding utf8
+          if ($hits.Count -eq 0) { $hits = @("(no SunBrowser launch string hits)") }
+          $hits | Out-File "analysis/strings/string-hits-sunbrowser.txt" -Encoding utf8
+          $hits | Out-File "analysis/reports/string-hits-sunbrowser.txt" -Encoding utf8
           Write-Host "SunBrowser string hits: $($hits.Count)"
 
-      # ------------------------------------------------------------
-      # 8. 7z 只读解包 + asar 提取 + JS 静态检索 SunBrowser 启动方法
-      #    （不执行任何 JS/DLL/EXE）
-      # ------------------------------------------------------------
       - name: Install 7-Zip if missing
         shell: pwsh
         run: |
@@ -211,15 +168,21 @@ jobs:
           choco install 7zip -y --no-progress
           if (!(Get-Command 7z.exe -ErrorAction SilentlyContinue)) { throw "7-Zip installation failed." }
 
-      - name: Extract embedded archive data
+      # 先 l -slt 看清单，再 x 解包；加 overlay 尾部切分，解决 ASAR files: 0 盲区
+      - name: List and extract embedded archive data
         shell: pwsh
         continue-on-error: true
         run: |
           $ErrorActionPreference = "Continue"
           $exe = Resolve-Path "analysis/downloads/${env:TARGET_NAME}"
           $out = Resolve-Path "analysis/resources"
+          7z l -slt "$exe" > "analysis/reports/7zip-list.log" 2>&1
           7z x "$exe" "-o$out" "-y" > "analysis/reports/7zip-extraction.log" 2>&1
-          Write-Host "7-Zip extraction done."
+          Write-Host "7-Zip list+extract done."
+          Get-ChildItem $out -Recurse -File -ErrorAction SilentlyContinue |
+            Select-Object -First 200 |
+            ForEach-Object { $_.FullName } |
+            Out-File "analysis/reports/resource-inventory.txt" -Encoding utf8
 
       - name: Setup Node.js
         uses: actions/setup-node@v6
@@ -265,9 +228,6 @@ jobs:
           $hits | Out-File "analysis/reports/sunbrowser-hits.txt" -Encoding utf8
           Write-Host "sunbrowser-hits: $($hits.Count)"
 
-      # ------------------------------------------------------------
-      # 9. .NET / CLR 判定（PE DataDirectory[14]，不靠字符串猜）
-      # ------------------------------------------------------------
       - name: Detect .NET CLR
         shell: pwsh
         run: |
@@ -344,109 +304,232 @@ jobs:
           Write-Host "ILSpy exit: $LASTEXITCODE"
           exit 0
 
-      # ------------------------------------------------------------
-      # 10. Ghidra headless 全量反编译（不执行样本）
-      #     默认 full=true：ExportSunBrowser.java 按名称排序取前1500函数，
-      #     每50个一切片写 full-decompiled-*.c
-      # ------------------------------------------------------------
-      - name: Ghidra headless analyze (full)
+      # triage artifact 白名单：不含 downloads/*.exe，不含全量 strings
+      - name: Upload triage artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: AdspowerGlobal-triage
+          path: |
+            analysis/reports/
+            analysis/dotnet/
+            analysis/strings/string-hits-sunbrowser.txt
+          retention-days: 30
+          if-no-files-found: warn
+
+  # ================================================================
+  # Job 2: shards（matrix 24，每片 timeout 360，fail-fast:false）
+  # 每片独立：下载Ghidra + 下载样本 + headless 自动分析 + 分片反编译
+  # 一片超时/失败不影响其他片；即使超时也上传已落盘部分
+  # ================================================================
+  shards:
+    name: Ghidra 分片全量 (shard ${{ matrix.shard }})
+    needs: triage
+    runs-on: windows-2022
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Java for Ghidra
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '21'
+
+      - name: Prepare dirs
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          New-Item -ItemType Directory -Force -Path "analysis/downloads" | Out-Null
+          New-Item -ItemType Directory -Force -Path "analysis/reports" | Out-Null
+          New-Item -ItemType Directory -Force -Path "analysis/ghidra/proj" | Out-Null
+          New-Item -ItemType Directory -Force -Path "analysis/ghidra/out" | Out-Null
+
+      # Ghidra 下载缓存：24 片重复下载，加 cache 命中跳过
+      - name: Cache Ghidra zip
+        id: ghidra-cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/ghidra.zip
+          key: ghidra-12.1.3-public
+
+      - name: Download Ghidra
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $zip = "$env:RUNNER_TEMP/ghidra.zip"
+          if ("${{ steps.ghidra-cache.outputs.cache-hit }}" -eq "true" -and (Test-Path $zip)) {
+            Write-Host "Ghidra cache hit, skip download."
+          } else {
+            Write-Host "Downloading Ghidra from: ${env:GHIDRA_URL}"
+            try {
+              Invoke-WebRequest -Uri $env:GHIDRA_URL -OutFile $zip -UseBasicParsing
+            } catch {
+              Write-Warning "Ghidra 12.1.3 下载失败，切换到 fallback"
+              Invoke-WebRequest -Uri $env:GHIDRA_FALLBACK_URL -OutFile $zip -UseBasicParsing
+            }
+          }
+          Expand-Archive -Path $zip -DestinationPath "$env:RUNNER_TEMP/ghidra" -Force
+          $dir = Get-ChildItem "$env:RUNNER_TEMP/ghidra" -Directory | Select-Object -First 1
+          "GHIDRA_DIR=$($dir.FullName)" >> $env:GITHUB_ENV
+          Write-Host "GHIDRA_DIR=$($dir.FullName)"
+          Get-ChildItem (Join-Path $dir.FullName "support/analyzeHeadless.bat") -ErrorAction Stop
+          java -version
+
+      - name: Download and verify sample
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $url = "${{ inputs.sample_url }}"
+          if ([string]::IsNullOrWhiteSpace($url)) { $url = "${env:TARGET_URL}" }
+          $exp = "${{ inputs.sample_sha256 }}"
+          if ([string]::IsNullOrWhiteSpace($exp)) { $exp = "${env:TARGET_SHA256}" }
+          $exp = $exp.ToLower()
+          $out = "analysis/downloads/${env:TARGET_NAME}"
+          Write-Host "URL: $url"
+          Invoke-WebRequest -Uri $url -OutFile $out -UseBasicParsing
+          $h = (Get-FileHash $out -Algorithm SHA256).Hash.ToLower()
+          Write-Host "actual  : $h"
+          Write-Host "expected: $exp"
+          if ($h -ne $exp) { throw "SHA256 mismatch，拒绝分析" }
+          Write-Host "SHA256 OK"
+
+      # 本片反编译：timeout 330(留30分钟给上传)，失败不阻断其他片
+      - name: Ghidra headless shard analyze
         shell: pwsh
         continue-on-error: true
+        timeout-minutes: 330
         run: |
           $ErrorActionPreference = "Continue"
           $exe = (Resolve-Path "analysis/downloads/${env:TARGET_NAME}").Path
           $proj = (Resolve-Path "analysis/ghidra/proj").Path
           $headless = Join-Path $env:GHIDRA_DIR "support/analyzeHeadless.bat"
-          $full = "${{ inputs.full_decompile }}"
-          if ([string]::IsNullOrWhiteSpace($full)) { $full = "true" }
-          "FULL_DECOMPILE=$full" >> $env:GITHUB_ENV
+          $idx = "${{ matrix.shard }}"
+          $total = "${{ inputs.shards }}"
+          if ([string]::IsNullOrWhiteSpace($total)) { $total = "24" }
+          $fto = "${{ inputs.func_timeout }}"
+          if ([string]::IsNullOrWhiteSpace($fto)) { $fto = "30" }
+          "SHARD_INDEX=$idx" >> $env:GITHUB_ENV
           Write-Host "headless: $headless"
           Write-Host "exe: $exe"
-          Write-Host "full_decompile: $full (Adspower-Global 默认全量)"
+          Write-Host "shard: $idx / $total, func_timeout: ${fto}s"
           # .py 后缀在 headless 默认走 PyGhidra 会报 Python is not available，
           # 所以用同目录的 ExportSunBrowser.java（Java GhidraScript，headless 可用）。
-          & $headless "$proj" AdspowerProj -import "$exe" -postScript ExportSunBrowser.java "$full" -deleteProject -scriptPath ".github/scripts" -max-cpu 4 *> "analysis/reports/ghidra.log"
-          Write-Host "Ghidra exit: $LASTEXITCODE"
-          Get-Content "analysis/reports/ghidra.log" -Tail 80
+          # 参数: full <shardIndex> <shardTotal> <funcTimeoutSec>
+          & $headless "$proj" "AdspowerShard$idx" -import "$exe" -postScript ExportSunBrowser.java "full" "$idx" "$total" "$fto" -deleteProject -scriptPath ".github/scripts" -max-cpu 4 *> "analysis/reports/ghidra-shard-$idx.log"
+          Write-Host "Ghidra shard $idx exit: $LASTEXITCODE"
+          Get-Content "analysis/reports/ghidra-shard-$idx.log" -Tail 60
 
-      # ------------------------------------------------------------
-      # 11. 全量分片打包 + 编码修复（全静态，不执行样本）
-      # ------------------------------------------------------------
-      - name: Pack shards and fix encoding
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Continue"
-          # 文本报告统一转无 BOM UTF8，避免网页预览乱码
-          foreach ($tri in @("analysis/reports/pe-triage.txt","analysis/reports/string-hits-sunbrowser.txt","analysis/reports/sunbrowser-hits.txt","analysis/reports/FINAL-REPORT.txt")) {
-            if (Test-Path $tri) {
-              $raw = [System.IO.File]::ReadAllBytes($tri)
-              if ($raw.Length -ge 3 -and $raw[0] -eq 0xEF -and $raw[1] -eq 0xBB -and $raw[2] -eq 0xBF) {
-                $raw = $raw[3..($raw.Length - 1)]
-              }
-              $text = [System.Text.Encoding]::UTF8.GetString($raw)
-              [System.IO.File]::WriteAllText($tri, $text, (New-Object System.Text.UTF8Encoding($false)))
-            }
-          }
-          Write-Host "re-encoded reports to utf8-no-bom"
-          $shards = @(Get-ChildItem "analysis/ghidra/out" -Filter "full-decompiled-*.c" -ErrorAction SilentlyContinue)
-          if ($shards.Count -gt 0) {
-            Write-Host "Full shards: $($shards.Count)"
-            Compress-Archive -Path "analysis/ghidra/out/full-decompiled-*.c" -DestinationPath "analysis/ghidra/out/full-decompiled.zip" -CompressionLevel Optimal -Force
-            $z = Get-Item "analysis/ghidra/out/full-decompiled.zip"
-            Write-Host "Packed: $($z.Length) bytes"
-          } else {
-            Write-Host "No full shards (maybe directional entry-decompiled.c only), skip pack"
-          }
+      # 本片上传：只传本片伪C + 本片日志 + 清单，不含原 exe
+      - name: Upload shard artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: AdspowerGlobal-full-s${{ matrix.shard }}
+          path: |
+            analysis/ghidra/out/full-decompiled-s*.c
+            analysis/ghidra/out/shard-*.txt
+            analysis/ghidra/out/function-list.txt
+            analysis/ghidra/out/imports.txt
+            analysis/ghidra/out/sections.txt
+            analysis/reports/ghidra-shard-*.log
+          retention-days: 30
+          if-no-files-found: warn
 
-      # ------------------------------------------------------------
-      # 12. FINAL-REPORT（SunBrowser 启动方法阅读指引）
-      # ------------------------------------------------------------
+  # ================================================================
+  # Job 3: collect（汇总索引，只做对账不重算，失败片也照样汇总）
+  # ================================================================
+  collect:
+    name: 汇总分片索引
+    needs: [triage, shards]
+    if: always()
+    runs-on: windows-2022
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download all shard artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: collected/
+          pattern: AdspowerGlobal-full-s*
+          merge-multiple: true
+
+      - name: Download triage artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: AdspowerGlobal-triage
+          path: collected-triage/
+
       - name: Generate FINAL-REPORT
         shell: pwsh
         run: |
           $ErrorActionPreference = "Continue"
-          $full = "${{ inputs.full_decompile }}"
-          if ([string]::IsNullOrWhiteSpace($full)) { $full = "true" }
-          Get-ChildItem "analysis/ghidra/out" -Recurse -ErrorAction SilentlyContinue |
-            ForEach-Object { $_.FullName } |
-            Out-File "analysis/reports/filelist.txt" -Encoding utf8
-          @(
-            "========================================",
-            "AdsPower.Global Ghidra 全量反编译报告",
-            "========================================",
-            "",
-            "Target: ${env:TARGET_NAME}",
-            "SHA256: ${env:TARGET_SHA256}",
-            "full_decompile: $full (本工作流默认全量)",
-            "",
-            "SunBrowser 启动方法看这几个文件(按顺序):",
-            "1. pe-triage.txt                  : PE头/CLR/启动相关字符串计数,先看这个定性(壳/Electron/启动器)",
-            "2. string-hits-sunbrowser.txt     : 二进制字符串里 SunBrowser/user-data-dir/remote-debugging 命中",
-            "3. sunbrowser-hits.txt            : asar 解包后 JS 里 spawn/execFile/user-data-dir 命令行拼接(真逻辑多半在这)",
-            "4. ghidra/out/imports.txt         : 有无 CreateProcessW/ShellExecuteExW/LoadLibrary(是不是启动器)",
-            "5. ghidra/out/entry-decompiled.c  : 定向模式入口+关键函数伪C(若full=false才有)",
-            "6. ghidra/out/full-decompiled-*.c(.zip) : 全量伪C分片(默认full=true,前1500函数,每50一切片)",
-            "7. ghidra/out/function-list.txt   : 函数清单(含地址,搜 WinMain/CreateProcess 交叉引用)",
-            "8. ghidra/out/sections.txt        : 内存节表",
-            "9. ghidra.log                     : headless运行日志",
-            "10. dotnet/dotnet-indicators.txt  : CLR判定,若为True再看 ilspy.log",
-            "",
-            "对照 launcher/cpp 的已知结论:",
-            "--user-data-dir=<数据目录>/<profile> --profile-directory=Default --remote-debugging-port=<自动分配> --no-first-run --no-default-browser-check about:blank",
-            "若 JS/Ghidra 命中与该模板一致则结论成立,不一致以本次 artifact 为准。",
-            "",
-            "注意: 纯静态反编译+只读解包,不执行样本,不能当运行时证据。"
-          ) | Out-File "analysis/reports/FINAL-REPORT.txt" -Encoding utf8
+          New-Item -ItemType Directory -Force -Path "analysis/reports" | Out-Null
+          $shards = @(Get-ChildItem "collected" -Filter "shard-*.txt" -ErrorAction SilentlyContinue)
+          $cs = @(Get-ChildItem "collected" -Filter "full-decompiled-s*.c" -ErrorAction SilentlyContinue)
+          $total = "${{ inputs.shards }}"
+          if ([string]::IsNullOrWhiteSpace($total)) { $total = "24" }
+          $lines = @()
+          $lines += "========================================"
+          $lines += "AdsPower.Global Ghidra 24分片全量反编译汇总"
+          $lines += "========================================"
+          $lines += ""
+          $lines += "Target: ${env:TARGET_NAME}"
+          $lines += "SHA256: ${env:TARGET_SHA256}"
+          $lines += "Shards: $total (每片 timeout 360分钟, fail-fast=false)"
+          $lines += ""
+          $lines += "分片对账(缺口片可单独重跑对应 shard):"
+          $lines += ""
+          $sumDone = 0
+          for ($i = 0; $i -lt [int]$total; $i++) {
+            $tag = "s{0:D2}" -f $i
+            $sf = $shards | Where-Object { $_.Name -match $tag } | Select-Object -First 1
+            $cf = $cs | Where-Object { $_.Name -match $tag } | Select-Object -First 1
+            if ($sf) {
+              $t = Get-Content $sf.FullName -Raw
+              $lines += "shard $tag : $t" -replace "`n", " | "
+              $m = [regex]::Match($t, 'done=(\d+)')
+              if ($m.Success) { $sumDone += [int]$m.Groups[1].Value }
+            } elseif ($cf) {
+              $lines += "shard $tag : 有伪C($([math]::Round($cf.Length/1KB))KB)但无对账文件(可能超时被杀,已落盘部分已救回)"
+            } else {
+              $lines += "shard $tag : 缺失(超时/失败, 下次重跑该 shard 即可)"
+            }
+          }
+          $lines += ""
+          $lines += "已反编译函数合计(各片done之和): $sumDone"
+          $lines += "伪C分片文件数: $($cs.Count)"
+          $lines += ""
+          $lines += "SunBrowser 启动方法看这几个文件(按顺序):"
+          $lines += "1. pe-triage.txt                  : PE头/CLR/启动相关字符串计数,先看这个定性"
+          $lines += "2. string-hits-sunbrowser.txt     : 二进制字符串里 SunBrowser/user-data-dir/remote-debugging 上下文"
+          $lines += "3. sunbrowser-hits.txt            : asar 解包后 JS 里 spawn/execFile/user-data-dir 拼接(真逻辑多半在这)"
+          $lines += "4. imports.txt                    : 有无 CreateProcessW/ShellExecuteExW/LoadLibrary(是不是启动器)"
+          $lines += "5. full-decompiled-s*.c           : 24分片全量伪C, rg 搜 user-data-dir/remote-debugging/CreateProcess"
+          $lines += "6. function-list.txt              : 函数清单(含地址,搜 WinMain/CreateProcess 交叉引用)"
+          $lines += ""
+          $lines += "对照 launcher/cpp 的已知结论:"
+          $lines += "--user-data-dir=<数据目录>/<profile> --profile-directory=Default --remote-debugging-port=<自动分配> --no-first-run --no-default-browser-check about:blank"
+          $lines += "若 JS/Ghidra 命中与该模板一致则结论成立,不一致以本次 artifact 为准。"
+          $lines += ""
+          $lines += "注意: 纯静态反编译+只读解包,不执行样本,不能当运行时证据。"
+          [System.IO.File]::WriteAllText("analysis/reports/FINAL-REPORT.txt", ($lines -join "`n"), (New-Object System.Text.UTF8Encoding($false)))
           Get-Content "analysis/reports/FINAL-REPORT.txt"
 
-      # ------------------------------------------------------------
-      # 13. 上传产物（允许传回 artifact）
-      # ------------------------------------------------------------
-      - name: Upload artifact
+      - name: Upload index artifact
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: AdspowerGlobal-ghidra-full
-          path: analysis/
+          name: AdspowerGlobal-full-index
+          path: analysis/reports/FINAL-REPORT.txt
           retention-days: 30
           if-no-files-found: warn
