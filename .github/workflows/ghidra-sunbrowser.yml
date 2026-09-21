@@ -178,7 +178,10 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Continue"
-          # pe-triage 用 utf8 无 BOM 重写，避免下载后中文乱码
+          # pe-triage 用 utf8 无 BOM 重写，避免下载后中文乱码。
+          # 注意 Out-File -Encoding utf8 默认写的是带 BOM 的 UTF8，
+          # 本地记事本能认但 GitHub 网页预览/某些编辑器会显示成锟斤拷，
+          # 这里统一转成无 BOM UTF8。
           $tri = "analysis/reports/pe-triage.txt"
           if (Test-Path $tri) {
             $raw = [System.IO.File]::ReadAllBytes($tri)

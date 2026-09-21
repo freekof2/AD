@@ -50,7 +50,9 @@ public class ExportSunBrowser extends GhidraScript {
 
         FunctionManager fm = currentProgram.getFunctionManager();
         List<Function> funcs = new ArrayList<Function>();
-        FunctionIterator it = fm.getAllFunctions();
+        // FunctionManager 只有 getFunctions(boolean) / getFunctions(addr,boolean)，
+        // 没有 getAllFunctions()，用 getFunctions(true) 拿全部非外部函数（地址升序）。
+        FunctionIterator it = fm.getFunctions(true);
         while (it.hasNext()) {
             funcs.add(it.next());
         }
