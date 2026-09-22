@@ -21,6 +21,14 @@ on:
         description: '分片数(默认12,需与matrix一致)'
         required: false
         default: '12'
+      unpacked_url:
+        description: 'unpacked包下载地址(留空用默认值)'
+        required: false
+        default: ''
+      unpacked_sha256:
+        description: 'unpacked包SHA256(留空则只记录不校验)'
+        required: false
+        default: ''
 
 permissions:
   contents: read
@@ -31,6 +39,10 @@ env:
   # release 页未公布 app.asar 的 SHA256,留空表示只记录实际值、不强制比对。
   # 若后续拿到可信摘要,可填入此处或经 inputs.sample_sha256 传入。
   TARGET_SHA256: ""
+  TARGET_UNPACKED_URL: "https://github.com/freekof2/AD/releases/download/1.0.0.1/app.asar.unpacked.zip"
+  TARGET_UNPACKED_NAME: "app.asar.unpacked.zip"
+  # unpacked 包 SHA256 同样留空表示只记录不强制比对,可经 inputs.unpacked_sha256 传入。
+  TARGET_UNPACKED_SHA256: ""
 
 jobs:
   # ================================================================
@@ -80,6 +92,41 @@ jobs:
             if ($h -ne $exp) { throw "SHA256 mismatch,拒绝分析" }
             Write-Host "SHA256 OK"
           }
+          # 下载 app.asar.unpacked.zip(asar extract 需要它做兄弟目录,否则 sharp/koffi 原生模块报 ENOENT)
+          $uurl = "${{ inputs.unpacked_url }}"
+          if ([string]::IsNullOrWhiteSpace($uurl)) { $uurl = "${env:TARGET_UNPACKED_URL}" }
+          $uexp = "${{ inputs.unpacked_sha256 }}"
+          if ([string]::IsNullOrWhiteSpace($uexp)) { $uexp = "${env:TARGET_UNPACKED_SHA256}" }
+          $uexp = $uexp.ToLower().Trim()
+          $uout = "analysis/downloads/${env:TARGET_UNPACKED_NAME}"
+          Write-Host "UNPACKED URL: $uurl"
+          Invoke-WebRequest -Uri $uurl -OutFile $uout -UseBasicParsing
+          $uf = Get-Item $uout
+          Write-Host "Unpacked zip size: $($uf.Length) bytes"
+          $uh = (Get-FileHash $uout -Algorithm SHA256).Hash.ToLower()
+          Write-Host "unpacked actual  : $uh"
+          if ([string]::IsNullOrWhiteSpace($uexp)) {
+            Write-Host "unpacked expected: (empty, record-only)"
+            $uh | Out-File "analysis/reports/sha256-unpacked-actual.txt" -Encoding utf8
+          } else {
+            Write-Host "unpacked expected: $uexp"
+            if ($uh -ne $uexp) { throw "Unpacked SHA256 mismatch,拒绝分析" }
+            Write-Host "Unpacked SHA256 OK"
+          }
+          Expand-Archive -Path $uout -DestinationPath "analysis/downloads/" -Force
+          $udir = "analysis/downloads/app.asar.unpacked"
+          if (-not (Test-Path $udir)) {
+            # 兼容 zip 根下直接是 node_modules(无顶层 app.asar.unpacked 文件夹)的情况
+            if (Test-Path "analysis/downloads/node_modules") {
+              New-Item -ItemType Directory -Force -Path "${udir}.tmp" | Out-Null
+              Get-ChildItem "analysis/downloads" -Exclude "app.asar","app.asar.unpacked.zip","app.asar.unpacked","app.asar.unpacked.tmp","*.txt" |
+                Move-Item -Destination "${udir}.tmp" -Force -ErrorAction SilentlyContinue
+              if (Test-Path "${udir}.tmp/node_modules") { Move-Item "${udir}.tmp" $udir -Force }
+              else { throw "zip 根结构无法识别,既无 app.asar.unpacked/ 也无 node_modules/" }
+            } else { throw "解压后缺 $udir,请检查 zip 根结构(应为 app.asar.unpacked/...)" }
+          }
+          $ucount = @(Get-ChildItem $udir -Recurse -File -ErrorAction SilentlyContinue).Count
+          Write-Host "Unpacked files: $ucount"
 
       - name: Setup Node.js
         uses: actions/setup-node@v6
@@ -244,6 +291,33 @@ jobs:
             if ($h -ne $exp) { throw "SHA256 mismatch,拒绝分析" }
             Write-Host "SHA256 OK"
           }
+          # 每片独立下载 unpacked 包,与 app.asar 做兄弟目录,否则 extract 报 ENOENT
+          $uurl = "${{ inputs.unpacked_url }}"
+          if ([string]::IsNullOrWhiteSpace($uurl)) { $uurl = "${env:TARGET_UNPACKED_URL}" }
+          $uexp = "${{ inputs.unpacked_sha256 }}"
+          if ([string]::IsNullOrWhiteSpace($uexp)) { $uexp = "${env:TARGET_UNPACKED_SHA256}" }
+          $uexp = $uexp.ToLower().Trim()
+          $uout = "analysis/downloads/${env:TARGET_UNPACKED_NAME}"
+          Write-Host "UNPACKED URL: $uurl"
+          Invoke-WebRequest -Uri $uurl -OutFile $uout -UseBasicParsing
+          $uh = (Get-FileHash $uout -Algorithm SHA256).Hash.ToLower()
+          Write-Host "unpacked actual  : $uh"
+          if (-not [string]::IsNullOrWhiteSpace($uexp)) {
+            Write-Host "unpacked expected: $uexp"
+            if ($uh -ne $uexp) { throw "Unpacked SHA256 mismatch,拒绝分析" }
+            Write-Host "Unpacked SHA256 OK"
+          }
+          Expand-Archive -Path $uout -DestinationPath "analysis/downloads/" -Force
+          if (-not (Test-Path "analysis/downloads/app.asar.unpacked")) {
+            if (Test-Path "analysis/downloads/node_modules") {
+              New-Item -ItemType Directory -Force -Path "analysis/downloads/app.asar.unpacked.tmp" | Out-Null
+              Get-ChildItem "analysis/downloads" -Exclude "app.asar","app.asar.unpacked.zip","app.asar.unpacked","app.asar.unpacked.tmp","*.txt" |
+                Move-Item -Destination "analysis/downloads/app.asar.unpacked.tmp" -Force -ErrorAction SilentlyContinue
+              if (Test-Path "analysis/downloads/app.asar.unpacked.tmp/node_modules") { Move-Item "analysis/downloads/app.asar.unpacked.tmp" "analysis/downloads/app.asar.unpacked" -Force }
+              else { throw "zip 根结构无法识别,既无 app.asar.unpacked/ 也无 node_modules/" }
+            } else { throw "解压后缺 app.asar.unpacked,请检查 zip 根结构" }
+          }
+          Write-Host "Unpacked ready"
 
       # 本片全量切片分析:timeout 330(留30分钟给上传),失败不阻断其他片
       - name: Asar headless shard analyze
@@ -303,7 +377,7 @@ jobs:
             $buf.Clear()
           }
           $sliceFiles | Out-File "analysis/reports/shard-$idx-files.txt" -Encoding utf8
-          if ($totalHits -eq 0) { "(shard $idx: no SunBrowser launch hits in slice)" | Out-File $hitsPath -Encoding utf8 }
+          if ($totalHits -eq 0) { "(shard ${idx}: no SunBrowser launch hits in slice)" | Out-File $hitsPath -Encoding utf8 }
           "mode=full-shard`nshard=$idx/$total`ntotal=$n`nrange=[$start,$end)`nslice=$($end - $start)`ndone=$done`nfailed=$failed`nhits=$totalHits" |
             Out-File "analysis/reports/shard-$idx.txt" -Encoding utf8
           Get-Content "analysis/reports/shard-$idx.txt"
