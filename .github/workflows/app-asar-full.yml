@@ -270,27 +270,44 @@ jobs:
           $keys = @('SunBrowser','sunbrowser','user-data-dir','remote-debugging','chrome_152','profile-directory','spawn','execFile','CreateProcess','remote_debugging_port','chromedriver','chrome_proxy','no-first-run','about:blank')
           $done = 0
           $failed = 0
-          $hits = @()
+          $totalHits = 0
+          # 无总数上限:每满10000行落盘一次,内存可控;单行截断2000字符(防minified单行几MB撑爆artifact)
+          $buf = New-Object System.Collections.ArrayList
           $sliceFiles = @()
+          $hitsPath = "analysis/reports/shard-$idx-hits.txt"
+          if (Test-Path $hitsPath) { Remove-Item $hitsPath -Force }
           for ($i = $start; $i -lt $end; $i++) {
             $f = $all[$i]
             $sliceFiles += $f.FullName
             try {
               if ($f.Extension.ToLower() -in @('.js','.mjs','.cjs','.ts','.json')) {
-                $m = Select-String -Path $f.FullName -Pattern $keys -SimpleMatch -CaseSensitive:$false -ErrorAction SilentlyContinue | Select-Object -First 5
-                foreach ($x in $m) { $hits += "$($f.FullName):$($x.LineNumber): $($x.Line.Trim())" }
+                # 注意:此处无 Select-Object -First 5,单文件命中全收,拼12片=真全量
+                $m = Select-String -Path $f.FullName -Pattern $keys -SimpleMatch -CaseSensitive:$false -ErrorAction SilentlyContinue
+                foreach ($x in $m) {
+                  $line = $x.Line.Trim()
+                  if ($line.Length -gt 2000) { $line = $line.Substring(0, 2000) + "...<line-truncated>" }
+                  [void]$buf.Add("$($f.FullName):$($x.LineNumber): $line")
+                  $totalHits++
+                }
               }
             } catch { $failed++ }
             $done++
-            if ($done % 500 -eq 0) { Write-Host "shard=$idx done=$done/$($end - $start)" }
+            if ($buf.Count -ge 10000) {
+              $buf | Out-File $hitsPath -Append -Encoding utf8
+              $buf.Clear()
+            }
+            if ($done % 500 -eq 0) { Write-Host "shard=$idx done=$done/$($end - $start) hits=$totalHits" }
+          }
+          if ($buf.Count -gt 0) {
+            $buf | Out-File $hitsPath -Append -Encoding utf8
+            $buf.Clear()
           }
           $sliceFiles | Out-File "analysis/reports/shard-$idx-files.txt" -Encoding utf8
-          if ($hits.Count -eq 0) { $hits = @("(shard $idx: no SunBrowser launch hits in slice)") }
-          $hits | Out-File "analysis/reports/shard-$idx-hits.txt" -Encoding utf8
-          "mode=full-shard`nshard=$idx/$total`ntotal=$n`nrange=[$start,$end)`nslice=$($end - $start)`ndone=$done`nfailed=$failed`nhits=$($hits.Count)" |
+          if ($totalHits -eq 0) { "(shard $idx: no SunBrowser launch hits in slice)" | Out-File $hitsPath -Encoding utf8 }
+          "mode=full-shard`nshard=$idx/$total`ntotal=$n`nrange=[$start,$end)`nslice=$($end - $start)`ndone=$done`nfailed=$failed`nhits=$totalHits" |
             Out-File "analysis/reports/shard-$idx.txt" -Encoding utf8
           Get-Content "analysis/reports/shard-$idx.txt"
-          Write-Host "Asar shard $idx done: done=$done failed=$failed hits=$($hits.Count)"
+          Write-Host "Asar shard $idx done: done=$done failed=$failed hits=$totalHits"
 
       # 本片上传:只传本片报告,不含原 asar,不含解包全量 JS
       - name: Upload shard artifact
@@ -338,9 +355,18 @@ jobs:
           $ErrorActionPreference = "Continue"
           New-Item -ItemType Directory -Force -Path "analysis/reports" | Out-Null
           $shards = @(Get-ChildItem "collected" -Filter "shard-*.txt" -ErrorAction SilentlyContinue | Where-Object { $_.Name -notmatch 'hits|files' })
-          $hits = @(Get-ChildItem "collected" -Filter "shard-*-hits.txt" -ErrorAction SilentlyContinue)
+          $hitFiles = @(Get-ChildItem "collected" -Filter "shard-*-hits.txt" -ErrorAction SilentlyContinue | Sort-Object Name)
           $total = "${{ inputs.shards }}"
           if ([string]::IsNullOrWhiteSpace($total)) { $total = "12" }
+          # 合并12片 hits 为单个 all-hits.txt:拼起来=真全量,一次下载即拿全部
+          $merged = "analysis/reports/all-hits.txt"
+          if (Test-Path $merged) { Remove-Item $merged -Force }
+          foreach ($hf in $hitFiles) {
+            "# ===== $($hf.Name) =====" | Out-File $merged -Append -Encoding utf8
+            Get-Content $hf.FullName -Encoding utf8 -ErrorAction SilentlyContinue | Out-File $merged -Append -Encoding utf8
+          }
+          $mergedLines = 0
+          if (Test-Path $merged) { $mergedLines = @(Get-Content $merged -Encoding utf8).Count }
           $lines = @()
           $lines += "========================================"
           $lines += "app.asar 12分片全量分析汇总"
@@ -372,6 +398,11 @@ jobs:
           $lines += "已处理文件合计(各片done之和): $sumDone"
           $lines += "命中行合计(各片hits之和): $sumHits"
           $lines += "对账文件数: $($shards.Count) / $total"
+          $lines += "合并全量 all-hits.txt: $mergedLines 行 (12片拼合, 一次下载即全部)"
+          $lines += ""
+          $lines += "拿全部命中(无截断)的方法:"
+          $lines += "A. 下载 AppAsar-full-index artifact, 直接看 all-hits.txt (推荐, 已合并好)"
+          $lines += "B. 下载 12 个 AppAsar-full-sN artifact, 拼 shard-*-hits.txt (与 A 内容相同)"
           $lines += ""
           $lines += "SunBrowser 启动方法看这几个文件(按顺序):"
           $lines += "1. string-hits-sunbrowser.txt : asar 原始字节里 SunBrowser/user-data-dir/remote-debugging 上下文"
@@ -394,6 +425,8 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: AppAsar-full-index
-          path: analysis/reports/FINAL-REPORT.txt
+          path: |
+            analysis/reports/FINAL-REPORT.txt
+            analysis/reports/all-hits.txt
           retention-days: 30
           if-no-files-found: warn
