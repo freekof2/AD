@@ -1,11 +1,11 @@
-name: App Asar 12分片全量分析
+name: App Asar 完整解包
 
 # app.asar 是 Electron ASAR 归档(JS 业务),不是 PE/Ghidra 对象。
-# 所以本工作流不对它跑 Ghidra,而是: 下载+校验 -> ASAR头解析 -> asar extract
-# -> JS文件清单 -> 12分片全量静态检索(SunBrowser启动链)。
-# 结构对齐 ghidra-adspower-global.yml: triage(1) + shards(matrix 12, 每片 timeout 360) + collect(1)
-# 一片超时不影响其他片 (fail-fast:false + continue-on-error + if:always()上传)
-# artifact 白名单,不含原 app.asar 本体。
+# 本工作流: 下载+校验(app.asar + app.asar.unpacked.zip) -> ASAR头解析
+# -> asar extract(完整解包,不切片) -> 打包 asar-full.zip(含全部解包文件) -> 上传。
+# artifact:
+#   AppAsar-full-files: asar-full.zip + package-info.txt + filelist + extstats(要的7375个文件全在这里)
+#   AppAsar-triage:    报告类文件(头/哈希/字符串命中),不含原 app.asar 本体。
 on:
   workflow_dispatch:
     inputs:
@@ -17,10 +17,6 @@ on:
         description: '样本SHA256(留空则只记录不校验,因release页未公布)'
         required: false
         default: ''
-      shards:
-        description: '分片数(默认12,需与matrix一致)'
-        required: false
-        default: '12'
       unpacked_url:
         description: 'unpacked包下载地址(留空用默认值)'
         required: false
@@ -43,16 +39,17 @@ env:
   TARGET_UNPACKED_NAME: "app.asar.unpacked.zip"
   # unpacked 包 SHA256 同样留空表示只记录不强制比对,可经 inputs.unpacked_sha256 传入。
   TARGET_UNPACKED_SHA256: ""
+  # 上次成功跑出的完整文件数,仅做对账提示(不一致只告警,不断言失败,防版本变更)。
+  EXPECTED_FILES: "7375"
 
 jobs:
   # ================================================================
-  # Job 1: triage(约20-40分钟,必跑):下载+哈希+ASAR头+解包+清单+字符串命中
-  # 不含 Ghidra,不含原 asar 上传
+  # 单 job:下载+解包+打包,不切片,一次拿全量文件
   # ================================================================
-  triage:
-    name: Triage Asar分层
+  extract:
+    name: 解包完整文件
     runs-on: windows-2022
-    timeout-minutes: 90
+    timeout-minutes: 120
 
     steps:
       - name: Checkout repository
@@ -133,12 +130,12 @@ jobs:
         with:
           node-version: 22
 
-      # ASAR 头解析 + 解包 + 文件清单,全静态,不执行任何 JS
-      - name: Asar header parse and extract
+      # ASAR 头解析 + 完整解包 + 文件清单,全静态,不执行任何 JS
+      # 严格模式:extract 失败直接抛错,不像以前 continue-on-error 蒙混过关
+      - name: Asar header parse and extract (full, no shards)
         shell: pwsh
-        continue-on-error: true
         run: |
-          $ErrorActionPreference = "Continue"
+          $ErrorActionPreference = "Stop"
           $asar = (Resolve-Path "analysis/downloads/${env:TARGET_NAME}").Path
           $bytes = [System.IO.File]::ReadAllBytes($asar)
           Write-Host "Asar bytes: $($bytes.Length)"
@@ -161,9 +158,16 @@ jobs:
           $dest = (Resolve-Path "analysis/asar-full").Path
           Write-Host "Extracting to: $dest"
           asar extract "$asar" "$dest"
+          if ($LASTEXITCODE -ne 0) { throw "asar extract 失败,exit=$LASTEXITCODE(检查 app.asar.unpacked 兄弟目录)" }
           Write-Host "asar extract exit: $LASTEXITCODE"
-          $all = Get-ChildItem $dest -Recurse -File -ErrorAction SilentlyContinue
+          $all = @(Get-ChildItem $dest -Recurse -File -ErrorAction SilentlyContinue | Sort-Object FullName)
           Write-Host "Extracted files: $($all.Count)"
+          $expFiles = "${env:EXPECTED_FILES}"
+          if ("$($all.Count)" -ne "$expFiles") {
+            Write-Warning "文件数 $($all.Count) 与预期 $expFiles 不一致(版本可能变更,以本次实际为准)"
+          } else {
+            Write-Host "文件数对账 OK: $($all.Count)"
+          }
           $all | Select-Object -ExpandProperty FullName |
             Out-File "analysis/reports/asar-filelist.txt" -Encoding utf8
           $exts = $all | Group-Object { $_.Extension.ToLower() } |
@@ -202,31 +206,36 @@ jobs:
           $hits | Out-File "analysis/reports/string-hits-sunbrowser.txt" -Encoding utf8
           Write-Host "SunBrowser string hits: $($hits.Count)"
 
-      # 解包后 JS 全量检索:只读 grep,不执行 JS
-      - name: Grep SunBrowser launch in extracted JS
+      # 打包全部解包文件为单个 zip,并校验 zip 内条目数 == 解包文件数
+      - name: Package full extracted files
         shell: pwsh
-        continue-on-error: true
         run: |
-          $ErrorActionPreference = "Continue"
-          $root = "analysis/asar-full"
-          $keys = @('SunBrowser','sunbrowser','user-data-dir','remote-debugging','chrome_152','profile-directory','spawn','execFile','CreateProcess','remote_debugging_port','chromedriver','chrome_proxy','no-first-run','about:blank')
-          $hits = @()
-          $files = Get-ChildItem $root -Recurse -File -Include *.js,*.mjs,*.cjs,*.ts,*.json -ErrorAction SilentlyContinue
-          Write-Host "JS/JSON files: $($files.Count)"
-          $files | Select-Object -First 10 | ForEach-Object { $_.FullName } |
-            Out-File "analysis/reports/asar-sample-files.txt" -Encoding utf8
-          foreach ($f in $files) {
-            try {
-              $m = Select-String -Path $f.FullName -Pattern $keys -SimpleMatch -CaseSensitive:$false -ErrorAction SilentlyContinue | Select-Object -First 5
-              foreach ($x in $m) { $hits += "$($f.FullName):$($x.LineNumber): $($x.Line.Trim())" }
-            } catch {}
-            if ($hits.Count -ge 2000) { break }
-          }
-          if ($hits.Count -eq 0) { $hits = @("(no SunBrowser launch hits in extracted asar JS; see string-hits + shards)") }
-          $hits | Out-File "analysis/reports/sunbrowser-hits.txt" -Encoding utf8
-          Write-Host "sunbrowser-hits: $($hits.Count)"
+          $ErrorActionPreference = "Stop"
+          $src = (Resolve-Path "analysis/asar-full").Path
+          $n = @(Get-ChildItem $src -Recurse -File -ErrorAction SilentlyContinue).Count
+          Write-Host "Files to pack: $n"
+          if ($n -eq 0) { throw "asar-full 为空,拒绝打包" }
+          $zip = "analysis/asar-full.zip"
+          if (Test-Path $zip) { Remove-Item $zip -Force }
+          Compress-Archive -Path "$src/*" -DestinationPath $zip -CompressionLevel Optimal
+          $zf = Get-Item $zip
+          $zh = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
+          Write-Host "Zip size: $($zf.Length) bytes"
+          Write-Host "Zip sha256: $zh"
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $zr = [System.IO.Compression.ZipFile]::OpenRead($zip)
+          try {
+            $entries = @($zr.Entries | Where-Object { $_.FullName -notmatch '/$' })
+            Write-Host "Zip entries: $($entries.Count)"
+            if ($entries.Count -ne $n) { throw "zip 条目 $($entries.Count) != 解包文件 $n,打包不完整" }
+            Write-Host "打包对账 OK: $($entries.Count)/$n"
+          } finally { $zr.Dispose() }
+          @("files=$n", "zip_bytes=$($zf.Length)", "zip_sha256=$zh") |
+            Out-File "analysis/reports/package-info.txt" -Encoding utf8
+          $zh | Out-File "analysis/reports/sha256-asar-full-zip.txt" -Encoding utf8
+          Get-Content "analysis/reports/package-info.txt"
 
-      # triage artifact 白名单:不含 downloads/app.asar 本体,不含解包全量 JS
+      # triage 报告 artifact:不含 downloads/app.asar 本体,不含解包全量
       - name: Upload triage artifact
         if: always()
         uses: actions/upload-artifact@v4
@@ -238,269 +247,16 @@ jobs:
           retention-days: 30
           if-no-files-found: warn
 
-  # ================================================================
-  # Job 2: shards(matrix 12,每片 timeout 360,fail-fast:false)
-  # 每片独立:下载样本 -> asar extract -> 只处理属于自己的文件切片
-  # 一片超时/失败不影响其他片;即使超时也上传已落盘部分
-  # ================================================================
-  shards:
-    name: Asar 分片全量 (shard ${{ matrix.shard }})
-    needs: triage
-    runs-on: windows-2022
-    timeout-minutes: 360
-    strategy:
-      fail-fast: false
-      matrix:
-        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v6
-        with:
-          node-version: 22
-
-      - name: Prepare dirs
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-          New-Item -ItemType Directory -Force -Path "analysis/downloads" | Out-Null
-          New-Item -ItemType Directory -Force -Path "analysis/reports" | Out-Null
-          New-Item -ItemType Directory -Force -Path "analysis/asar-full" | Out-Null
-
-      - name: Download and verify sample
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-          $url = "${{ inputs.sample_url }}"
-          if ([string]::IsNullOrWhiteSpace($url)) { $url = "${env:TARGET_URL}" }
-          $exp = "${{ inputs.sample_sha256 }}"
-          if ([string]::IsNullOrWhiteSpace($exp)) { $exp = "${env:TARGET_SHA256}" }
-          $exp = $exp.ToLower().Trim()
-          $out = "analysis/downloads/${env:TARGET_NAME}"
-          Write-Host "URL: $url"
-          Invoke-WebRequest -Uri $url -OutFile $out -UseBasicParsing
-          $h = (Get-FileHash $out -Algorithm SHA256).Hash.ToLower()
-          Write-Host "actual  : $h"
-          if ([string]::IsNullOrWhiteSpace($exp)) {
-            Write-Host "expected: (empty, record-only)"
-          } else {
-            Write-Host "expected: $exp"
-            if ($h -ne $exp) { throw "SHA256 mismatch,拒绝分析" }
-            Write-Host "SHA256 OK"
-          }
-          # 每片独立下载 unpacked 包,与 app.asar 做兄弟目录,否则 extract 报 ENOENT
-          $uurl = "${{ inputs.unpacked_url }}"
-          if ([string]::IsNullOrWhiteSpace($uurl)) { $uurl = "${env:TARGET_UNPACKED_URL}" }
-          $uexp = "${{ inputs.unpacked_sha256 }}"
-          if ([string]::IsNullOrWhiteSpace($uexp)) { $uexp = "${env:TARGET_UNPACKED_SHA256}" }
-          $uexp = $uexp.ToLower().Trim()
-          $uout = "analysis/downloads/${env:TARGET_UNPACKED_NAME}"
-          Write-Host "UNPACKED URL: $uurl"
-          Invoke-WebRequest -Uri $uurl -OutFile $uout -UseBasicParsing
-          $uh = (Get-FileHash $uout -Algorithm SHA256).Hash.ToLower()
-          Write-Host "unpacked actual  : $uh"
-          if (-not [string]::IsNullOrWhiteSpace($uexp)) {
-            Write-Host "unpacked expected: $uexp"
-            if ($uh -ne $uexp) { throw "Unpacked SHA256 mismatch,拒绝分析" }
-            Write-Host "Unpacked SHA256 OK"
-          }
-          Expand-Archive -Path $uout -DestinationPath "analysis/downloads/" -Force
-          if (-not (Test-Path "analysis/downloads/app.asar.unpacked")) {
-            if (Test-Path "analysis/downloads/node_modules") {
-              New-Item -ItemType Directory -Force -Path "analysis/downloads/app.asar.unpacked.tmp" | Out-Null
-              Get-ChildItem "analysis/downloads" -Exclude "app.asar","app.asar.unpacked.zip","app.asar.unpacked","app.asar.unpacked.tmp","*.txt" |
-                Move-Item -Destination "analysis/downloads/app.asar.unpacked.tmp" -Force -ErrorAction SilentlyContinue
-              if (Test-Path "analysis/downloads/app.asar.unpacked.tmp/node_modules") { Move-Item "analysis/downloads/app.asar.unpacked.tmp" "analysis/downloads/app.asar.unpacked" -Force }
-              else { throw "zip 根结构无法识别,既无 app.asar.unpacked/ 也无 node_modules/" }
-            } else { throw "解压后缺 app.asar.unpacked,请检查 zip 根结构" }
-          }
-          Write-Host "Unpacked ready"
-
-      # 本片全量切片分析:timeout 330(留30分钟给上传),失败不阻断其他片
-      - name: Asar headless shard analyze
-        shell: pwsh
-        continue-on-error: true
-        timeout-minutes: 330
-        run: |
-          $ErrorActionPreference = "Continue"
-          $idx = "${{ matrix.shard }}"
-          $total = "${{ inputs.shards }}"
-          if ([string]::IsNullOrWhiteSpace($total)) { $total = "12" }
-          "SHARD_INDEX=$idx" >> $env:GITHUB_ENV
-          Write-Host "shard: $idx / $total"
-          npm install --global @electron/asar
-          $asar = (Resolve-Path "analysis/downloads/${env:TARGET_NAME}").Path
-          $dest = (Resolve-Path "analysis/asar-full").Path
-          asar extract "$asar" "$dest"
-          Write-Host "extract exit: $LASTEXITCODE"
-          $all = @(Get-ChildItem $dest -Recurse -File -ErrorAction SilentlyContinue | Sort-Object FullName)
-          $n = $all.Count
-          $start = [int]([long]$n * [int]$idx / [int]$total)
-          $end = [int]([long]$n * ([int]$idx + 1) / [int]$total)
-          Write-Host "total=$n range=[$start,$end)"
-          $keys = @('SunBrowser','sunbrowser','user-data-dir','remote-debugging','chrome_152','profile-directory','spawn','execFile','CreateProcess','remote_debugging_port','chromedriver','chrome_proxy','no-first-run','about:blank')
-          $done = 0
-          $failed = 0
-          $totalHits = 0
-          # 无总数上限:每满10000行落盘一次,内存可控;单行截断2000字符(防minified单行几MB撑爆artifact)
-          $buf = New-Object System.Collections.ArrayList
-          $sliceFiles = @()
-          $hitsPath = "analysis/reports/shard-$idx-hits.txt"
-          if (Test-Path $hitsPath) { Remove-Item $hitsPath -Force }
-          for ($i = $start; $i -lt $end; $i++) {
-            $f = $all[$i]
-            $sliceFiles += $f.FullName
-            try {
-              if ($f.Extension.ToLower() -in @('.js','.mjs','.cjs','.ts','.json')) {
-                # 注意:此处无 Select-Object -First 5,单文件命中全收,拼12片=真全量
-                $m = Select-String -Path $f.FullName -Pattern $keys -SimpleMatch -CaseSensitive:$false -ErrorAction SilentlyContinue
-                foreach ($x in $m) {
-                  $line = $x.Line.Trim()
-                  if ($line.Length -gt 2000) { $line = $line.Substring(0, 2000) + "...<line-truncated>" }
-                  [void]$buf.Add("$($f.FullName):$($x.LineNumber): $line")
-                  $totalHits++
-                }
-              }
-            } catch { $failed++ }
-            $done++
-            if ($buf.Count -ge 10000) {
-              $buf | Out-File $hitsPath -Append -Encoding utf8
-              $buf.Clear()
-            }
-            if ($done % 500 -eq 0) { Write-Host "shard=$idx done=$done/$($end - $start) hits=$totalHits" }
-          }
-          if ($buf.Count -gt 0) {
-            $buf | Out-File $hitsPath -Append -Encoding utf8
-            $buf.Clear()
-          }
-          $sliceFiles | Out-File "analysis/reports/shard-$idx-files.txt" -Encoding utf8
-          if ($totalHits -eq 0) { "(shard ${idx}: no SunBrowser launch hits in slice)" | Out-File $hitsPath -Encoding utf8 }
-          "mode=full-shard`nshard=$idx/$total`ntotal=$n`nrange=[$start,$end)`nslice=$($end - $start)`ndone=$done`nfailed=$failed`nhits=$totalHits" |
-            Out-File "analysis/reports/shard-$idx.txt" -Encoding utf8
-          Get-Content "analysis/reports/shard-$idx.txt"
-          Write-Host "Asar shard $idx done: done=$done failed=$failed hits=$totalHits"
-
-      # 本片上传:只传本片报告,不含原 asar,不含解包全量 JS
-      - name: Upload shard artifact
-        if: always()
+      # 完整文件 artifact:要的全部解包文件都在 asar-full.zip 里
+      - name: Upload full files artifact
         uses: actions/upload-artifact@v4
         with:
-          name: AppAsar-full-s${{ matrix.shard }}
+          name: AppAsar-full-files
           path: |
-            analysis/reports/shard-*.txt
-            analysis/reports/shard-*-hits.txt
-            analysis/reports/shard-*-files.txt
+            analysis/asar-full.zip
+            analysis/reports/package-info.txt
+            analysis/reports/asar-filelist.txt
+            analysis/reports/asar-extstats.txt
           retention-days: 30
-          if-no-files-found: warn
-
-  # ================================================================
-  # Job 3: collect(汇总索引,只做对账不重算,失败片也照样汇总)
-  # ================================================================
-  collect:
-    name: 汇总分片索引
-    needs: [triage, shards]
-    if: always()
-    runs-on: windows-2022
-    timeout-minutes: 30
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Download all shard artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: collected/
-          pattern: AppAsar-full-s*
-          merge-multiple: true
-
-      - name: Download triage artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: AppAsar-triage
-          path: collected-triage/
-
-      - name: Generate FINAL-REPORT
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Continue"
-          New-Item -ItemType Directory -Force -Path "analysis/reports" | Out-Null
-          $shards = @(Get-ChildItem "collected" -Filter "shard-*.txt" -ErrorAction SilentlyContinue | Where-Object { $_.Name -notmatch 'hits|files' })
-          $hitFiles = @(Get-ChildItem "collected" -Filter "shard-*-hits.txt" -ErrorAction SilentlyContinue | Sort-Object Name)
-          $total = "${{ inputs.shards }}"
-          if ([string]::IsNullOrWhiteSpace($total)) { $total = "12" }
-          # 合并12片 hits 为单个 all-hits.txt:拼起来=真全量,一次下载即拿全部
-          $merged = "analysis/reports/all-hits.txt"
-          if (Test-Path $merged) { Remove-Item $merged -Force }
-          foreach ($hf in $hitFiles) {
-            "# ===== $($hf.Name) =====" | Out-File $merged -Append -Encoding utf8
-            Get-Content $hf.FullName -Encoding utf8 -ErrorAction SilentlyContinue | Out-File $merged -Append -Encoding utf8
-          }
-          $mergedLines = 0
-          if (Test-Path $merged) { $mergedLines = @(Get-Content $merged -Encoding utf8).Count }
-          $lines = @()
-          $lines += "========================================"
-          $lines += "app.asar 12分片全量分析汇总"
-          $lines += "========================================"
-          $lines += ""
-          $lines += "Target: ${env:TARGET_NAME}"
-          $lines += "URL: ${env:TARGET_URL}"
-          $lines += "Shards: $total (每片 timeout 360分钟, fail-fast=false)"
-          $lines += ""
-          $lines += "分片对账(缺口片可单独重跑对应 shard):"
-          $lines += ""
-          $sumDone = 0
-          $sumHits = 0
-          for ($i = 0; $i -lt [int]$total; $i++) {
-            $tag = "$i"
-            $sf = $shards | Where-Object { $_.BaseName -eq "shard-$tag" } | Select-Object -First 1
-            if ($sf) {
-              $t = Get-Content $sf.FullName -Raw
-              $lines += "shard s$tag : $t" -replace "`n", " | "
-              $m = [regex]::Match($t, 'done=(\d+)')
-              if ($m.Success) { $sumDone += [int]$m.Groups[1].Value }
-              $mh = [regex]::Match($t, 'hits=(\d+)')
-              if ($mh.Success) { $sumHits += [int]$mh.Groups[1].Value }
-            } else {
-              $lines += "shard s$tag : 缺失(超时/失败, 下次重跑该 shard 即可)"
-            }
-          }
-          $lines += ""
-          $lines += "已处理文件合计(各片done之和): $sumDone"
-          $lines += "命中行合计(各片hits之和): $sumHits"
-          $lines += "对账文件数: $($shards.Count) / $total"
-          $lines += "合并全量 all-hits.txt: $mergedLines 行 (12片拼合, 一次下载即全部)"
-          $lines += ""
-          $lines += "拿全部命中(无截断)的方法:"
-          $lines += "A. 下载 AppAsar-full-index artifact, 直接看 all-hits.txt (推荐, 已合并好)"
-          $lines += "B. 下载 12 个 AppAsar-full-sN artifact, 拼 shard-*-hits.txt (与 A 内容相同)"
-          $lines += ""
-          $lines += "SunBrowser 启动方法看这几个文件(按顺序):"
-          $lines += "1. string-hits-sunbrowser.txt : asar 原始字节里 SunBrowser/user-data-dir/remote-debugging 上下文"
-          $lines += "2. sunbrowser-hits.txt        : 解包后 JS 全量 grep( triage 一遍扫, 有截断只看方向 )"
-          $lines += "3. shard-*-hits.txt           : 12分片全量 JS 命中(无截断, 拼起来=全量)"
-          $lines += "4. shard-*-files.txt          : 每片文件清单(对账用)"
-          $lines += "5. asar-filelist.txt          : 解包全量文件清单"
-          $lines += "6. asar-extstats.txt          : 扩展名统计(.js 数量决定工作量)"
-          $lines += ""
-          $lines += "对照 launcher/cpp 的已知结论:"
-          $lines += "--user-data-dir=<数据目录>/<profile> --profile-directory=Default --remote-debugging-port=<自动分配> --no-first-run --no-default-browser-check about:blank"
-          $lines += "若 JS 命中与该模板一致则结论成立,不一致以本次 artifact 为准。"
-          $lines += ""
-          $lines += "注意: 纯静态解包+只读检索,不执行 JS,不能当运行时证据。"
-          [System.IO.File]::WriteAllText("analysis/reports/FINAL-REPORT.txt", ($lines -join "`n"), (New-Object System.Text.UTF8Encoding($false)))
-          Get-Content "analysis/reports/FINAL-REPORT.txt"
-
-      - name: Upload index artifact
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: AppAsar-full-index
-          path: |
-            analysis/reports/FINAL-REPORT.txt
-            analysis/reports/all-hits.txt
-          retention-days: 30
-          if-no-files-found: warn
+          if-no-files-found: error
+          compression-level: 0
