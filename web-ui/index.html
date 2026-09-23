@@ -3,180 +3,651 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>ADSPOWER · 指纹浏览器管理后台（功能原型 v0.1）</title>
+<title>AdsPower 指纹浏览器管理中枢</title>
 <link rel="stylesheet" href="css/app.css">
 </head>
 <body>
 <div class="app">
   <!-- ============ 侧边栏 ============ -->
   <aside class="sidebar">
-    <div class="logo">ADSPOWER<span class="logo-sub">管理后台 · 原型</span></div>
+    <div class="logo">
+      <span>AdsPower</span>
+      <span class="logo-badge">Global</span>
+    </div>
     <nav class="nav">
-      <button class="nav-item active" data-page="profiles">环境管理</button>
-      <button class="nav-item" data-page="groups">分组 / 标签</button>
-      <button class="nav-item" data-page="proxy">代理管理</button>
-      <button class="nav-item" data-page="fingerprint">指纹配置</button>
-      <button class="nav-item" data-page="cookie">Cookie / 养号</button>
-      <button class="nav-item" data-page="cache">缓存 / 备份</button>
-      <button class="nav-item" data-page="kernel">内核管理</button>
-      <button class="nav-item" data-page="imexport">导入 / 导出</button>
+      <button class="nav-item active" data-page="profiles">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18"/><path d="M14 9h5"/><path d="M14 15h5"/></svg>
+        环境管理
+      </button>
+      <button class="nav-item" data-page="groups">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+        分组 / 标签
+      </button>
+      <button class="nav-item" data-page="proxy">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M2 12h20"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+        代理管理
+      </button>
+      <button class="nav-item" data-page="fingerprint">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a10 10 0 0 0-6.88 17.24"/><path d="M12 6a6 6 0 0 0-4.13 10.34"/><path d="M12 10a2 2 0 0 0-1.38 3.45"/></svg>
+        指纹配置
+      </button>
+      <button class="nav-item" data-page="cookie">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a10 10 0 1 0 10 10 4 4 0 0 1-5-5 4 4 0 0 1-5-5"/><circle cx="8.5" cy="8.5" r="1.5"/><circle cx="15.5" cy="15.5" r="1.5"/><circle cx="8.5" cy="15.5" r="1.5"/></svg>
+        Cookie / 养号
+      </button>
+      <button class="nav-item" data-page="cache">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+        缓存 / 备份
+      </button>
+      <button class="nav-item" data-page="kernel">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="4"/><line x1="21.17" y1="8" x2="12" y2="8"/><line x1="3.95" y1="6.06" x2="8.54" y2="14"/><line x1="10.88" y1="21.94" x2="15.46" y2="14"/></svg>
+        内核管理
+      </button>
+      <button class="nav-item" data-page="imexport">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+        导入 / 导出
+      </button>
     </nav>
     <div class="side-foot">
       <div class="api-row">
-        <label>Local API</label>
+        <label>Local API 地址</label>
         <input id="apiBase" value="http://127.0.0.1:18900" spellcheck="false">
       </div>
       <div class="api-row">
-        <label>API Key</label>
-        <input id="apiKey" placeholder="可选" spellcheck="false">
+        <label>API Key / Token</label>
+        <input id="apiKey" placeholder="可选密钥" spellcheck="false">
       </div>
-      <div class="conn" id="connStatus">未连接</div>
+      <div class="conn" id="connStatus">演示模式（Mock 数据已启用）</div>
     </div>
   </aside>
 
-  <!-- ============ 主区 ============ -->
+  <!-- ============ 主工作区 ============ -->
   <main class="main">
     <header class="topbar">
       <h1 id="pageTitle">环境管理</h1>
       <div class="top-actions">
-        <input id="globalSearch" placeholder="搜索编号 / 名称 / 备注…">
+        <input class="search-input" id="globalSearch" placeholder="搜索编号 / 环境名称 / 备注...">
         <button class="btn primary" id="btnNewProfile">+ 新建环境</button>
       </div>
     </header>
 
-    <!-- 1. 环境/账号 -->
+    <!-- 1. 环境/账号管理 -->
     <section class="page active" id="page-profiles">
       <div class="toolbar">
-        <div class="queue-card">多开队列：等待 <b id="qWait">0</b> · 启动中 <b id="qRun">0</b> · 已开 <b id="qOpen">0</b></div>
+        <div class="queue-card">多开调度队列：等待中 <b id="qWait">0</b> · 启动中 <b id="qRun">0</b> · 运行中 <b id="qOpen">0</b></div>
         <div class="spacer"></div>
         <button class="btn" data-act="batch-start">批量启动</button>
-        <button class="btn" data-act="batch-stop">批量关闭</button>
+        <button class="btn" data-act="batch-stop">批量停止</button>
         <button class="btn danger" data-act="batch-del">批量删除</button>
       </div>
-      <table class="tbl">
-        <thead><tr>
-          <th><input type="checkbox" id="checkAll"></th><th>编号</th><th>名称</th><th>分组</th><th>标签</th>
-          <th>代理</th><th>内核</th><th>状态</th><th>备注</th><th>操作</th>
-        </tr></thead>
-        <tbody id="profileRows"></tbody>
-      </table>
+      <div class="tbl-container">
+        <table class="tbl">
+          <thead>
+            <tr>
+              <th width="40"><input type="checkbox" id="checkAll"></th>
+              <th>编号</th>
+              <th>名称</th>
+              <th>分组</th>
+              <th>标签</th>
+              <th>代理网络</th>
+              <th>内核版本</th>
+              <th>运行状态</th>
+              <th>备注</th>
+              <th width="190">操作</th>
+            </tr>
+          </thead>
+          <tbody id="profileRows"></tbody>
+        </table>
+      </div>
     </section>
 
-    <!-- 2. 分组/标签 -->
+    <!-- 2. 分组/标签/分类 -->
     <section class="page" id="page-groups">
       <div class="grid2">
         <div class="card">
-          <h3>分组 <button class="btn sm" id="btnAddGroup">+ 分组</button></h3>
+          <h3>环境分组 <button class="btn sm primary" id="btnAddGroup">+ 新建分组</button></h3>
           <ul class="list" id="groupList"></ul>
         </div>
         <div class="card">
-          <h3>标签 <button class="btn sm" id="btnAddTag">+ 标签</button></h3>
+          <h3>标签管理 <button class="btn sm primary" id="btnAddTag">+ 新建标签</button></h3>
           <ul class="list" id="tagList"></ul>
         </div>
       </div>
-      <div class="card"><h3>分类</h3><ul class="list" id="catList"></ul></div>
+      <div class="card">
+        <h3>分类列表</h3>
+        <ul class="list" id="catList"></ul>
+      </div>
     </section>
 
-    <!-- 3. 代理 -->
+    <!-- 3. 代理管理 -->
     <section class="page" id="page-proxy">
       <div class="toolbar">
         <button class="btn primary" id="btnAddProxy">+ 添加代理</button>
-        <button class="btn" id="btnCheckProxy">检测选中代理</button>
-        <span class="hint">支持 HTTP / SOCKS5，字段对齐后端 proxy_soft / host / port / user / password</span>
+        <button class="btn" id="btnCheckProxy">检测全部代理</button>
+        <span class="hint">支持 HTTP / HTTPS / SOCKS5，参数对齐 proxy_soft / host / port / user / password</span>
       </div>
-      <table class="tbl">
-        <thead><tr><th><input type="checkbox"></th><th>名称</th><th>类型</th><th>地址</th><th>账号</th><th>出口IP</th><th>延迟</th><th>状态</th><th>操作</th></tr></thead>
-        <tbody id="proxyRows"></tbody>
-      </table>
+      <div class="tbl-container">
+        <table class="tbl">
+          <thead>
+            <tr>
+              <th width="40"><input type="checkbox"></th>
+              <th>代理名称</th>
+              <th>协议类型</th>
+              <th>代理服务器</th>
+              <th>认证账号</th>
+              <th>出口 IP</th>
+              <th>延迟 (ms)</th>
+              <th>连通状态</th>
+              <th>操作</th>
+            </tr>
+          </thead>
+          <tbody id="proxyRows"></tbody>
+        </table>
+      </div>
     </section>
 
-    <!-- 4. 指纹 -->
+    <!-- 4. 指纹配置（重点：100% 对齐 ADSPower.png 截图布局与参数） -->
     <section class="page" id="page-fingerprint">
       <div class="toolbar">
-        <select id="fpProfile"></select>
-        <button class="btn" id="btnFpRandom">随机指纹</button>
-        <button class="btn primary" id="btnFpSave">保存指纹</button>
-        <span class="hint">共 <span id="fpCount"></span> 项参数（对齐 sunBrowserParams / staticConfig）</span>
+        <label style="font-weight:600;font-size:13px;">选择配置环境：</label>
+        <select class="fp-select" id="fpProfile" style="min-width: 220px;"></select>
+        <button class="btn" id="btnFpRandom">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/></svg>
+          一键随机所有指纹
+        </button>
+        <button class="btn primary" id="btnFpSave">保存当前指纹配置</button>
+        <span class="hint" style="margin-left: auto;">已对齐底层 <b>35+</b> 项指纹参数 (sunBrowserParams / staticConfig)</span>
       </div>
-      <div class="grid2">
-        <div class="card"><h3>基础</h3><div id="fpBase" class="form"></div></div>
-        <div class="card"><h3>Canvas / WebGL / Audio</h3><div id="fpMedia" class="form"></div></div>
-        <div class="card"><h3>WebRTC / 时区 / 地理</h3><div id="fpNet" class="form"></div></div>
-        <div class="card"><h3>硬件 / 字体 / 其他</h3><div id="fpHw" class="form"></div></div>
+
+      <!-- 对齐 ADSPower.png 样式的指纹配置表单面板 -->
+      <div class="fp-container">
+        <!-- 1. WebRTC -->
+        <div class="fp-row">
+          <div class="fp-label">WebRTC</div>
+          <div class="fp-content">
+            <div class="capsule-group" data-fp-group="webrtc">
+              <button class="capsule-btn" data-val="forward">转发</button>
+              <button class="capsule-btn active" data-val="replace">替换</button>
+              <button class="capsule-btn" data-val="real">真实</button>
+              <button class="capsule-btn" data-val="disabled">禁用</button>
+              <button class="capsule-btn" data-val="proxy_udp">代理UDP</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- 2. 时区 -->
+        <div class="fp-row">
+          <div class="fp-label">时区</div>
+          <div class="fp-content">
+            <div class="capsule-group" data-fp-group="timezoneMode">
+              <button class="capsule-btn" data-val="ip">基于 IP</button>
+              <button class="capsule-btn" data-val="real">真实</button>
+              <button class="capsule-btn active" data-val="custom">自定义</button>
+            </div>
+            <div>
+              <select class="fp-select" id="fpTimezone" style="min-width: 320px;">
+                <option value="GMT-12:00 Etc/GMT+12">GMT-12:00 Etc/GMT+12</option>
+                <option value="GMT-08:00 America/Los_Angeles">GMT-08:00 America/Los_Angeles</option>
+                <option value="GMT+00:00 UTC">GMT+00:00 UTC</option>
+                <option value="GMT+08:00 Asia/Shanghai" selected>GMT+08:00 Asia/Shanghai</option>
+                <option value="GMT+09:00 Asia/Tokyo">GMT+09:00 Asia/Tokyo</option>
+              </select>
+            </div>
+          </div>
+        </div>
+
+        <!-- 3. 地理位置 -->
+        <div class="fp-row">
+          <div class="fp-label">地理位置</div>
+          <div class="fp-content">
+            <div class="capsule-group" data-fp-group="geoMode">
+              <button class="capsule-btn" data-val="ip">基于 IP</button>
+              <button class="capsule-btn active" data-val="custom">自定义</button>
+              <button class="capsule-btn" data-val="block">禁止</button>
+            </div>
+            <div class="radio-group" style="margin-top: 2px;">
+              <label><input type="radio" name="geoAsk" value="prompt" checked> 每次询问</label>
+              <label><input type="radio" name="geoAsk" value="allow"> 始终允许</label>
+            </div>
+            <!-- 经纬度输入区块 -->
+            <div class="fp-sub-box">
+              <div class="fp-input-row">
+                <span class="fp-input-label"><span style="color:var(--danger)">*</span> 纬度 / 经度</span>
+                <input class="fp-input" id="fpLat" placeholder="纬度" value="31.2304" style="width: 140px;">
+                <input class="fp-input" id="fpLng" placeholder="经度" value="121.4737" style="width: 140px;">
+              </div>
+              <div class="fp-input-row">
+                <span class="fp-input-label">精度(米)</span>
+                <input class="fp-input" id="fpAccuracy" type="number" value="1000" style="width: 140px;">
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 4. 语言 -->
+        <div class="fp-row">
+          <div class="fp-label">语言</div>
+          <div class="fp-content">
+            <div class="capsule-group" data-fp-group="langMode">
+              <button class="capsule-btn" data-val="ip">基于 IP</button>
+              <button class="capsule-btn active" data-val="custom">自定义</button>
+            </div>
+            <div class="fp-sub-box" style="max-width:460px;">
+              <div style="background:#fff;border:1px solid var(--border);border-radius:var(--radius-sm);padding:8px 12px;font-size:12px;display:flex;justify-content:space-between;">
+                <span>英语（美国）</span>
+                <span style="color:var(--text-muted);cursor:pointer;">⋮</span>
+              </div>
+              <div style="background:#fff;border:1px solid var(--border);border-radius:var(--radius-sm);padding:8px 12px;font-size:12px;display:flex;justify-content:space-between;">
+                <span>英语</span>
+                <span style="color:var(--text-muted);cursor:pointer;">⋮</span>
+              </div>
+              <button class="shuffle-btn" style="width:fit-content;">+ 添加语言</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- 5. 界面语言 -->
+        <div class="fp-row">
+          <div class="fp-label">界面语言</div>
+          <div class="fp-content">
+            <div class="capsule-group" data-fp-group="uiLang">
+              <button class="capsule-btn active" data-val="follow_lang">基于语言</button>
+              <button class="capsule-btn" data-val="real">真实</button>
+              <button class="capsule-btn" data-val="custom">自定义</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- 6. 分辨率 -->
+        <div class="fp-row">
+          <div class="fp-label">分辨率</div>
+          <div class="fp-content">
+            <div class="capsule-group" data-fp-group="resMode">
+              <button class="capsule-btn active" data-val="preset">预定义</button>
+              <button class="capsule-btn" data-val="custom">自定义</button>
+            </div>
+            <div>
+              <select class="fp-select" id="fpResolution" style="min-width: 280px;">
+                <option value="ua" selected>基于 User-Agent</option>
+                <option value="1920x1080">1920 x 1080</option>
+                <option value="2560x1440">2560 x 1440</option>
+                <option value="1440x900">1440 x 900</option>
+                <option value="1366x768">1366 x 768</option>
+              </select>
+            </div>
+          </div>
+        </div>
+
+        <!-- 7. 字体 -->
+        <div class="fp-row">
+          <div class="fp-label">字体</div>
+          <div class="fp-content">
+            <div class="capsule-group" data-fp-group="fontMode">
+              <button class="capsule-btn" data-val="default">默认</button>
+              <button class="capsule-btn active" data-val="custom">自定义</button>
+            </div>
+            <button class="shuffle-btn" id="btnShuffleFonts">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 3h5v5M4 20L21 3M21 16v5h-5M15 15l6 6M4 4l5 5"/></svg>
+              换一换
+            </button>
+            <div class="fonts-desc" id="fpFontsList">
+              Arial, Calibri, Cambria Math, Candara, Comic Sans MS, Consolas, Constantia, Corbel, Courier New, Ebrima, Franklin Gothic Medium, Gabriola, Gadugi, Georgia, Impact, Ink Free, Javanese Text... (206)
+            </div>
+          </div>
+        </div>
+
+        <!-- 8. 硬件噪音开关组 -->
+        <div class="fp-row">
+          <div class="fp-label">硬件噪音</div>
+          <div class="fp-content">
+            <div class="switch-group">
+              <label class="switch-item">
+                <span class="switch"><input type="checkbox" id="swCanvas"><span class="slider"></span></span>
+                Canvas
+              </label>
+              <label class="switch-item">
+                <span class="switch"><input type="checkbox" id="swWebglImg"><span class="slider"></span></span>
+                WebGL图像
+              </label>
+              <label class="switch-item">
+                <span class="switch"><input type="checkbox" id="swAudio" checked><span class="slider"></span></span>
+                AudioContext
+              </label>
+              <label class="switch-item">
+                <span class="switch"><input type="checkbox" id="swMedia" checked><span class="slider"></span></span>
+                媒体设备 [Auto] <a href="javascript:void(0)" style="color:var(--primary);margin-left:2px;">编辑</a>
+              </label>
+              <label class="switch-item">
+                <span class="switch"><input type="checkbox" id="swClientRects" checked><span class="slider"></span></span>
+                ClientRects
+              </label>
+              <label class="switch-item">
+                <span class="switch"><input type="checkbox" id="swSpeech" checked><span class="slider"></span></span>
+                SpeechVoices
+              </label>
+            </div>
+          </div>
+        </div>
+
+        <!-- 9. WebGL元数据 -->
+        <div class="fp-row">
+          <div class="fp-label">WebGL元数据</div>
+          <div class="fp-content">
+            <div class="capsule-group" data-fp-group="webglMeta">
+              <button class="capsule-btn" data-val="real">真实</button>
+              <button class="capsule-btn active" data-val="custom">自定义</button>
+            </div>
+            <div class="fp-sub-box" style="max-width:540px;">
+              <div class="fp-input-row">
+                <span class="fp-input-label">厂商</span>
+                <select class="fp-select flex-1" id="fpVendor">
+                  <option value="Google Inc. (Intel)">⊞ Google Inc. (Intel)</option>
+                  <option value="Google Inc. (NVIDIA)">⊞ Google Inc. (NVIDIA)</option>
+                  <option value="Google Inc. (AMD)">⊞ Google Inc. (AMD)</option>
+                  <option value="Apple Inc."> Apple Inc.</option>
+                </select>
+              </div>
+              <div class="fp-input-row">
+                <span class="fp-input-label">渲染器</span>
+                <input class="fp-input flex-1" id="fpRenderer" value="ANGLE (Intel, Intel(R) HD Graphics (0x00002..." spellcheck="false">
+                <button class="shuffle-btn" id="btnShuffleRenderer" title="随机渲染器">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 3h5v5M4 20L21 3M21 16v5h-5M15 15l6 6M4 4l5 5"/></svg>
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 10. WebGPU -->
+        <div class="fp-row">
+          <div class="fp-label">WebGPU</div>
+          <div class="fp-content">
+            <div class="capsule-group" data-fp-group="webgpu">
+              <button class="capsule-btn active" data-val="follow_webgl">基于 WebGL</button>
+              <button class="capsule-btn" data-val="real">真实</button>
+              <button class="capsule-btn" data-val="disabled">禁用</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- 11. CPU -->
+        <div class="fp-row">
+          <div class="fp-label">CPU</div>
+          <div class="fp-content">
+            <div class="capsule-group" data-fp-group="cpuMode">
+              <button class="capsule-btn" data-val="real">真实</button>
+              <button class="capsule-btn active" data-val="custom">自定义</button>
+            </div>
+            <div>
+              <select class="fp-select" id="fpCpu" style="min-width: 280px;">
+                <option value="2">2 核</option>
+                <option value="4">4 核</option>
+                <option value="8">8 核</option>
+                <option value="16">16 核</option>
+                <option value="20" selected>20 核</option>
+                <option value="24">24 核</option>
+              </select>
+            </div>
+          </div>
+        </div>
+
+        <!-- 12. RAM -->
+        <div class="fp-row">
+          <div class="fp-label">RAM</div>
+          <div class="fp-content">
+            <div class="capsule-group" data-fp-group="ramMode">
+              <button class="capsule-btn" data-val="real">真实</button>
+              <button class="capsule-btn active" data-val="custom">自定义</button>
+            </div>
+            <div>
+              <select class="fp-select" id="fpRam" style="min-width: 280px;">
+                <option value="2">2 GB</option>
+                <option value="4">4 GB</option>
+                <option value="8" selected>8 GB</option>
+                <option value="16">16 GB</option>
+                <option value="32">32 GB</option>
+              </select>
+            </div>
+          </div>
+        </div>
+
+        <!-- 13. 设备名称 -->
+        <div class="fp-row">
+          <div class="fp-label">设备名称</div>
+          <div class="fp-content">
+            <div class="capsule-group" data-fp-group="devNameMode">
+              <button class="capsule-btn" data-val="real">真实</button>
+              <button class="capsule-btn active" data-val="custom">自定义</button>
+            </div>
+            <div class="fp-input-row" style="max-width: 360px;">
+              <input class="fp-input flex-1" id="fpDevName" value="LAPTOP31PX2UO">
+              <button class="shuffle-btn" id="btnShuffleDevName">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 3h5v5M4 20L21 3M21 16v5h-5M15 15l6 6M4 4l5 5"/></svg>
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- 14. MAC地址 -->
+        <div class="fp-row">
+          <div class="fp-label">MAC地址</div>
+          <div class="fp-content">
+            <div class="capsule-group" data-fp-group="macMode">
+              <button class="capsule-btn" data-val="real">真实</button>
+              <button class="capsule-btn active" data-val="custom">自定义</button>
+            </div>
+            <div class="fp-input-row" style="max-width: 360px;">
+              <input class="fp-input flex-1" id="fpMac" value="00-50-43-3C-49-4B">
+              <button class="shuffle-btn" id="btnShuffleMac">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 3h5v5M4 20L21 3M21 16v5h-5M15 15l6 6M4 4l5 5"/></svg>
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- 15. Do Not Track -->
+        <div class="fp-row">
+          <div class="fp-label">Do Not Track</div>
+          <div class="fp-content">
+            <div class="capsule-group" data-fp-group="doNotTrack">
+              <button class="capsule-btn active" data-val="default">默认</button>
+              <button class="capsule-btn" data-val="open">开启</button>
+              <button class="capsule-btn" data-val="close">关闭</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- 16. 端口扫描保护 -->
+        <div class="fp-row">
+          <div class="fp-label">端口扫描保护</div>
+          <div class="fp-content">
+            <div class="capsule-group" data-fp-group="portScan">
+              <button class="capsule-btn active" data-val="open">启用</button>
+              <button class="capsule-btn" data-val="close">关闭</button>
+            </div>
+            <input class="fp-input" id="fpWhitePorts" placeholder="选填，允许被扫描的端口" style="max-width: 360px;">
+          </div>
+        </div>
+
+        <!-- 17. 硬件加速 -->
+        <div class="fp-row">
+          <div class="fp-label">硬件加速</div>
+          <div class="fp-content">
+            <div class="capsule-group" data-fp-group="hardwareAccel">
+              <button class="capsule-btn active" data-val="default">默认</button>
+              <button class="capsule-btn" data-val="open">开启</button>
+              <button class="capsule-btn" data-val="close">关闭</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- 18. 禁用TLS特性 -->
+        <div class="fp-row">
+          <div class="fp-label">禁用TLS特性</div>
+          <div class="fp-content">
+            <div class="capsule-group" data-fp-group="disableTls">
+              <button class="capsule-btn" data-val="open">开启</button>
+              <button class="capsule-btn active" data-val="close">关闭</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- 19. 启动参数 -->
+        <div class="fp-row">
+          <div class="fp-label">启动参数</div>
+          <div class="fp-content">
+            <textarea class="code-textarea" id="fpLaunchArgs" rows="4" placeholder="example:
+--disable-notifications
+--blink-settings=imagesEnabled=false"></textarea>
+            <div style="font-size:12px;color:var(--text-muted);cursor:pointer;display:inline-flex;align-items:center;gap:4px;">
+              收起 ⌃
+            </div>
+          </div>
+        </div>
       </div>
     </section>
 
-    <!-- 5. Cookie -->
+    <!-- 5. Cookie / 养号 -->
     <section class="page" id="page-cookie">
       <div class="grid2">
         <div class="card">
           <h3>Cookie 管理</h3>
-          <select id="ckProfile"></select>
-          <textarea id="ckText" rows="8" placeholder='[{"name":"BROWSER_ID","value":"..."}]'></textarea>
-          <div class="row"><button class="btn" id="btnCkGet">读取</button><button class="btn primary" id="btnCkSet">写入</button></div>
+          <div class="toolbar" style="margin-bottom: 10px;">
+            <select class="fp-select" id="ckProfile"></select>
+            <button class="btn" id="btnCkGet">读取环境 Cookie</button>
+            <button class="btn primary" id="btnCkSet">写入更新</button>
+          </div>
+          <textarea class="code-textarea" id="ckText" rows="12" placeholder='[{"name":"BROWSER_ID","value":"..."},{"name":"CLIENT_HOST","value":"..."}]' style="max-width:100%;"></textarea>
         </div>
         <div class="card">
-          <h3>Cookie 机器人（养号任务）</h3>
-          <div class="row"><input id="robotName" placeholder="任务名称"><button class="btn primary" id="btnRobotAdd">+ 新建任务</button></div>
-          <table class="tbl"><thead><tr><th>任务</th><th>环境数</th><th>状态</th><th>操作</th></tr></thead>
-          <tbody id="robotRows"></tbody></table>
+          <h3>Cookie 机器人（自动化养号）</h3>
+          <div class="toolbar">
+            <input class="fp-input flex-1" id="robotName" placeholder="新建养号任务名称 (如: 每日自动浏览)">
+            <button class="btn primary" id="btnRobotAdd">+ 创建任务</button>
+          </div>
+          <div class="tbl-container">
+            <table class="tbl">
+              <thead>
+                <tr><th>任务名称</th><th>分配环境</th><th>状态</th><th>操作</th></tr>
+              </thead>
+              <tbody id="robotRows"></tbody>
+            </table>
+          </div>
         </div>
       </div>
     </section>
 
-    <!-- 6. 缓存 -->
+    <!-- 6. 缓存 / 备份 -->
     <section class="page" id="page-cache">
       <div class="grid2">
-        <div class="card"><h3>缓存清理</h3>
-          <div class="row"><button class="btn" data-cache="one">按环境清理</button><button class="btn danger" data-cache="all">清理全部缓存</button></div>
-          <p class="hint">对齐 delete-cache / deleteCacheById / deleteAllCache / clearLocalCache</p>
+        <div class="card">
+          <h3>缓存清理控制</h3>
+          <p class="hint" style="margin-bottom:14px;">清理环境的用户数据目录、IndexedDB、LocalStorage 及扩展缓存。</p>
+          <div class="toolbar">
+            <button class="btn" data-cache="one">清理当前选中环境</button>
+            <button class="btn danger" data-cache="all">清理全部环境缓存</button>
+          </div>
+          <div style="font-size:12px;color:var(--text-muted);margin-top:10px;">
+            调用接口：<code>/api/clearCache</code> / <code>/api/deleteAllCache</code>
+          </div>
         </div>
-        <div class="card"><h3>备份 / 恢复</h3>
-          <div class="row"><button class="btn" id="btnBackup">备份</button><button class="btn" id="btnRestore">恢复</button></div>
-          <ul class="list" id="backupList"></ul>
+        <div class="card">
+          <h3>数据备份与快照恢复</h3>
+          <div class="toolbar">
+            <button class="btn primary" id="btnBackup">+ 立即备份全部配置</button>
+            <button class="btn" id="btnRestore">从云端/本地恢复</button>
+          </div>
+          <ul class="list" id="backupList" style="margin-top: 10px;"></ul>
         </div>
       </div>
     </section>
 
-    <!-- 7. 内核 -->
+    <!-- 7. 内核管理 -->
     <section class="page" id="page-kernel">
-      <div class="toolbar"><button class="btn" id="btnKernelCheck">检查内核更新</button><span class="hint" id="kernelInfo"></span></div>
-      <table class="tbl"><thead><tr><th>版本</th><th>类型</th><th>大小</th><th>状态</th><th>操作</th></tr></thead>
-      <tbody id="kernelRows"></tbody></table>
+      <div class="card">
+        <h3>
+          <span>浏览器内核 (SunBrowser / FlowerBrowser)</span>
+          <button class="btn sm primary" id="btnKernelCheck">检查最新内核</button>
+        </h3>
+        <p class="hint" id="kernelInfo" style="margin-bottom: 14px;">加载中...</p>
+        <div class="tbl-container">
+          <table class="tbl">
+            <thead>
+              <tr><th>内核版本</th><th>适配引擎</th><th>文件大小</th><th>安装状态</th><th>操作</th></tr>
+            </thead>
+            <tbody id="kernelRows"></tbody>
+          </table>
+        </div>
+      </div>
     </section>
 
-    <!-- 8. 导入导出 -->
+    <!-- 8. 导入 / 导出 -->
     <section class="page" id="page-imexport">
       <div class="grid2">
-        <div class="card"><h3>导入</h3>
-          <div class="row"><input type="file" id="importFile" accept=".xlsx,.txt,.csv"><button class="btn primary" id="btnImport">开始导入</button></div>
-          <p class="hint">对齐 import/start · getExcelContent · getTxtContent</p>
-          <div class="progress"><div id="impBar"></div></div><div id="impStatus" class="hint"></div>
+        <div class="card">
+          <h3>批量导入环境</h3>
+          <p class="hint" style="margin-bottom: 12px;">支持 Excel (.xlsx)、文本 (.txt)、CSV 格式。对齐后端 <code>import/start</code>。</p>
+          <div class="toolbar">
+            <input type="file" id="importFile" accept=".xlsx,.txt,.csv" style="font-size:12px;">
+            <button class="btn primary" id="btnImport">开始解析并导入</button>
+          </div>
+          <div class="progress-bar"><div class="progress-inner" id="impBar"></div></div>
+          <div id="impStatus" class="hint" style="margin-top: 6px;">等待选择文件</div>
         </div>
-        <div class="card"><h3>导出</h3>
-          <div class="row"><button class="btn" id="btnExport">导出账号</button><button class="btn danger" id="btnExportStop">停止导出</button></div>
-          <div class="progress"><div id="expBar"></div></div><div id="expStatus" class="hint"></div>
+        <div class="card">
+          <h3>批量导出环境</h3>
+          <p class="hint" style="margin-bottom: 12px;">导出当前账号与环境指纹清单。对齐后端 <code>/api/export/accounts</code>。</p>
+          <div class="toolbar">
+            <button class="btn primary" id="btnExport">开始批量导出</button>
+            <button class="btn danger" id="btnExportStop">停止导出</button>
+          </div>
+          <div class="progress-bar"><div class="progress-inner" id="expBar"></div></div>
+          <div id="expStatus" class="hint" style="margin-top: 6px;">空闲中</div>
         </div>
       </div>
     </section>
   </main>
 </div>
 
-<!-- 环境抽屉 -->
+<!-- 新建环境抽屉 -->
 <div class="drawer-mask" id="drawerMask"></div>
 <aside class="drawer" id="drawer">
-  <h2 id="drawerTitle">新建环境</h2>
-  <div class="form">
-    <label>名称<input id="fName"></label>
-    <label>分组<select id="fGroup"></select></label>
-    <label>代理<select id="fProxy"></select></label>
-    <label>内核<select id="fKernel"><option>Chrome 143</option><option>Chrome 121</option><option>Firefox</option></select></label>
-    <label>备注<input id="fRemark"></label>
+  <h2 id="drawerTitle" style="font-size:18px;">新建环境</h2>
+  <div class="drawer-body">
+    <label class="fp-input-row" style="flex-direction:column;align-items:flex-start;">
+      <span class="fp-input-label">环境名称 *</span>
+      <input class="fp-input" id="fName" placeholder="例如：Amazon-01" style="width:100%;">
+    </label>
+    <label class="fp-input-row" style="flex-direction:column;align-items:flex-start;">
+      <span class="fp-input-label">所属分组</span>
+      <select class="fp-select" id="fGroup" style="width:100%;"></select>
+    </label>
+    <label class="fp-input-row" style="flex-direction:column;align-items:flex-start;">
+      <span class="fp-input-label">配置代理</span>
+      <select class="fp-select" id="fProxy" style="width:100%;"></select>
+    </label>
+    <label class="fp-input-row" style="flex-direction:column;align-items:flex-start;">
+      <span class="fp-input-label">浏览器内核</span>
+      <select class="fp-select" id="fKernel" style="width:100%;">
+        <option>Chrome 143 (SunBrowser 150)</option>
+        <option>Chrome 121 (SunBrowser 121)</option>
+        <option>Firefox 128 (FlowerBrowser)</option>
+      </select>
+    </label>
+    <label class="fp-input-row" style="flex-direction:column;align-items:flex-start;">
+      <span class="fp-input-label">备注信息</span>
+      <input class="fp-input" id="fRemark" placeholder="选填" style="width:100%;">
+    </label>
   </div>
-  <div class="row end"><button class="btn" id="btnDrawerClose">取消</button><button class="btn primary" id="btnDrawerSave">保存</button></div>
+  <div class="drawer-foot">
+    <button class="btn" id="btnDrawerClose">取消</button>
+    <button class="btn primary" id="btnDrawerSave">保存环境</button>
+  </div>
 </aside>
 
 <div class="toast" id="toast"></div>
+
+<!-- 依赖脚本 -->
 <script src="js/api.js"></script>
 <script src="js/mock.js"></script>
 <script src="js/app.js"></script>
