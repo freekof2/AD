@@ -121,6 +121,29 @@
 
     <!-- 3. 代理管理 -->
     <section class="page" id="page-proxy">
+      <div class="card">
+        <h3>新建 SOCKS5 / HTTP 代理</h3>
+        <div class="fp-input-row" style="flex-wrap:wrap;">
+          <select class="fp-select" id="pxType" style="width:110px;">
+            <option value="socks5">SOCKS5</option>
+            <option value="http">HTTP</option>
+            <option value="https">HTTPS</option>
+          </select>
+          <input class="fp-input" id="pxHost" placeholder="请输入主机地址" style="flex:2;min-width:160px;">
+          <span>:</span>
+          <input class="fp-input" id="pxPort" placeholder="端口" style="width:90px;">
+        </div>
+        <div class="fp-input-row" style="flex-wrap:wrap;margin-top:8px;">
+          <input class="fp-input" id="pxUser" placeholder="请输入代理账号(选填)" style="flex:1;min-width:140px;">
+          <input class="fp-input" id="pxPass" placeholder="请输入代理密码(选填)" type="password" style="flex:1;min-width:140px;">
+          <input class="fp-input" id="pxName" placeholder="代理名称(选填)" style="flex:1;min-width:140px;">
+        </div>
+        <div class="toolbar" style="margin-top:10px;margin-bottom:0;">
+          <button class="btn primary" id="btnPxSave">保存代理</button>
+          <button class="btn" id="btnPxTest">测速 / 检测出口IP</button>
+          <span class="hint" id="pxStatus">未检测</span>
+        </div>
+      </div>
       <div class="toolbar">
         <button class="btn primary" id="btnAddProxy">+ 添加代理</button>
         <button class="btn" id="btnCheckProxy">检测全部代理</button>
@@ -151,6 +174,11 @@
       <div class="toolbar">
         <label style="font-weight:600;font-size:13px;">选择配置环境：</label>
         <select class="fp-select" id="fpProfile" style="min-width: 220px;"></select>
+        <button class="btn" id="btnFpImport">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+          从目录导入指纹
+        </button>
+        <input type="file" id="fpDirPicker" webkitdirectory style="display:none">
         <button class="btn" id="btnFpRandom">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/></svg>
           一键随机所有指纹
@@ -158,6 +186,7 @@
         <button class="btn primary" id="btnFpSave">保存当前指纹配置</button>
         <span class="hint" style="margin-left: auto;">已对齐底层 <b>35+</b> 项指纹参数 (sunBrowserParams / staticConfig)</span>
       </div>
+      <div class="hint" id="fpImportStatus" style="margin-bottom:10px;">可选择本地环境目录（如 F:\.ADSPOWER_GLOBAL\cache\k1h60tsv_hyg6dd），自动读取其中 Preferences / Cookies / 指纹文件并回填下方表单。</div>
 
       <!-- 对齐 ADSPower.png 样式的指纹配置表单面板 -->
       <div class="fp-container">
@@ -629,14 +658,71 @@
     <label class="fp-input-row" style="flex-direction:column;align-items:flex-start;">
       <span class="fp-input-label">浏览器内核</span>
       <select class="fp-select" id="fKernel" style="width:100%;">
-        <option>Chrome 143 (SunBrowser 150)</option>
-        <option>Chrome 121 (SunBrowser 121)</option>
-        <option>Firefox 128 (FlowerBrowser)</option>
+        <option value="sun">SunBrowser (Chrome 143 / 121)</option>
+        <option value="flower">FlowerBrowser (Firefox 128)</option>
       </select>
     </label>
     <label class="fp-input-row" style="flex-direction:column;align-items:flex-start;">
+      <span class="fp-input-label">浏览器目录（user-data-dir）</span>
+      <div style="display:flex;gap:8px;width:100%;">
+        <input class="fp-input flex-1" id="fBrowserDir" placeholder="如 F:\.ADSPOWER_GLOBAL\cache\k1h60tsv_hyg6dd" style="width:100%;">
+        <input type="file" id="fBrowserDirPicker" webkitdirectory style="display:none">
+        <button class="btn sm" id="btnPickBrowserDir" type="button">选择目录</button>
+      </div>
+    </label>
+    <label class="fp-input-row" style="flex-direction:column;align-items:flex-start;">
+      <span class="fp-input-label">操作系统（联动切换 User-Agent）</span>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;" id="fOsGroup">
+        <button class="capsule-btn active" data-os="win" type="button">⊞ Windows</button>
+        <button class="capsule-btn" data-os="mac" type="button">🍎 macOS</button>
+        <button class="capsule-btn" data-os="linux" type="button">🐧 Linux</button>
+        <button class="capsule-btn" data-os="android" type="button">🤖 Android</button>
+        <button class="capsule-btn" data-os="ios" type="button">📱 iOS</button>
+      </div>
+    </label>
+    <label class="fp-input-row" style="flex-direction:column;align-items:flex-start;">
+      <span class="fp-input-label">User-Agent</span>
+      <div style="display:flex;gap:8px;width:100%;">
+        <select class="fp-select" id="fUaPreset" style="width:120px;flex-shrink:0;">
+          <option value="153">153</option>
+          <option value="144">144</option>
+          <option value="128">128</option>
+          <option value="121">121</option>
+        </select>
+        <input class="fp-input flex-1" id="fUA" spellcheck="false" style="width:100%;">
+        <button class="btn sm" id="btnShuffleUA" type="button" title="随机切换">换</button>
+      </div>
+    </label>
+    <label class="fp-input-row" style="flex-direction:column;align-items:flex-start;">
+      <span class="fp-input-label">Cookie（支持 JSON / Netscape / Name=Value）</span>
+      <textarea class="code-textarea" id="fCookie" rows="4" placeholder="支持格式：JSON、Netscape、Name=Value" style="width:100%;max-width:100%;"></textarea>
+      <div style="display:flex;justify-content:flex-end;width:100%;">
+        <button class="shuffle-btn" id="btnMergeCookie" type="button">＋ 合并Cookie</button>
+      </div>
+    </label>
+    <label class="fp-input-row" style="flex-direction:column;align-items:flex-start;">
       <span class="fp-input-label">备注信息</span>
-      <input class="fp-input" id="fRemark" placeholder="选填" style="width:100%;">
+      <input class="fp-input" id="fRemark" placeholder="请输入备注" maxlength="2000" style="width:100%;">
+      <div class="hint" style="align-self:flex-end;"><span id="fRemarkCount">0</span> / 2000</div>
+    </label>
+    <label class="fp-input-row" style="flex-direction:column;align-items:flex-start;border:1px dashed var(--border);border-radius:6px;padding:10px 12px;">
+      <span class="fp-input-label">SOCKS5 代理（主机:端口 + 账号密码）</span>
+      <div style="display:flex;gap:8px;width:100%;align-items:center;">
+        <select class="fp-select" id="fProxyType" style="width:110px;flex-shrink:0;">
+          <option value="socks5">SOCKS5</option>
+          <option value="http">HTTP</option>
+          <option value="https">HTTPS</option>
+        </select>
+        <input class="fp-input flex-1" id="fProxyHost" placeholder="请输入主机地址" style="flex:2;">
+        <span>:</span>
+        <input class="fp-input" id="fProxyPort" placeholder="端口" style="width:80px;">
+      </div>
+      <input class="fp-input" id="fProxyUser" placeholder="请输入代理账号(选填)" style="width:100%;">
+      <input class="fp-input" id="fProxyPass" placeholder="请输入代理密码(选填)" type="password" style="width:100%;">
+      <div style="display:flex;gap:8px;">
+        <button class="btn sm primary" id="btnDrawerProxyTest" type="button">测速 / 检测</button>
+        <span class="hint" id="drawerProxyStatus">未检测</span>
+      </div>
     </label>
   </div>
   <div class="drawer-foot">

@@ -143,6 +143,7 @@
     $("fProxy").innerHTML =
       db().proxies.map((p) => `<option value="${p.id}">${p.name} (${p.addr})</option>`).join("") +
       "<option value='direct'>直连网络</option>";
+    if (!$("fUA").value) setUA();
     drawer.classList.add("show");
     mask.classList.add("show");
   };
@@ -159,15 +160,21 @@
     const name = $("fName").value.trim();
     if (!name) return toast("请填写环境名称");
     const newSn = "ENV-" + String(db().profiles.length + 1).padStart(3, "0");
+    const osLabel = ({ win: "Windows", mac: "macOS", linux: "Linux", android: "Android", ios: "iOS" })[curOS];
+    const kernelLabel = $("fKernel").value === "flower" ? "Firefox 128 (FlowerBrowser)" : "Chrome 143 (SunBrowser)";
+    let cookieCount = 0;
+    try { const c = JSON.parse($("fCookie").value || "[]"); if (Array.isArray(c)) cookieCount = c.length; } catch (e) {}
     db().profiles.push({
       sn: newSn,
       name,
       group: $("fGroup").value,
       tags: ["新建"],
-      proxy: $("fProxy").value,
-      kernel: $("fKernel").value,
+      proxy: $("fProxyHost").value.trim() ? `${$("fProxyType").value}://${$("fProxyHost").value.trim()}:${$("fProxyPort").value.trim()}` : $("fProxy").value,
+      kernel: kernelLabel,
       status: "closed",
       remark: $("fRemark").value.trim(),
+      browser: $("fKernel").value, browserDir: $("fBrowserDir").value.trim(),
+      os: osLabel, ua: $("fUA").value.trim(), cookie: $("fCookie").value.trim(), cookieCount,
     });
     closeDrawer();
     renderProfiles();
@@ -359,6 +366,155 @@
 
   $("btnFpSave").addEventListener("click", () => {
     toast("指纹配置保存成功！已更新至 sunBrowserParams 启动模板。");
+  });
+
+  /* ---- 从环境目录导入指纹（Preferences / Cookies / Local State） ---- */
+  const fpPicker = $("fpDirPicker");
+  $("btnFpImport").addEventListener("click", () => fpPicker && fpPicker.click());
+  if (fpPicker) {
+    fpPicker.addEventListener("change", async () => {
+      const files = [...fpPicker.files];
+      if (!files.length) return;
+      const dirName = (files[0].webkitRelativePath || "").split("/")[0] || "所选目录";
+      $("fpImportStatus").textContent = `正在读取目录 ${dirName}（${files.length} 个文件）...`;
+      const byName = {};
+      files.forEach((f) => { byName[f.name.toLowerCase()] = f; });
+      const readText = (f) => new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result); r.onerror = rej; r.readAsText(f); });
+      let hitCount = 0;
+      const notes = [];
+      try {
+        // 1) Preferences：webkit.webprefs / timezone / geolocation / ua 相关
+        if (byName["preferences"]) {
+          const txt = await readText(byName["preferences"]);
+          try {
+            const j = JSON.parse(txt);
+            const tz = j?.webkit?.webprefs?.default_fixed_font_size || j?.profile?.timezone;
+            const ua = j?.profile?.user_agent || j?.webkit?.webprefs?.user_agent;
+            const lang = j?.intl?.accept_languages || j?.profile?.accept_languages;
+            if (tz) { notes.push("时区=" + tz); hitCount++; }
+            if (ua) { const el = $("fUA"); if (el) el.value = ua; const de = $("drawer"); notes.push("UA已回填新建抽屉"); hitCount++; }
+            if (lang) { notes.push("语言=" + lang); hitCount++; }
+            // 地理位置
+            const lat = j?.profile?.geolocation?.latitude ?? j?.geolocation?.latitude;
+            const lng = j?.profile?.geolocation?.longitude ?? j?.geolocation?.longitude;
+            if (typeof lat === "number" && typeof lng === "number") {
+              $("fpLat").value = lat.toFixed(4); $("fpLng").value = lng.toFixed(4); hitCount++;
+            }
+          } catch (e) { notes.push("Preferences 解析失败，仅做原文统计"); }
+        }
+        // 2) Secure Preferences / Local State：platform / os / 分辨率线索
+        for (const key of ["local state", "secure preferences"]) {
+          if (byName[key]) {
+            const txt = await readText(byName[key]);
+            const mTz = txt.match(/"timezone"\s*:\s*"([^"]+)"/);
+            if (mTz) { const sel = $("fpTimezone"); if (sel) { [...sel.options].forEach((o) => { if (o.value.includes(mTz[1]) || mTz[1].includes(o.value.split(" ").pop())) sel.value = o.value; }); } hitCount++; }
+            notes.push(key + " 已扫描");
+          }
+        }
+        // 3) Cookies 文件存在性提示
+        if (byName["cookies"] || byName["network_cookies"] || files.some((f) => /cookies/i.test(f.name))) {
+          notes.push("检测到 Cookies 文件，可去 Cookie 页粘贴导入");
+          hitCount++;
+        }
+        $("fpImportStatus").textContent = hitCount
+          ? `已从 ${dirName} 提取 ${hitCount} 项指纹线索：${notes.join("；")}`
+          : `已扫描 ${dirName}（${files.length} 文件），未发现可直接回填的 Preferences 字段，请手动复制。`;
+        toast("目录导入扫描完成");
+      } catch (e) {
+        $("fpImportStatus").textContent = "目录读取失败：" + e.message;
+      }
+      fpPicker.value = "";
+    });
+  }
+
+  /* ---- 新建环境抽屉：浏览器目录 / OS→UA / Cookie合并 / 备注计数 / 抽屉内代理 ---- */
+  const UA_POOL = {
+    win: [
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/153.0.0.0 Safari/537.36",
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:128.0) Gecko/20100101 Firefox/128.0",
+    ],
+    mac: ["Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/153.0.0.0 Safari/537.36"],
+    linux: ["Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/153.0.0.0 Safari/537.36"],
+    android: ["Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/153.0.0.0 Mobile Safari/537.36"],
+    ios: ["Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1"],
+  };
+  let curOS = "win";
+  const setUA = () => { const pool = UA_POOL[curOS]; $("fUA").value = pool[Math.floor(Math.random() * pool.length)]; };
+  document.querySelectorAll("#fOsGroup .capsule-btn").forEach((b) => {
+    b.addEventListener("click", () => {
+      document.querySelectorAll("#fOsGroup .capsule-btn").forEach((x) => x.classList.remove("active"));
+      b.classList.add("active");
+      curOS = b.dataset.os;
+      setUA();
+      toast("操作系统切换为 " + b.textContent.trim() + "，User-Agent 已联动更新");
+    });
+  });
+  $("btnShuffleUA").addEventListener("click", () => { setUA(); toast("已随机切换 User-Agent"); });
+  if (!$("fUA").value) setUA();
+  // 浏览器目录选择
+  const dirPicker = $("fBrowserDirPicker");
+  $("btnPickBrowserDir").addEventListener("click", () => dirPicker && dirPicker.click());
+  if (dirPicker) {
+    dirPicker.addEventListener("change", () => {
+      const f = dirPicker.files[0];
+      if (f) { $("fBrowserDir").value = (f.webkitRelativePath || "").split("/")[0]; toast("已选择浏览器目录"); }
+      dirPicker.value = "";
+    });
+  }
+  // Cookie 合并：JSON / Netscape / Name=Value 统一转为 JSON 数组
+  $("btnMergeCookie").addEventListener("click", () => {
+    const raw = $("fCookie").value.trim();
+    if (!raw) return toast("请先粘贴 Cookie 内容");
+    try {
+      let arr = [];
+      if (raw.startsWith("[")) {
+        arr = JSON.parse(raw);
+      } else if (raw.includes("#HttpOnly") || raw.startsWith(".") || /^[^\s]+\t/.test(raw)) {
+        arr = raw.split("\n").filter((l) => l.trim() && !l.trim().startsWith("#") || l.includes("#HttpOnly")).map((l) => {
+          const p = l.split("\t");
+          if (p.length >= 7) return { name: p[5], value: p[6].trim() };
+          const i = l.indexOf("="); return { name: l.slice(0, i).trim(), value: l.slice(i + 1).trim() };
+        });
+      } else {
+        arr = raw.split(/[;\n]+/).filter(Boolean).map((kv) => {
+          const i = kv.indexOf("="); return { name: kv.slice(0, i).trim(), value: kv.slice(i + 1).trim() };
+        });
+      }
+      $("fCookie").value = JSON.stringify(arr, null, 2);
+      $("ckText").value = JSON.stringify(arr, null, 2);
+      toast(`Cookie 合并成功，共 ${arr.length} 个`);
+    } catch (e) { toast("Cookie 解析失败：" + e.message); }
+  });
+  // 备注计数
+  $("fRemark").addEventListener("input", (e) => { $("fRemarkCount").textContent = e.target.value.length; });
+  // 抽屉内代理测速
+  $("btnDrawerProxyTest").addEventListener("click", async () => {
+    const host = $("fProxyHost").value.trim(), port = $("fProxyPort").value.trim();
+    if (!host || !port) return toast("请先填写代理主机和端口");
+    $("drawerProxyStatus").textContent = "检测中...";
+    try { const r = await API.checkProxy(host + ":" + port); $("drawerProxyStatus").textContent = `连通正常 · 出口 ${r.data.ip} · ${r.data.ms}ms`; }
+    catch (e) { $("drawerProxyStatus").textContent = "检测失败：" + e.message; }
+  });
+
+  /* ---- 代理页：SOCKS5 表单保存 + 测速 ---- */
+  $("btnPxSave").addEventListener("click", () => {
+    const host = $("pxHost").value.trim(), port = $("pxPort").value.trim();
+    if (!host || !port) return toast("请填写代理主机和端口");
+    db().proxies.push({
+      id: "proxy-" + Date.now(), name: $("pxName").value.trim() || `${host}:${port}`,
+      type: $("pxType").value, addr: `${host}:${port}`,
+      user: $("pxUser").value.trim(), ip: "-", ms: 0, ok: false,
+    });
+    renderProxy();
+    toast("代理已保存（SOCKS5/HTTP 表单）");
+    $("pxHost").value = ""; $("pxPort").value = ""; $("pxUser").value = ""; $("pxPass").value = "";
+  });
+  $("btnPxTest").addEventListener("click", async () => {
+    const host = $("pxHost").value.trim(), port = $("pxPort").value.trim();
+    if (!host || !port) return toast("请先填写代理主机和端口");
+    $("pxStatus").textContent = "检测中...";
+    try { const r = await API.checkProxy(host + ":" + port); $("pxStatus").textContent = `出口 ${r.data.ip} · ${r.data.ms}ms · 连通正常`; toast("代理检测成功"); }
+    catch (e) { $("pxStatus").textContent = "检测失败：" + e.message; }
   });
 
   /* ================= 5. Cookie / 养号 ================= */
