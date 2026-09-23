@@ -45,6 +45,73 @@ body {
   min-height: 100vh;
 }
 
+/* 单页版：顶栏 + 通栏主区（无左边栏） */
+.app.single {
+  display: block;
+}
+
+.single-top {
+  position: sticky;
+  top: 0;
+  z-index: 50;
+  background: #fff;
+  border-bottom: 1px solid var(--border);
+  padding: 12px 24px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 0;
+}
+
+.single-top .brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 18px;
+  font-weight: 800;
+}
+
+.single-top .brand-sub {
+  font-size: 12px;
+  color: var(--text-muted);
+  font-weight: 400;
+  margin-left: 4px;
+}
+
+.single-top .top-actions {
+  flex-wrap: wrap;
+}
+
+.mini-input {
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 7px 10px;
+  font-size: 12px;
+  width: 180px;
+  outline: none;
+}
+
+.mini-input:focus {
+  border-color: var(--primary);
+}
+
+.single-main {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 20px 24px 60px;
+}
+
+.single-main .card {
+  margin-bottom: 20px;
+}
+
+#sec-fp {
+  margin-top: 0;
+}
+
 /* ================= 侧边栏 ================= */
 .sidebar {
   width: 210px;

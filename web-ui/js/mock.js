@@ -1,17 +1,15 @@
-/* 本地演示数据：无后端时保证 8 个页面全部可点、全部有内容。
+/* 本地演示数据：单页版仅需 profiles / groups / proxies。
  * 接入真实后端后删除本文件引用即可（api.js 会自动走 fetch）。 */
 (function () {
   window.__mock = true;
   const DB = {
     profiles: [
-      { sn: "ENV-001", name: "亚马逊-主账号", group: "电商", tags: ["主号"], proxy: "proxy-us-01", kernel: "Chrome 143", status: "open", remark: "美国站" },
-      { sn: "ENV-002", name: "FB-广告01", group: "广告", tags: ["FB", "投放"], proxy: "proxy-uk-02", kernel: "Chrome 143", status: "closed", remark: "" },
-      { sn: "ENV-003", name: "TikTok-小号03", group: "社媒", tags: ["养号中"], proxy: "proxy-sg-01", kernel: "Chrome 121", status: "starting", remark: "Cookie机器人运行中" },
-      { sn: "ENV-004", name: "谷歌-测试", group: "测试", tags: [], proxy: "直连", kernel: "Firefox", status: "closed", remark: "" },
+      { sn: "ENV-001", name: "亚马逊-主账号", group: "电商", proxy: "socks5://1.2.3.4:1080", kernel: "Chrome 143 (SunBrowser 150)", status: "open", remark: "美国站", browser: "sun", browserDir: "", ua: "", cookie: "" },
+      { sn: "ENV-002", name: "FB-广告01", group: "广告", proxy: "http://5.6.7.8:8080", kernel: "Chrome 143 (SunBrowser 150)", status: "closed", remark: "", browser: "sun", browserDir: "", ua: "", cookie: "" },
+      { sn: "ENV-003", name: "TikTok-小号03", group: "社媒", proxy: "socks5://9.9.9.9:1080", kernel: "Chrome 121 (SunBrowser 121)", status: "closed", remark: "", browser: "sun", browserDir: "", ua: "", cookie: "" },
+      { sn: "ENV-004", name: "谷歌-测试", group: "测试", proxy: "直连", kernel: "Firefox 128 (FlowerBrowser)", status: "closed", remark: "", browser: "flower", browserDir: "", ua: "", cookie: "" },
     ],
-    groups: [{ n: "电商", c: 1 }, { n: "广告", c: 1 }, { n: "社媒", c: 1 }, { n: "测试", c: 1 }],
-    tags: ["主号", "FB", "投放", "养号中"],
-    cats: ["默认分类", "客户A", "客户B"],
+    groups: ["电商", "广告", "社媒", "测试"],
     proxies: [
       { id: "proxy-us-01", name: "美国住宅-01", type: "socks5", addr: "1.2.3.4:1080", user: "u01", ip: "1.2.3.4", ms: 180, ok: true },
       { id: "proxy-uk-02", name: "英国机房-02", type: "http", addr: "5.6.7.8:8080", user: "u02", ip: "5.6.7.8", ms: 240, ok: true },
