@@ -1,0 +1,72 @@
+name: Build Web UI
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "web-ui/**"
+      - ".github/workflows/build-web-ui.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Validate + Package web-ui
+    runs-on: windows-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Check required files
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $files = @("web-ui/index.html", "web-ui/css/app.css", "web-ui/js/api.js", "web-ui/js/mock.js", "web-ui/js/app.js", "web-ui/README.md")
+          foreach ($f in $files) {
+            if (-not (Test-Path $f)) { throw "missing: $f" }
+            Write-Host "ok: $f ($((Get-Item $f).Length) bytes)"
+          }
+
+      - name: JS syntax check (node --check)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          node --version
+          foreach ($f in @("web-ui/js/api.js", "web-ui/js/mock.js", "web-ui/js/app.js")) {
+            node --check $f
+            Write-Host "syntax ok: $f"
+          }
+
+      - name: HTML smoke check (8 pages + scripts)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $html = Get-Content web-ui/index.html -Raw
+          $pages = @("page-profiles", "page-groups", "page-proxy", "page-fingerprint", "page-cookie", "page-cache", "page-kernel", "page-imexport")
+          foreach ($p in $pages) {
+            if ($html -notmatch $p) { throw "missing page: $p" }
+            Write-Host "page ok: $p"
+          }
+          foreach ($s in @('js/api.js', 'js/mock.js', 'js/app.js')) {
+            if ($html -notmatch [regex]::Escape($s)) { throw "missing script: $s" }
+          }
+          Write-Host "all scripts referenced"
+
+      - name: Package web-ui.zip
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          if (Test-Path web-ui.zip) { Remove-Item web-ui.zip -Force }
+          Compress-Archive -Path web-ui/* -DestinationPath web-ui.zip -Force
+          Get-Item web-ui.zip | Format-Table Name, Length
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-ui
+          path: web-ui.zip
+          retention-days: 30
+          if-no-files-found: error

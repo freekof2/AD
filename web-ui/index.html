@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ADSPOWER · 指纹浏览器管理后台（功能原型 v0.1）</title>
+<link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+<div class="app">
+  <!-- ============ 侧边栏 ============ -->
+  <aside class="sidebar">
+    <div class="logo">ADSPOWER<span class="logo-sub">管理后台 · 原型</span></div>
+    <nav class="nav">
+      <button class="nav-item active" data-page="profiles">环境管理</button>
+      <button class="nav-item" data-page="groups">分组 / 标签</button>
+      <button class="nav-item" data-page="proxy">代理管理</button>
+      <button class="nav-item" data-page="fingerprint">指纹配置</button>
+      <button class="nav-item" data-page="cookie">Cookie / 养号</button>
+      <button class="nav-item" data-page="cache">缓存 / 备份</button>
+      <button class="nav-item" data-page="kernel">内核管理</button>
+      <button class="nav-item" data-page="imexport">导入 / 导出</button>
+    </nav>
+    <div class="side-foot">
+      <div class="api-row">
+        <label>Local API</label>
+        <input id="apiBase" value="http://127.0.0.1:18900" spellcheck="false">
+      </div>
+      <div class="api-row">
+        <label>API Key</label>
+        <input id="apiKey" placeholder="可选" spellcheck="false">
+      </div>
+      <div class="conn" id="connStatus">未连接</div>
+    </div>
+  </aside>
+
+  <!-- ============ 主区 ============ -->
+  <main class="main">
+    <header class="topbar">
+      <h1 id="pageTitle">环境管理</h1>
+      <div class="top-actions">
+        <input id="globalSearch" placeholder="搜索编号 / 名称 / 备注…">
+        <button class="btn primary" id="btnNewProfile">+ 新建环境</button>
+      </div>
+    </header>
+
+    <!-- 1. 环境/账号 -->
+    <section class="page active" id="page-profiles">
+      <div class="toolbar">
+        <div class="queue-card">多开队列：等待 <b id="qWait">0</b> · 启动中 <b id="qRun">0</b> · 已开 <b id="qOpen">0</b></div>
+        <div class="spacer"></div>
+        <button class="btn" data-act="batch-start">批量启动</button>
+        <button class="btn" data-act="batch-stop">批量关闭</button>
+        <button class="btn danger" data-act="batch-del">批量删除</button>
+      </div>
+      <table class="tbl">
+        <thead><tr>
+          <th><input type="checkbox" id="checkAll"></th><th>编号</th><th>名称</th><th>分组</th><th>标签</th>
+          <th>代理</th><th>内核</th><th>状态</th><th>备注</th><th>操作</th>
+        </tr></thead>
+        <tbody id="profileRows"></tbody>
+      </table>
+    </section>
+
+    <!-- 2. 分组/标签 -->
+    <section class="page" id="page-groups">
+      <div class="grid2">
+        <div class="card">
+          <h3>分组 <button class="btn sm" id="btnAddGroup">+ 分组</button></h3>
+          <ul class="list" id="groupList"></ul>
+        </div>
+        <div class="card">
+          <h3>标签 <button class="btn sm" id="btnAddTag">+ 标签</button></h3>
+          <ul class="list" id="tagList"></ul>
+        </div>
+      </div>
+      <div class="card"><h3>分类</h3><ul class="list" id="catList"></ul></div>
+    </section>
+
+    <!-- 3. 代理 -->
+    <section class="page" id="page-proxy">
+      <div class="toolbar">
+        <button class="btn primary" id="btnAddProxy">+ 添加代理</button>
+        <button class="btn" id="btnCheckProxy">检测选中代理</button>
+        <span class="hint">支持 HTTP / SOCKS5，字段对齐后端 proxy_soft / host / port / user / password</span>
+      </div>
+      <table class="tbl">
+        <thead><tr><th><input type="checkbox"></th><th>名称</th><th>类型</th><th>地址</th><th>账号</th><th>出口IP</th><th>延迟</th><th>状态</th><th>操作</th></tr></thead>
+        <tbody id="proxyRows"></tbody>
+      </table>
+    </section>
+
+    <!-- 4. 指纹 -->
+    <section class="page" id="page-fingerprint">
+      <div class="toolbar">
+        <select id="fpProfile"></select>
+        <button class="btn" id="btnFpRandom">随机指纹</button>
+        <button class="btn primary" id="btnFpSave">保存指纹</button>
+        <span class="hint">共 <span id="fpCount"></span> 项参数（对齐 sunBrowserParams / staticConfig）</span>
+      </div>
+      <div class="grid2">
+        <div class="card"><h3>基础</h3><div id="fpBase" class="form"></div></div>
+        <div class="card"><h3>Canvas / WebGL / Audio</h3><div id="fpMedia" class="form"></div></div>
+        <div class="card"><h3>WebRTC / 时区 / 地理</h3><div id="fpNet" class="form"></div></div>
+        <div class="card"><h3>硬件 / 字体 / 其他</h3><div id="fpHw" class="form"></div></div>
+      </div>
+    </section>
+
+    <!-- 5. Cookie -->
+    <section class="page" id="page-cookie">
+      <div class="grid2">
+        <div class="card">
+          <h3>Cookie 管理</h3>
+          <select id="ckProfile"></select>
+          <textarea id="ckText" rows="8" placeholder='[{"name":"BROWSER_ID","value":"..."}]'></textarea>
+          <div class="row"><button class="btn" id="btnCkGet">读取</button><button class="btn primary" id="btnCkSet">写入</button></div>
+        </div>
+        <div class="card">
+          <h3>Cookie 机器人（养号任务）</h3>
+          <div class="row"><input id="robotName" placeholder="任务名称"><button class="btn primary" id="btnRobotAdd">+ 新建任务</button></div>
+          <table class="tbl"><thead><tr><th>任务</th><th>环境数</th><th>状态</th><th>操作</th></tr></thead>
+          <tbody id="robotRows"></tbody></table>
+        </div>
+      </div>
+    </section>
+
+    <!-- 6. 缓存 -->
+    <section class="page" id="page-cache">
+      <div class="grid2">
+        <div class="card"><h3>缓存清理</h3>
+          <div class="row"><button class="btn" data-cache="one">按环境清理</button><button class="btn danger" data-cache="all">清理全部缓存</button></div>
+          <p class="hint">对齐 delete-cache / deleteCacheById / deleteAllCache / clearLocalCache</p>
+        </div>
+        <div class="card"><h3>备份 / 恢复</h3>
+          <div class="row"><button class="btn" id="btnBackup">备份</button><button class="btn" id="btnRestore">恢复</button></div>
+          <ul class="list" id="backupList"></ul>
+        </div>
+      </div>
+    </section>
+
+    <!-- 7. 内核 -->
+    <section class="page" id="page-kernel">
+      <div class="toolbar"><button class="btn" id="btnKernelCheck">检查内核更新</button><span class="hint" id="kernelInfo"></span></div>
+      <table class="tbl"><thead><tr><th>版本</th><th>类型</th><th>大小</th><th>状态</th><th>操作</th></tr></thead>
+      <tbody id="kernelRows"></tbody></table>
+    </section>
+
+    <!-- 8. 导入导出 -->
+    <section class="page" id="page-imexport">
+      <div class="grid2">
+        <div class="card"><h3>导入</h3>
+          <div class="row"><input type="file" id="importFile" accept=".xlsx,.txt,.csv"><button class="btn primary" id="btnImport">开始导入</button></div>
+          <p class="hint">对齐 import/start · getExcelContent · getTxtContent</p>
+          <div class="progress"><div id="impBar"></div></div><div id="impStatus" class="hint"></div>
+        </div>
+        <div class="card"><h3>导出</h3>
+          <div class="row"><button class="btn" id="btnExport">导出账号</button><button class="btn danger" id="btnExportStop">停止导出</button></div>
+          <div class="progress"><div id="expBar"></div></div><div id="expStatus" class="hint"></div>
+        </div>
+      </div>
+    </section>
+  </main>
+</div>
+
+<!-- 环境抽屉 -->
+<div class="drawer-mask" id="drawerMask"></div>
+<aside class="drawer" id="drawer">
+  <h2 id="drawerTitle">新建环境</h2>
+  <div class="form">
+    <label>名称<input id="fName"></label>
+    <label>分组<select id="fGroup"></select></label>
+    <label>代理<select id="fProxy"></select></label>
+    <label>内核<select id="fKernel"><option>Chrome 143</option><option>Chrome 121</option><option>Firefox</option></select></label>
+    <label>备注<input id="fRemark"></label>
+  </div>
+  <div class="row end"><button class="btn" id="btnDrawerClose">取消</button><button class="btn primary" id="btnDrawerSave">保存</button></div>
+</aside>
+
+<div class="toast" id="toast"></div>
+<script src="js/api.js"></script>
+<script src="js/mock.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>
