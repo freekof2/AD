@@ -179,56 +179,20 @@ bool FpFormFromUiJson(const std::string& json, FpFormData& f) {
     return true;
 }
 
+// ---- asar 1:1 字体表（main.min.js 内嵌 u[] 181 条 / c[] 12 条，顺序保留，含 "Caurier Regular" 笔误）----
+// 用途见下方 FpBuildFakefontsJson / FpBuildDisabledFontsJson。
+// 注意：表定义在文件靠后位置（kTz 附近），此处函数仅声明，定义见表后。
+static std::string FpBuildFakefontsJson(const std::wstring& platform);
+static std::string FpBuildDisabledFontsJson();
+static std::wstring FpOsToAsarPlatform(const std::wstring& os);
+
 // 表单 -> fingerprint_config（与 web-ui btnFpSave 的 fpConfig 组装一致）
-// ---- asar 1:1 setFakeFonts/setFonts 语义（main.min.js 全文移植）----
+// ---- asar 1:1 setFakeFonts/setFonts 语义（main.min.js 全文移植，函数体见字体表后）----
 // platform: Win32|MacIntel|Linux x86_64|Linux armv7I|Linux armv8I|Linux armv81|Linux i686|iPhone|Windows Phone
 // hostOs: 离线本机固定 win32（SunLauncher 只跑 Windows；asar process.platform 分支收敛到 win32）
 // fontsMode: all -> 输出 DisabledFonts=getFonts-mobileFonts；custom -> 输出切分数组（调用方已在 fp_config 处理，此处返回 ""）
 // Fakefonts 输出 JSON 对象（键=伪装表全键，值=本机表轮转；asar n[e]=win32[t%len]，t 为键序号）
 // 云端表缺失回退：win32/darwin/linux 键表与值表均用 u[] 全集；mobile 键表用 mobileFonts 精确 12 条。
-static std::string FpBuildFakefontsJson(const std::wstring& platform) {
-    bool useMobile = (platform == L"MacIntel" || platform == L"Linux armv7I" ||
-        platform == L"Linux armv8I" || platform == L"Linux armv81" ||
-        platform == L"Linux i686" || platform == L"iPhone" ||
-        platform == L"Windows Phone");
-    // 键表：Win32->u[]全集；MacIntel->darwin(离线=u[]全集)；移动系->mobileFonts 12 条；Linux x86_64->u[]全集
-    int keyCount = useMobile ? kAsarMobileFontsCount : kAsarFontsUCount;
-    std::string o = "{";
-    for (int t = 0; t < keyCount; t++) {
-        std::wstring key = useMobile ? kAsarMobileFonts[t] : kAsarFontsU[t];
-        // 值表：本机 win32 -> u[] 全集轮转（asar win32[t%len]，云端缺失回退同表）
-        std::wstring val = kAsarFontsU[t % kAsarFontsUCount];
-        if (t) o += ",";
-        o += "\"" + N(key) + "\":\"" + N(val) + "\"";
-    }
-    o += "}";
-    return o;
-}
-// DisabledFonts（fonts=all）：getFonts(u[] 181 条) - mobileFonts(12 条)，顺序保留含重复（asar filter 原样，不去重）
-static std::string FpBuildDisabledFontsJson() {
-    std::string arr = "[";
-    bool first = true;
-    for (int i = 0; i < kAsarFontsUCount; i++) {
-        std::wstring w = kAsarFontsU[i];
-        bool isMobile = false;
-        for (int j = 0; j < kAsarMobileFontsCount; j++)
-            if (w == kAsarMobileFonts[j]) { isMobile = true; break; }
-        if (isMobile) continue;
-        if (!first) arr += ",";
-        first = false;
-        arr += "\"" + N(w) + "\"";
-    }
-    arr += "]";
-    return arr;
-}
-// 平台下拉值（web-ui os 胶囊 win|mac|linux|android|ios）-> asar e.platform（setFakeFonts switch 用）
-static std::wstring FpOsToAsarPlatform(const std::wstring& os) {
-    if (os == L"mac") return L"MacIntel";
-    if (os == L"linux") return L"Linux x86_64";
-    if (os == L"android") return L"Linux armv8I";
-    if (os == L"ios") return L"iPhone";
-    return L"Win32";
-}
 
 std::string FpFormToFpConfig(const FpFormData& f) {
     std::string sp = N(f.webrtc), tz = (f.timezoneMode == L"ip") ? "1" : "0";
@@ -432,6 +396,52 @@ static const wchar_t* kAsarMobileFonts[] = {
     L"Palatino",L"Tahoma",L"Times",L"Times New Roman",L"Verdana",L"Baskerville",
 };
 static const int kAsarMobileFontsCount = 12;
+// ---- asar 1:1 setFakeFonts/setFonts 函数体（main.min.js 全文移植；表已在上方定义）----
+static std::string FpBuildFakefontsJson(const std::wstring& platform) {
+    // 注意 MacIntel 走 darwin 表：离线云端表不可达，用 u[] 全集代替（与 Win32 同表）。
+    // 因此 useMobile 仅含真正的移动系（Linux armv*/i686/iPhone/Windows Phone），MacIntel 不在其中。
+    bool useMobile = (platform == L"Linux armv7I" ||
+        platform == L"Linux armv8I" || platform == L"Linux armv81" ||
+        platform == L"Linux i686" || platform == L"iPhone" ||
+        platform == L"Windows Phone");
+    // 键表：Win32/MacIntel/Linux x86_64->u[]全集（181）；移动系->mobileFonts 12 条
+    int keyCount = useMobile ? kAsarMobileFontsCount : kAsarFontsUCount;
+    std::string o = "{";
+    for (int t = 0; t < keyCount; t++) {
+        std::wstring key = useMobile ? kAsarMobileFonts[t] : kAsarFontsU[t];
+        // 值表：本机 win32 -> u[] 全集轮转（asar win32[t%len]，云端缺失回退同表）
+        std::wstring val = kAsarFontsU[t % kAsarFontsUCount];
+        if (t) o += ",";
+        o += "\"" + N(key) + "\":\"" + N(val) + "\"";
+    }
+    o += "}";
+    return o;
+}
+// DisabledFonts（fonts=all）：getFonts(u[] 181 条) - mobileFonts(12 条)，顺序保留含重复（asar filter 原样，不去重）
+static std::string FpBuildDisabledFontsJson() {
+    std::string arr = "[";
+    bool first = true;
+    for (int i = 0; i < kAsarFontsUCount; i++) {
+        std::wstring w = kAsarFontsU[i];
+        bool isMobile = false;
+        for (int j = 0; j < kAsarMobileFontsCount; j++)
+            if (w == kAsarMobileFonts[j]) { isMobile = true; break; }
+        if (isMobile) continue;
+        if (!first) arr += ",";
+        first = false;
+        arr += "\"" + N(w) + "\"";
+    }
+    arr += "]";
+    return arr;
+}
+// 平台下拉值（web-ui os 胶囊 win|mac|linux|android|ios）-> asar e.platform（setFakeFonts switch 用）
+static std::wstring FpOsToAsarPlatform(const std::wstring& os) {
+    if (os == L"mac") return L"MacIntel";
+    if (os == L"linux") return L"Linux x86_64";
+    if (os == L"android") return L"Linux armv8I";
+    if (os == L"ios") return L"iPhone";
+    return L"Win32";
+}
 static const wchar_t* kTz[] = {
     L"Etc/GMT+12", L"Pacific/Midway", L"Pacific/Honolulu", L"America/Anchorage",
     L"America/Los_Angeles", L"America/Denver", L"America/Chicago", L"America/New_York",
