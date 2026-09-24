@@ -159,8 +159,10 @@ jobs:
             Write-Host "fp.js ok: $s"
           }
           # app.js 预览字段（fontsDisabledPreview/fontsFakePreviewKeys，与 C++ 预览同算法）
-          if ($app -notmatch "fontsDisabledPreview") { throw "fontsDisabledPreview missing in app.js" }
-          if ($app -notmatch "fontsFakePreviewKeys") { throw "fontsFakePreviewKeys missing in app.js" }
+          # 注意：$app 在下方 2d 节才赋值，此处用独立变量重读，避免空变量误报缺失
+          $appPreview = Get-Content web-ui\js\app.js -Raw
+          if ($appPreview -notmatch "fontsDisabledPreview") { throw "fontsDisabledPreview missing in app.js" }
+          if ($appPreview -notmatch "fontsFakePreviewKeys") { throw "fontsFakePreviewKeys missing in app.js" }
           Write-Host "app.js font preview ok"
           # 2d. 指纹设置内容对齐 web-ui（选项值/默认值/行为一致性）
           $fpc2 = Get-Content launcher\cpp\fp_ui.cpp -Raw
