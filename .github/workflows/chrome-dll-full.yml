@@ -21,6 +21,10 @@ on:
         description: '单函数反编译超时秒(默认30)'
         required: false
         default: '30'
+      analysis_timeout:
+        description: '单片自动分析超时秒(默认7200,超时后转入分片反编译)'
+        required: false
+        default: '7200'
 
 permissions:
   contents: read
@@ -415,14 +419,18 @@ jobs:
           if ([string]::IsNullOrWhiteSpace($total)) { $total = "24" }
           $fto = "${{ inputs.func_timeout }}"
           if ([string]::IsNullOrWhiteSpace($fto)) { $fto = "30" }
+          $ato = "${{ inputs.analysis_timeout }}"
+          if ([string]::IsNullOrWhiteSpace($ato)) { $ato = "7200" }
           "SHARD_INDEX=$idx" >> $env:GITHUB_ENV
           Write-Host "headless: $headless"
           Write-Host "exe: $exe"
-          Write-Host "shard: $idx / $total, func_timeout: ${fto}s"
+          Write-Host "shard: $idx / $total, func_timeout: ${fto}s, analysis_timeout: ${ato}s"
           # .py 后缀在 headless 默认走 PyGhidra 会报 Python is not available，
           # 所以用同目录的 ExportSunBrowser.java（Java GhidraScript，headless 可用）。
           # 参数: full <shardIndex> <shardTotal> <funcTimeoutSec>
-          & $headless "$proj" "ChromeDllShard$idx" -import "$exe" -postScript ExportSunBrowser.java "full" "$idx" "$total" "$fto" -deleteProject -scriptPath ".github/scripts" -max-cpu 4 *> "analysis/reports/ghidra-shard-$idx.log"
+          # -analysisTimeoutSecs 约束自动分析阶段(默认无上限,321MB样本会拖到step超时),
+          # 超时后自动转入 postScript 分片反编译,保证不断流。
+          & $headless "$proj" "ChromeDllShard$idx" -import "$exe" -postScript ExportSunBrowser.java "full" "$idx" "$total" "$fto" -deleteProject -scriptPath ".github/scripts" -max-cpu 4 -analysisTimeoutSecs $ato *> "analysis/reports/ghidra-shard-$idx.log"
           Write-Host "Ghidra shard $idx exit: $LASTEXITCODE"
           Get-Content "analysis/reports/ghidra-shard-$idx.log" -Tail 60
 
