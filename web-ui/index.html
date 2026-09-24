@@ -11,10 +11,9 @@
   <!-- ============ 顶栏（代替原左边栏） ============ -->
   <header class="topbar single-top">
     <div class="top-actions">
-      <input class="search-input" id="globalSearch" placeholder="搜索编号 / 环境名称 / 备注...">
-      <input class="mini-input" id="apiBase" value="http://127.0.0.1:18900" spellcheck="false" title="Local API 地址">
-      <input class="mini-input" id="apiKey" placeholder="API Key" spellcheck="false" title="API Key / Token">
-      <span class="conn" id="connStatus">演示模式（Mock 数据已启用）</span>
+      <input class="search-input" id="globalSearch" placeholder="搜索环境目录名 / 备注...">
+      <input class="mini-input" id="apiBase" value="http://127.0.0.1:18900" spellcheck="false" title="本地启动器地址（本机离线，无云端）">
+      <span class="conn" id="connStatus">本地演示模式（mock）</span>
       <button class="btn primary" id="btnNewProfile">+ 新建环境</button>
     </div>
   </header>
@@ -38,14 +37,14 @@
           <thead>
             <tr>
               <th width="40"><input type="checkbox" id="checkAll"></th>
-              <th>编号</th>
+              <th>环境目录</th>
               <th>名称</th>
               <th>分组</th>
               <th>代理网络</th>
               <th>内核</th>
               <th>运行状态</th>
               <th>备注</th>
-              <th width="250">操作</th>
+              <th width="200">操作</th>
             </tr>
           </thead>
           <tbody id="profileRows"></tbody>
@@ -527,7 +526,8 @@
 
 <div class="toast" id="toast"></div>
 
-<!-- 依赖脚本 -->
+<!-- 依赖脚本（顺序：fp 编解码 -> 离线 api -> mock -> 业务） -->
+<script src="js/fp.js"></script>
 <script src="js/api.js"></script>
 <script src="js/mock.js"></script>
 <script src="js/app.js"></script>

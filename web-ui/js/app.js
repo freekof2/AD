@@ -1,7 +1,13 @@
-/* AdsPower 单页版交互：环境CRUD + 指纹35+参数（目录导入/OS切UA/SOCKS5/Cookie备注） */
+/* SunLauncher 离线版交互：目录即环境 + 指纹注入启动/停止 + 缓存为准的参数保存。
+ * 零网络：只调本地 :18900 离线接口（api.js）或 File System Access 直读写（fp.js）。
+ * 以缓存为准：PROTECTED_KEYS 在启动时被 C++ 丢弃，UI 中冲突项标“缓存为准”徽标并在保存时提示。 */
 (function () {
   const $ = (id) => document.getElementById(id);
   const db = () => window.__db;
+  // 目录名即环境名（mock/离线统一为 name；兼容旧 mock 的 sn 字段）
+  const pname = (p) => p.name || p.sn;
+  let dirHandle = null;   // 当前导入/导出的目录句柄（File System Access）
+  let dirName = "";       // 当前目录名（= 环境名）
 
   function toast(msg) {
     const t = $("toast");
@@ -24,15 +30,16 @@
     if (!tb) return;
     tb.innerHTML = "";
     const list = db().profiles.filter(
-      (p) => !filter || ((p.sn || "") + (p.name || "") + (p.remark || "") + (p.group || "")).toLowerCase().includes((filter || "").toLowerCase())
+      (p) => !filter || ((pname(p) || "") + (p.name || "") + (p.remark || "") + (p.group || "")).toLowerCase().includes((filter || "").toLowerCase())
     );
     list.forEach((p) => {
+      const nm = pname(p);
       const tr = document.createElement("tr");
       tr.innerHTML =
-        `<td><input type="checkbox" data-sn="${p.sn}"></td>` +
-        `<td><b style="color:var(--primary)">${p.sn}</b></td>` +
-        `<td><b>${p.name}</b></td>` +
-        `<td><span class="tagchip" style="background:#f1f5f9;color:#475569;">${p.group || "-"}</span></td>` +
+        `<td><input type="checkbox" data-sn="${nm}"></td>` +
+        `<td><b style="color:var(--primary)">${nm}</b></td>` +
+        `<td><b>${p.name && p.sn ? p.name : (p.remark && p.remark.slice(0, 12)) || nm}</b></td>` +
+        `<td><span class="tagchip" style="background:#f1f5f9;color:#475569;">${p.group || "默认"}</span></td>` +
         `<td><code>${p.proxy || "-"}</code></td>` +
         `<td><span style="font-size:12px;color:var(--text-muted);">${p.kernel || "-"}</span></td>` +
         `<td>${pill(p.status)}</td>` +
@@ -40,7 +47,6 @@
         `<td>` +
         `<button class="btn sm primary" data-op="start" ${p.status === "open" ? "disabled" : ""}>启动</button> ` +
         `<button class="btn sm" data-op="stop" ${p.status === "closed" ? "disabled" : ""}>停止</button> ` +
-        `<button class="btn sm" data-op="active">激活</button> ` +
         `<button class="btn sm" data-op="fp">指纹配置</button>` +
         `</td>`;
 
@@ -51,20 +57,19 @@
             if (op === "start") {
               p.status = "starting";
               renderProfiles($("globalSearch").value.trim());
-              await API.startProfile(p.sn);
+              // 离线启动：本地 :18900 指纹注入；mock 下仅改状态
+              const r = await API.startProfile(nm);
               p.status = "open";
-              toast(`浏览器已启动：${p.name} (${p.sn})`);
+              if (r && r.port) p.port = r.port;
+              toast(`浏览器已启动：${nm}${r && r.port ? "（port=" + r.port + "）" : ""}${r && r.mock ? "【演示，未真实启动】" : ""}`);
             } else if (op === "stop") {
-              await API.stopProfile(p.sn);
+              const r = await API.stopProfile(nm);
               p.status = "closed";
-              toast(`浏览器已关闭：${p.name}`);
-            } else if (op === "active") {
-              const r = await API.activeProfile(p.sn);
-              toast(`已前置激活：${r.data && r.data.ws ? "WebSocket 已连接" : "窗口已置顶"}`);
+              toast(`浏览器已关闭：${nm}${r && r.killed && r.killed.length ? "（结束 " + r.killed.length + " 个进程）" : ""}`);
             } else if (op === "fp") {
-              loadProfileToFp(p.sn);
+              loadProfileToFp(nm);
               $("sec-fp").scrollIntoView({ behavior: "smooth" });
-              toast(`已载入 ${p.sn} 的指纹配置，可在下方编辑`);
+              toast(`已载入 ${nm} 的指纹配置，可在下方编辑`);
               return;
             }
             renderProfiles($("globalSearch").value.trim());
@@ -123,17 +128,23 @@
 
   $("btnDrawerSave").addEventListener("click", () => {
     const name = $("fName").value.trim();
+    // 离线：目录即环境。目录名规则 <fbccId>_<invite>（如下划线前段即环境 ID）；
+    // 输入中文名时自动生成 ascii 目录名，中文名存 remark。
     if (!name) return toast("请填写环境名称");
-    const newSn = "ENV-" + String(db().profiles.length + 1).padStart(3, "0");
+    if (/[\\/ :*?"<>|]/.test(name)) return toast("名称含非法字符（\\ / : * ? \" < > |），请修改");
+    let dirName = name;
+    if (/[^\x00-\x7F_]/.test(name) || name.indexOf("_") < 0) {
+      dirName = "env" + Date.now().toString(36) + "_local";
+    }
+    if (db().profiles.some((p) => pname(p) === dirName)) return toast("该环境目录已存在");
     // 新建时直接把下方指纹面板的关键字段一起存入
     db().profiles.push({
-      sn: newSn,
-      name,
+      name: dirName,
       group: $("fGroup").value,
       proxy: [$("fpProxyType").value, "://", $("fpProxyHost").value.trim(), $("fpProxyPort").value.trim() ? ":" + $("fpProxyPort").value.trim() : ""].join("").replace("://", $("fpProxyHost").value.trim() ? "://" : "") || "直连",
       kernel: $("fpKernelVer").selectedOptions[0].textContent,
       status: "closed",
-      remark: $("fpRemark").value.trim(),
+      remark: (/[^\x00-\x7F_]/.test(name) ? name + " " : "") + $("fpRemark").value.trim(),
       browser: $("fpBrowser").value,
       browserDir: $("fpBrowserDir").value.trim(),
       os: $("fpOsGroup").querySelector(".active").textContent.trim(),
@@ -144,21 +155,80 @@
     renderProfiles();
     syncFpProfileSelect();
     // 新建后自动选中它
-    $("fpProfile").value = newSn;
-    toast("新环境创建成功：" + newSn + "（已关联下方指纹面板字段）");
+    $("fpProfile").value = dirName;
+    toast("新环境创建成功：" + dirName + "（已关联下方指纹面板字段）");
     $("fName").value = "";
   });
 
+  // 离线导入结果回填：static/dynamic 解码 JSON -> 表单；cookies 清洗后进 Cookie 框
+  function applyImportResult(out) {
+    const notes = out.notes || [];
+    let hitCount = 1;
+    if (out.static) {
+      try {
+        const j = JSON.parse(out.static);
+        const pick = (k) => (j[k] !== undefined ? j[k] : "");
+        if (pick("Langs")) notes.push("语言=" + pick("Langs"));
+        if (pick("Platform")) notes.push("Platform=" + pick("Platform"));
+        if (pick("HardwareConcurrency")) { const s = $("fpCpu"); if (s) s.value = String(pick("HardwareConcurrency")); }
+        if (pick("DeviceMemory")) { const s = $("fpRam"); if (s) s.value = String(pick("DeviceMemory")); }
+        if (pick("DeviceName")) { $("fpDevName").value = pick("DeviceName"); }
+        if (pick("MacAddress")) { $("fpMac").value = pick("MacAddress"); }
+        const pc = pick("ProxyChain") || j.ProxyChain;
+        if (pc && typeof pc === "object") {
+          if (pc.scheme) $("fpProxyType").value = pc.scheme;
+          if (pc.host) $("fpProxyHost").value = pc.host;
+          if (pc.port) $("fpProxyPort").value = String(pc.port);
+        }
+        hitCount += 2;
+      } catch (e) { notes.push("static JSON 解析失败"); }
+    }
+    if (out.dynamic) {
+      try {
+        const j = JSON.parse(out.dynamic);
+        if (j.Geoposition) {
+          const g = String(j.Geoposition).split(",");
+          if (g.length >= 2) { $("fpLat").value = g[0]; $("fpLng").value = g[1]; }
+          if (g[2]) $("fpAccuracy").value = g[2];
+          notes.push("经纬度已回填");
+        }
+        hitCount++;
+      } catch (e) { notes.push("dynamic JSON 解析失败"); }
+    }
+    if (out.cookies) {
+      const clean = window.FP.sanitizeCookies(out.cookies, out.fbcc);
+      $("fpCookie").value = clean.text;
+      notes.push(...clean.notes);
+      hitCount++;
+    }
+    if (out.ua) { $("fpUA").value = out.ua; notes.push("UA已回填"); hitCount++; }
+    // 注册到环境列表（目录即环境）
+    if (out.dirName && !db().profiles.some((p) => pname(p) === out.dirName)) {
+      db().profiles.push({ name: out.dirName, group: "默认", proxy: "-", kernel: "Chrome 152 (SunBrowser)", status: "closed", remark: "", browser: "sun", browserDir: out.dirName, ua: $("fpUA").value, cookie: $("fpCookie").value });
+      renderProfiles(); syncFpProfileSelect();
+    }
+    $("fpProfile").value = out.dirName || $("fpProfile").value;
+    $("fpBrowserDir").value = out.dirName || $("fpBrowserDir").value;
+    $("fpImportStatus").textContent = `已从 ${out.dirName} 提取 ${hitCount} 项指纹线索：${notes.join("；")}`;
+    toast("目录导入完成（CLIENT_HOST 已剥离，绝不上传）");
+  }
+
   /* ================= 指纹面板：环境切换 ================= */
   function syncFpProfileSelect() {
-    const opts = db().profiles.map((p) => `<option value="${p.sn}">${p.sn} - ${p.name}</option>`).join("");
+    const opts = db().profiles.map((p) => `<option value="${pname(p)}">${pname(p)}${p.name && p.sn ? " - " + p.name : ""}</option>`).join("");
     if ($("fpProfile")) $("fpProfile").innerHTML = opts;
   }
 
-  function loadProfileToFp(sn) {
-    const p = db().profiles.find((x) => x.sn === sn);
+  function loadProfileToFp(nm) {
+    const p = db().profiles.find((x) => pname(x) === nm);
     if (!p) return;
-    $("fpProfile").value = sn;
+    $("fpProfile").value = nm;
+    // 尝试从本地后端拉该环境的 ui_fingerprint.json + static/dynamic 回填（失败则用行内字段）
+    API.fpGet("ui", nm).then((r) => {
+      if (r && r.json) {
+        try { applyUiExtra(JSON.parse(r.json)); toast(`已载入 ${nm} 的 UI 存档`); return; } catch (e) { /* 回退行内 */ }
+      }
+    }).catch(() => {});
     if (p.browser) $("fpBrowser").value = p.browser;
     if (p.browserDir !== undefined) $("fpBrowserDir").value = p.browserDir || "";
     if (p.ua) $("fpUA").value = p.ua;
@@ -247,9 +317,45 @@
     toast("底层 35+ 项指纹参数已全量随机生成完毕！");
   });
 
-  /* ---- 从环境目录导入指纹 ---- */
+  /* ================= 初始化：本地 profile 列表（目录即环境） ================= */
+  async function initProfiles() {
+    try {
+      const list = await API.listProfiles();
+      if (Array.isArray(list) && list.length) {
+        db().profiles = list.map((x) => ({
+          name: x.name, status: x.running ? "open" : "closed",
+          pid: x.pid, port: x.port, group: "默认",
+          kernel: "Chrome 152 (SunBrowser)", proxy: "-", remark: "",
+          browser: "sun", browserDir: "", ua: "", cookie: "",
+        }));
+      }
+    } catch (e) { /* 未连接本地启动器时保留 mock/空列表，目录导入仍可用 */ }
+    renderProfiles();
+    syncFpProfileSelect();
+    if (db().profiles.length) loadProfileToFp(pname(db().profiles[0]));
+    markConflictBadges();
+  }
+
+  /* ---- 从环境目录导入指纹（离线：优先 File System Access 直读三件套） ---- */
   const fpPicker = $("fpDirPicker");
-  $("btnFpImport").addEventListener("click", () => fpPicker && fpPicker.click());
+  $("btnFpImport").addEventListener("click", async () => {
+    // 优先用 File System Access（可拿目录句柄，后续导出直接写回）
+    if (window.showDirectoryPicker && window.FP) {
+      try {
+        const h = await window.FP.pickDir();
+        dirHandle = h; dirName = h.name;
+        $("fpBrowserDir").value = h.name;
+        $("fpImportStatus").textContent = `正在读取目录 ${h.name} ...`;
+        const out = await window.FP.importFromDirHandle(h, h.name);
+        applyImportResult(out);
+        return;
+      } catch (e) {
+        if (e && e.name === "AbortError") return;
+        // 不支持/被拒则回退 webkitdirectory
+      }
+    }
+    if (fpPicker) fpPicker.click();
+  });
   if (fpPicker) {
     fpPicker.addEventListener("change", async () => {
       const files = [...fpPicker.files];
@@ -360,7 +466,50 @@
   });
   $("fpRemark").addEventListener("input", (e) => { $("fpRemarkCount").textContent = (e.target.value || "").length; });
 
-  /* ---- 保存指纹：写回当前选中环境 ---- */
+  /* ---- 保存指纹：以缓存为准写回（static/dynamic/cookies + ui 侧车） ---- */
+  // 冲突徽标：保护键对应的表单项标“缓存为准”
+  function markConflictBadges() {
+    if (!window.FP) return;
+    const badge = '<span class="cache-badge" title="以缓存为准：启动注入时该值被丢弃，实际生效的是缓存文件里的值">缓存为准</span>';
+    const map = {
+      fpProxyHost: 1, fpProxyPort: 1, fpProxyType: 1,   // ProxyChain 在 static
+      fpLat: 1, fpLng: 1, fpAccuracy: 1,                // Geoposition 在 dynamic
+      fpDevName: 1, fpMac: 1,                           // DeviceName/MacAddress 在 static
+      fpCpu: 1, fpRam: 1,                               // HardwareConcurrency/DeviceMemory 在 static
+    };
+    Object.keys(map).forEach((id) => {
+      const el = $(id);
+      if (!el || el.dataset.badged) return;
+      el.dataset.badged = "1";
+      const s = document.createElement("span");
+      s.className = "cache-badge-wrap";
+      s.innerHTML = badge;
+      el.parentNode.insertBefore(s, el.nextSibling);
+    });
+    const st = $("fpImportStatus");
+    if (st && !st.dataset.conflict) {
+      st.dataset.conflict = "1";
+      const d = document.createElement("div");
+      d.className = "hint conflict-notes";
+      d.innerHTML = "<b>冲突规则（以缓存为准）：</b><br>" + window.FP.CONFLICT_NOTES.map((t) => "· " + t).join("<br>");
+      st.parentNode.insertBefore(d, st.nextSibling);
+    }
+  }
+  // 把 ui_fingerprint.json 存档回填表单（非保护键全量，保护键仅展示）
+  function applyUiExtra(fp) {
+    if (!fp || typeof fp !== "object") return;
+    const set = (id, v) => { if (v !== undefined && $(id)) $(id).value = v; };
+    set("fpProxyHost", fp.proxyHost); set("fpProxyPort", fp.proxyPort);
+    set("fpLat", fp.lat); set("fpLng", fp.lng); set("fpAccuracy", fp.accuracy);
+    set("fpDevName", fp.devName); set("fpMac", fp.mac);
+    set("fpCookie", fp.cookie); set("fpRemark", fp.remark);
+    set("fpUA", fp.ua); set("fpTimezone", fp.timezone);
+    set("fpResolution", fp.resolution); set("fpRenderer", fp.renderer);
+    set("fpVendor", fp.vendor); set("fpCpu", fp.cpu); set("fpRam", fp.ram);
+    set("fpWhitePorts", fp.whitePorts); set("fpLaunchArgs", fp.launchArgs);
+    set("fpBrowserDir", fp.browserDir);
+    if (fp.remark !== undefined) { $("fpRemarkCount").textContent = ($("fpRemark").value || "").length; }
+  }
   function collectFp() {
     const cap = (g) => { const el = document.querySelector(`[data-fp-group="${g}"] .capsule-btn.active`); return el ? el.dataset.val : ""; };
     return {
@@ -404,10 +553,10 @@
       launchArgs: $("fpLaunchArgs").value,
     };
   }
-  $("btnFpSave").addEventListener("click", () => {
-    const sn = $("fpProfile").value;
+  $("btnFpSave").addEventListener("click", async () => {
+    const nm = $("fpProfile").value;
     const fp = collectFp();
-    const p = db().profiles.find((x) => x.sn === sn);
+    const p = db().profiles.find((x) => pname(x) === nm);
     if (p) {
       p.browser = fp.browser;
       p.browserDir = fp.browserDir;
@@ -420,11 +569,47 @@
       p.fp = fp; // 全量 35+ 参数存档
       renderProfiles($("globalSearch").value.trim());
     }
-    toast(`指纹配置已保存${sn ? "到 " + sn : ""}（35+ 参数全量存档）`);
+    toast(`指纹配置已保存${nm ? "到 " + nm : ""}（35+ 参数全量存档）`);
+    // 离线写回：static/dynamic/cookies + ui 侧车（保护键进 ui 存档，启动时丢弃，缓存为准）
+    try {
+      const fbcc = (window.FP ? window.FP.fbccOf(nm) : nm.split("_")[0]);
+      const cleanCookie = window.FP ? window.FP.sanitizeCookies(fp.cookie || "[]", fbcc) : { text: fp.cookie };
+      const payload = { ui: JSON.stringify(fp) };
+      // 代理/设备等保护键不碰 static（缓存为准），只进 ui 存档；Cookie 清洗后可写 cookies 文件
+      try { JSON.parse(cleanCookie.text); payload.cookies = cleanCookie.text; } catch (e) { /* 非 JSON 则不写 */ }
+      if (dirHandle && dirName === nm) {
+        const notes = await window.FP.exportToDirHandle(dirHandle, nm, payload);
+        toast("已写回目录：" + notes.join("；"));
+      } else {
+        const r = await API.fpSave(nm, payload);
+        toast(`已保存到本地${r && r.mock ? "（演示，未写盘）" : ""}：${(r && r.notes || []).join("；") || "ui 存档已更新"}`);
+      }
+      if (cleanCookie.notes && cleanCookie.notes.length) toast(cleanCookie.notes.join("；"));
+    } catch (e) { toast("本地写回失败: " + e.message); }
   });
 
+  /* ---- 导出/导入整目录（zip 占位：离线用目录句柄直接读写，无需打包） ---- */
+  async function exportProfileDir() {
+    const nm = $("fpProfile").value;
+    if (!nm) return toast("请先选择环境");
+    try {
+      if (!dirHandle || dirName !== nm) {
+        if (window.showDirectoryPicker && window.FP) {
+          dirHandle = await window.FP.pickDir();
+          dirName = dirHandle.name;
+        } else return toast("当前浏览器不支持目录写回，请用 Chrome/Edge");
+      }
+      const fp = collectFp();
+      const fbcc = window.FP.fbccOf(nm);
+      const cleanCookie = window.FP.sanitizeCookies(fp.cookie || "[]", fbcc);
+      const notes = await window.FP.exportToDirHandle(dirHandle, nm, {
+        uiExtra: JSON.stringify(fp, null, 2),
+        cookies: (() => { try { JSON.parse(cleanCookie.text); return cleanCookie.text; } catch (e) { return ""; } })(),
+      });
+      toast("导出/保存完成：" + notes.join("；"));
+    } catch (e) { toast("导出失败: " + e.message); }
+  }
+
   /* ================= 初始化 ================= */
-  renderProfiles();
-  syncFpProfileSelect();
-  if (db().profiles.length) loadProfileToFp(db().profiles[0].sn);
+  initProfiles();
 })();

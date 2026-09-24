@@ -1,38 +1,37 @@
-/* 本地演示数据：单页版仅需 profiles / groups / proxies。
- * 接入真实后端后删除本文件引用即可（api.js 会自动走 fetch）。 */
+/* 本地演示数据：目录即环境，mock SunLauncher 离线接口。
+ * file:// 双击打开 index.html 时 File System Access 不可用，走此 mock；
+ * 用 http://127.0.0.1:18900/ui/ 打开（SunLauncher 内置服务）时走真实离线后端。
+ */
 (function () {
-  window.__mock = true;
+  window.__mock = location.protocol === "file:";
+  if (!window.__mock) return; // http(s) 下由真实后端接管
   const DB = {
     profiles: [
-      { sn: "ENV-001", name: "亚马逊-主账号", group: "电商", proxy: "socks5://1.2.3.4:1080", kernel: "Chrome 143 (SunBrowser 150)", status: "open", remark: "美国站", browser: "sun", browserDir: "", ua: "", cookie: "" },
-      { sn: "ENV-002", name: "FB-广告01", group: "广告", proxy: "http://5.6.7.8:8080", kernel: "Chrome 143 (SunBrowser 150)", status: "closed", remark: "", browser: "sun", browserDir: "", ua: "", cookie: "" },
-      { sn: "ENV-003", name: "TikTok-小号03", group: "社媒", proxy: "socks5://9.9.9.9:1080", kernel: "Chrome 121 (SunBrowser 121)", status: "closed", remark: "", browser: "sun", browserDir: "", ua: "", cookie: "" },
-      { sn: "ENV-004", name: "谷歌-测试", group: "测试", proxy: "直连", kernel: "Firefox 128 (FlowerBrowser)", status: "closed", remark: "", browser: "flower", browserDir: "", ua: "", cookie: "" },
+      { name: "k1h60tsv_hyg6dd", group: "默认", proxy: "socks5://127.0.0.1:1200", kernel: "Chrome 152 (SunBrowser)", status: "closed", remark: "示例（mock）", browser: "sun", browserDir: "", ua: "", cookie: "" },
     ],
-    groups: ["电商", "广告", "社媒", "测试"],
-    proxies: [
-      { id: "proxy-us-01", name: "美国住宅-01", type: "socks5", addr: "1.2.3.4:1080", user: "u01", ip: "1.2.3.4", ms: 180, ok: true },
-      { id: "proxy-uk-02", name: "英国机房-02", type: "http", addr: "5.6.7.8:8080", user: "u02", ip: "5.6.7.8", ms: 240, ok: true },
-      { id: "proxy-sg-01", name: "新加坡-01", type: "socks5", addr: "9.9.9.9:1080", user: "", ip: "9.9.9.9", ms: 0, ok: false },
-    ],
-    robots: [{ name: "FB养号-每日浏览", envs: 12, status: "运行中" }, { name: "TK点赞任务", envs: 5, status: "已停止" }],
-    backups: ["backup-2026-09-20.zip (1.2G)", "backup-2026-09-15.zip (1.1G)"],
-    kernels: [
-      { v: "Chrome 143.0.7499", t: "SunBrowser", size: "231MB", st: "已安装" },
-      { v: "Chrome 121.0.6167", t: "SunBrowser", size: "228MB", st: "已安装" },
-      { v: "Firefox 128", t: "Gecko", size: "190MB", st: "可下载" },
-    ],
+    groups: ["默认"],
+    proxies: [],
   };
   window.__db = DB;
   window.__mockReq = async function (method, path, body) {
-    await new Promise((r) => setTimeout(r, 200)); // 模拟延迟
-    if (path.includes("/api/v1/browser/start")) { const p = DB.profiles.find((x) => x.sn === body.serial_number); if (p) p.status = "open"; return { code: 0 }; }
-    if (path.includes("/api/v1/browser/stop")) { const p = DB.profiles.find((x) => x.sn === body.serial_number); if (p) p.status = "closed"; return { code: 0 }; }
-    if (path.includes("/api/v1/browser/active")) return { code: 0, data: { ws: "ws://127.0.0.1:9222/devtools/browser/xxx" } };
-    if (path.includes("proxy-list")) return { code: 0, data: DB.proxies };
-    if (path.includes("checkProxy")) return { code: 0, data: { ip: "1.2.3.4", ms: 180 } };
-    if (path.includes("cacheSize")) return { code: 0, data: { size: "3.4G" } };
-    if (path.includes("getVersion")) return { code: 0, data: { version: "8.7.23", kernel: "150.0.7871.47" } };
-    return { code: 0, data: {} };
+    await new Promise((r) => setTimeout(r, 150));
+    if (path === "/api/profiles") {
+      return DB.profiles.map((p) => ({ name: p.name, running: p.status === "open", pid: p.pid || 0, port: p.port || 0 }));
+    }
+    if (path === "/api/start") {
+      const p = DB.profiles.find((x) => x.name === (body && body.name));
+      if (p) { p.status = "open"; p.port = p.port || 19222; }
+      return { ok: true, pid: 0, port: p ? p.port : 0, mock: true };
+    }
+    if (path === "/api/stop") {
+      const p = DB.profiles.find((x) => x.name === (body && body.name));
+      if (p) p.status = "closed";
+      return { ok: true, killed: [], mock: true };
+    }
+    if (path.indexOf("/api/fp/") === 0 && method === "GET") {
+      return { json: "", mock: true, note: "mock 下无真实缓存，请用目录导入" };
+    }
+    if (path === "/api/fp/save") return { ok: true, mock: true, notes: ["mock：未写盘"] };
+    return {};
   };
 })();

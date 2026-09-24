@@ -1,5 +1,8 @@
 // main.cpp — Win32 原生窗口：profile 列表 + 启动/关闭/新建 + 目录修改 + DEBUG 日志窗
+// 离线版：启动时经 fingerprint 模块注入 --extended-parameters（static/dynamic/cookies
+// 三文件指针 + UserId + fbcc 确定性噪声种子），只读写本地缓存目录，不做任何网络 IO。
 #include "SunLauncher.h"
+#include "fingerprint.h"
 
 static AppState g;
 
@@ -162,16 +165,20 @@ static void OnStart() {
     ::CreateDirectoryW(g.cfg.dataDir.c_str(), NULL);
     ::CreateDirectoryW(dataDir.c_str(), NULL);
     ::CreateDirectoryW((dataDir + L"\\Default").c_str(), NULL);
+    // 起前清理上次残留的单实例锁（官方同目录二次启动会直接静默退出）
+    ::DeleteFileW((dataDir + L"\\LOCK").c_str());
+    ::DeleteFileW((dataDir + L"\\DevToolsActivePort").c_str());
 
     int port = AllocPortLocked(name);
     if (port == 0) {
         std::wstring m = L"无可用调试端口（" + std::to_wstring(g.cfg.portBase) + L" 起 1000 个全占）";
         LOG(m); SetStatus(m); return;
     }
-    std::wstring args = L"--user-data-dir=\"" + dataDir +
-        L"\" --profile-directory=Default --remote-debugging-port=" + std::to_wstring(port) +
-        L" --no-first-run --no-default-browser-check"
-        L" --enable-logging=stderr --v=0 about:blank";
+    // 指纹注入：以缓存为准组装 --extended-parameters（见 fingerprint.h 冲突规则）。
+    // ui_fingerprint.json（UI 35+ 参数明文存档）作为 extra 传入，其中保护键被丢弃。
+    std::string uiExtra;
+    FpLoadUiExtra(dataDir, uiExtra);
+    std::wstring args = FpBuildCmdline(dataDir, port, uiExtra);
 
     HANDLE hProc = NULL; DWORD pid = 0, err = 0;
     LOG(L"---- 启动 " + name + L" ----");
@@ -204,13 +211,23 @@ static void OnStop() {
     std::wstring name = SelectedProfile();
     if (name.empty()) { SetStatus(L"请先在列表中选中一个 profile"); return; }
     std::lock_guard<std::mutex> lk(g.mu);
+    // 优先按 user-data-dir 树杀（覆盖 AdsPower 客户端起的、launcher 句柄之外的进程），
+    // 再结束 launcher 自己拉起的句柄。纯本地操作，不通知任何远端。
+    std::wstring dataDir = g.cfg.dataDir + L"\\" + name;
+    auto killed = FpKillProfileTree(dataDir);
     auto it = g.procs.find(name);
-    if (it == g.procs.end()) { SetStatus(name + L" 未在运行"); return; }
-    ::TerminateProcess(it->second.hProcess, 0);
-    ::CloseHandle(it->second.hProcess);
-    g.procs.erase(it);
-    LOG(L"已关闭 " + name);
-    SetStatus(L"已关闭 " + name);
+    if (it != g.procs.end()) {
+        if (std::find(killed.begin(), killed.end(), it->second.pid) == killed.end()) {
+            ::TerminateProcess(it->second.hProcess, 0);
+            killed.push_back(it->second.pid);
+        }
+        ::CloseHandle(it->second.hProcess);
+        g.procs.erase(it);
+    }
+    if (killed.empty()) { SetStatus(name + L" 未在运行"); return; }
+    std::wstring m = L"已关闭 " + name + L"（结束 " + std::to_wstring(killed.size()) + L" 个进程）";
+    LOG(m);
+    SetStatus(m);
 }
 
 static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
@@ -325,7 +342,15 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE, LPWSTR, int show) {
     ::UpdateWindow(g.hMain);
     AppendLog(L"日志文件：" + DebugLog::Instance().Path());
 
-    // 轻量 HTTP 状态接口（给 RPA 用），失败不影响主窗口。
+    // 轻量 HTTP 离线接口（给同目录 web-ui 用 + 给 RPA 用），失败不影响主窗口。
+    // 全是本机文件读写，不做任何出站网络。路由：
+    //   GET  /api/profiles            环境列表（目录即环境）
+    //   GET  /                        web-ui 单页（index.html）
+    //   GET  /<web-ui 下相对路径>     web-ui 静态文件（css/js）
+    //   POST /api/start {name}        指纹注入启动（FpBuildCmdline + CreateProcess）
+    //   POST /api/stop  {name}        进程树关闭（FpKillProfileTree + 句柄兜底）
+    //   GET  /api/fp/<static|dynamic|cookies|ui>?name=xxx   读指纹 JSON
+    //   POST /api/fp/save {name, static?, dynamic?, cookies?, ui?}  写指纹
     // 注意：工作线程只在启动瞬间拷贝 listen 端口与快照函数，
     // 之后不再触碰 UI 线程的 g.cfg / g.procs，避免数据竞争。
     // 另外工作线程内不再调用 LOG（DebugLog），避免与 UI 线程抢 wofstream；
@@ -351,26 +376,269 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE, LPWSTR, int show) {
         if (::bind(s, (sockaddr*)&a, sizeof(a)) != 0) {
             ::closesocket(s); return;
         }
-        ::listen(s, 5);
+        ::listen(s, 16);
+        auto urlDecode = [](const std::string& in) {
+            std::string o;
+            for (size_t i = 0; i < in.size(); i++) {
+                if (in[i] == '%' && i + 2 < in.size()) {
+                    char h[3] = { in[i + 1], in[i + 2], 0 };
+                    o += (char)strtol(h, NULL, 16); i += 2;
+                } else if (in[i] == '+') o += ' ';
+                else o += in[i];
+            }
+            return o;
+        };
+        auto jsonStr = [](const std::string& body, const char* key) -> std::string {
+            std::string q = std::string("\"") + key + "\"";
+            size_t p = body.find(q);
+            if (p == std::string::npos) return "";
+            p = body.find(':', p);
+            if (p == std::string::npos) return "";
+            p++;
+            while (p < body.size() && (body[p] == ' ' || body[p] == '\t')) p++;
+            if (p < body.size() && body[p] == '"') {
+                std::string o;
+                for (size_t i = p + 1; i < body.size(); i++) {
+                    if (body[i] == '\\' && i + 1 < body.size()) { o += body[i + 1]; i++; }
+                    else if (body[i] == '"') break;
+                    else o += body[i];
+                }
+                return o;
+            }
+            return "";
+        };
+        // web-ui 静态文件：exe 同目录 web-ui/（CI 打包时拷贝进去），MIME 够用即可
+        auto serveFile = [&](const std::string& rel, std::string& outBody, std::string& outCt) {
+            std::wstring path = AppDir() + L"\\web-ui\\" + W(rel);
+            std::string data;
+            if (!FpReadTextFile(path, data)) return false;
+            outBody = data;
+            if (rel.size() >= 5 && rel.compare(rel.size() - 5, 5, ".html") == 0) outCt = "text/html; charset=utf-8";
+            else if (rel.size() >= 4 && rel.compare(rel.size() - 4, 4, ".css") == 0) outCt = "text/css; charset=utf-8";
+            else outCt = "application/javascript; charset=utf-8";
+            return true;
+        };
         for (;;) {
             SOCKET c2 = ::accept(s, NULL, NULL);
             if (c2 == INVALID_SOCKET) break;
-            char req[1024]{}; ::recv(c2, req, sizeof(req) - 1, 0);
-            std::string body;
+            // 读完整 HTTP 头 + Content-Length 体（小请求，一次够用则直接用）
+            std::string req;
+            char tmp[4096];
+            int got = ::recv(c2, tmp, sizeof(tmp) - 1, 0);
+            if (got > 0) { tmp[got] = 0; req = tmp; }
+            size_t hEnd = req.find("\r\n\r\n");
+            std::string head = (hEnd == std::string::npos) ? req : req.substr(0, hEnd);
+            std::string rbody = (hEnd == std::string::npos) ? "" : req.substr(hEnd + 4);
+            size_t cl = 0;
+            {
+                size_t p = head.find("Content-Length:");
+                if (p != std::string::npos) cl = (size_t)atoi(head.c_str() + p + 15);
+            }
+            while (rbody.size() < cl) {
+                got = ::recv(c2, tmp, sizeof(tmp) - 1, 0);
+                if (got <= 0) break;
+                tmp[got] = 0; rbody.append(tmp, got);
+            }
+            bool isPost = head.compare(0, 4, "POST") == 0;
+            std::string target;
+            {
+                size_t a = head.find(' ');
+                size_t b = (a == std::string::npos) ? std::string::npos : head.find(' ', a + 1);
+                if (a != std::string::npos && b != std::string::npos) target = head.substr(a + 1, b - a - 1);
+            }
+            std::string q;
+            { size_t p = target.find('?'); if (p != std::string::npos) { q = target.substr(p + 1); target = target.substr(0, p); } }
+            auto qp = [&](const char* k) -> std::string {
+                std::string key = k; key += "=";
+                size_t p = q.find(key);
+                if (p == std::string::npos) return "";
+                size_t e = q.find('&', p);
+                return urlDecode(q.substr(p + key.size(), e == std::string::npos ? e : e - p - key.size()));
+            };
+            std::string body, ct = "application/json; charset=utf-8";
+            int code = 200;
             {
                 std::lock_guard<std::mutex> lk(g.mu);
-                auto ps = ScanProfiles(g.cfg, g.procs, g.ports);
-                body = "[";
-                for (size_t i = 0; i < ps.size(); i++) {
-                    if (i) body += ",";
-                    body += "{\"name\":\"" + N(ps[i].name) + "\",\"running\":" +
-                        (ps[i].running ? "true" : "false") + ",\"pid\":" +
-                        std::to_string(ps[i].pid) + ",\"port\":" + std::to_string(ps[i].port) + "}";
+                if (target == "/api/profiles" || target == "/api/list") {
+                    auto ps = ScanProfiles(g.cfg, g.procs, g.ports);
+                    body = "[";
+                    for (size_t i = 0; i < ps.size(); i++) {
+                        if (i) body += ",";
+                        body += "{\"name\":\"" + N(ps[i].name) + "\",\"running\":" +
+                            (ps[i].running ? "true" : "false") + ",\"pid\":" +
+                            std::to_string(ps[i].pid) + ",\"port\":" + std::to_string(ps[i].port) + "}";
+                    }
+                    body += "]";
+                } else if (target == "/api/start" && isPost) {
+                    std::wstring wname = W(jsonStr(rbody, "name"));
+                    std::wstring dataDir = g.cfg.dataDir + L"\\" + wname;
+                    if (wname.empty() || ::GetFileAttributesW(dataDir.c_str()) == INVALID_FILE_ATTRIBUTES) {
+                        code = 404; body = "{\"ok\":false,\"err\":\"profile not found\"}";
+                    } else {
+                        auto it = g.procs.find(wname);
+                        if (it != g.procs.end() && it->second.hProcess) {
+                            DWORD cd = 0;
+                            if (::GetExitCodeProcess(it->second.hProcess, &cd) && cd == STILL_ACTIVE) {
+                                body = "{\"ok\":true,\"pid\":" + std::to_string(it->second.pid) +
+                                    ",\"port\":" + std::to_string(g.ports[wname]) + ",\"running\":true}";
+                            } else { ::CloseHandle(it->second.hProcess); g.procs.erase(it); }
+                        }
+                        if (body.empty()) {
+                            ::DeleteFileW((dataDir + L"\\LOCK").c_str());
+                            ::DeleteFileW((dataDir + L"\\DevToolsActivePort").c_str());
+                            int p2 = 0;
+                            auto itp = g.ports.find(wname);
+                            if (itp != g.ports.end() && itp->second > 0 && PortFree(itp->second)) p2 = itp->second;
+                            if (!p2) {
+                                std::map<int, bool> used;
+                                for (auto& kv : g.ports) used[kv.second] = true;
+                                for (int pp = g.cfg.portBase; pp < g.cfg.portBase + 1000; pp++) {
+                                    if (!used[pp] && PortFree(pp)) { g.ports[wname] = pp; SavePorts(g.ports); p2 = pp; break; }
+                                }
+                            }
+                            if (!p2) { code = 503; body = "{\"ok\":false,\"err\":\"no free port\"}"; }
+                            else {
+                                std::string uiExtra;
+                                FpLoadUiExtra(dataDir, uiExtra);
+                                std::wstring cmd = FpBuildCmdline(dataDir, p2, uiExtra);
+                                std::wstring exe = g.cfg.sunBrowserDir + L"\\SunBrowser.exe";
+                                HANDLE hp = NULL; DWORD pid = 0, err = 0;
+                                if (!LaunchSunBrowser(exe, g.cfg.sunBrowserDir, cmd, &hp, &pid, &err)) {
+                                    code = 500; body = "{\"ok\":false,\"err\":\"CreateProcess failed\"}";
+                                } else {
+                                    g.procs[wname] = { hp, pid };
+                                    body = "{\"ok\":true,\"pid\":" + std::to_string(pid) +
+                                        ",\"port\":" + std::to_string(p2) + "}";
+                                }
+                            }
+                        }
+                    }
+                } else if (target == "/api/stop" && isPost) {
+                    std::wstring wname = W(jsonStr(rbody, "name"));
+                    std::wstring dataDir = g.cfg.dataDir + L"\\" + wname;
+                    auto killed = FpKillProfileTree(dataDir);
+                    auto it = g.procs.find(wname);
+                    if (it != g.procs.end()) {
+                        if (std::find(killed.begin(), killed.end(), it->second.pid) == killed.end()) {
+                            ::TerminateProcess(it->second.hProcess, 0);
+                            killed.push_back(it->second.pid);
+                        }
+                        ::CloseHandle(it->second.hProcess);
+                        g.procs.erase(it);
+                    }
+                    body = "{\"ok\":true,\"killed\":[";
+                    for (size_t i = 0; i < killed.size(); i++) {
+                        if (i) body += ",";
+                        body += std::to_string(killed[i]);
+                    }
+                    body += "]}";
+                } else if (target.compare(0, 8, "/api/fp/") == 0 && !isPost) {
+                    std::string kind = target.substr(8);
+                    std::wstring dataDir = g.cfg.dataDir + L"\\" + W(qp("name"));
+                    std::string j;
+                    bool ok = false;
+                    if (kind == "static") ok = FpLoadStaticJson(dataDir, j);
+                    else if (kind == "dynamic") ok = FpLoadDynamicJson(dataDir, j);
+                    else if (kind == "cookies") ok = FpLoadCookiesJson(dataDir, j);
+                    else if (kind == "ui") ok = FpLoadUiExtra(dataDir, j);
+                    else { code = 404; body = "{\"err\":\"unknown fp kind\"}"; }
+                    if (code == 200) {
+                        if (!ok) j = "";
+                        // JSON 转义后包一层
+                        std::string esc;
+                        for (char ch : j) {
+                            if (ch == '"' || ch == '\\') esc += '\\';
+                            esc += ch;
+                        }
+                        body = "{\"json\":\"" + esc + "\"}";
+                    }
+                } else if (target == "/api/fp/save" && isPost) {
+                    std::string nm = jsonStr(rbody, "name");
+                    std::wstring dataDir = g.cfg.dataDir + L"\\" + W(nm);
+                    std::vector<std::string> notes;
+                    // body 里 static/dynamic/cookies/ui 都是 JSON 字符串（已转义）；简单提取
+                    auto grabRaw = [&](const char* k) -> std::string {
+                        std::string pat = std::string("\"") + k + "\"";
+                        size_t p = rbody.find(pat);
+                        if (p == std::string::npos) return "";
+                        p = rbody.find(':', p);
+                        if (p == std::string::npos) return "";
+                        p++;
+                        while (p < rbody.size() && (rbody[p] == ' ' || rbody[p] == '\t')) p++;
+                        if (p >= rbody.size() || rbody[p] != '"') return "";
+                        std::string o;
+                        for (size_t i = p + 1; i < rbody.size(); i++) {
+                            if (rbody[i] == '\\' && i + 1 < rbody.size()) {
+                                char n = rbody[i + 1];
+                                if (n == 'n') o += '\n';
+                                else if (n == 't') o += '\t';
+                                else if (n == 'r') o += '\r';
+                                else o += n;
+                                i++;
+                            } else if (rbody[i] == '"') break;
+                            else o += rbody[i];
+                        }
+                        return o;
+                    };
+                    std::string sS = grabRaw("static"), sD = grabRaw("dynamic"),
+                                  sC = grabRaw("cookies"), sU = grabRaw("ui");
+                    // 保护键只进 ui 存档：static/dynamic 按原文写，但先做保护键回填——
+                    // 以缓存为准：若调用方 static 里改了保护键，用缓存值覆盖后再写。
+                    std::string curS, curD;
+                    FpLoadStaticJson(dataDir, curS);
+                    FpLoadDynamicJson(dataDir, curD);
+                    auto protectFill = [&](std::string& nw, const std::string& cur) {
+                        if (nw.empty() || cur.empty()) return;
+                        static const char* prot[] = { "ProxyChain","DeviceName","MacAddress",
+                            "MediaDevices","TTSEngines","Langs","AcceptLang","HardwareConcurrency",
+                            "DeviceMemory","Platform","UserId","CanvasMark","WebGLMark","AudioFp",
+                            "ClientRectFp", NULL };
+                        for (int i = 0; prot[i]; i++) {
+                            std::string cv = FpJsonGet(cur, prot[i]);
+                            if (!cv.empty()) {
+                                std::string merged = FpJsonSet(nw, prot[i], cv);
+                                if (!merged.empty()) nw = merged;
+                            }
+                        }
+                    };
+                    if (!sS.empty()) { protectFill(sS, curS); if (FpSaveStaticJson(dataDir, sS)) notes.push_back("static 已写入"); }
+                    if (!sD.empty()) {
+                        // dynamic 保护键：TimeZone/Geoposition/WebRTCAddress/DisableWebRTC
+                        static const char* dprot[] = { "TimeZone","Geoposition","WebRTCAddress","DisableWebRTC", NULL };
+                        for (int i = 0; dprot[i]; i++) {
+                            std::string cv = FpJsonGet(curD, dprot[i]);
+                            if (!cv.empty()) {
+                                std::string merged = FpJsonSet(sD, dprot[i], cv);
+                                if (!merged.empty()) sD = merged;
+                            }
+                        }
+                        if (FpSaveDynamicJson(dataDir, sD)) notes.push_back("dynamic 已写入");
+                    }
+                    if (!sC.empty() && FpSaveCookiesJson(dataDir, sC)) notes.push_back("cookies 已写入");
+                    if (!sU.empty() && FpSaveUiExtra(dataDir, sU)) notes.push_back("ui 存档已写入");
+                    body = "{\"ok\":true,\"notes\":[";
+                    for (size_t i = 0; i < notes.size(); i++) {
+                        if (i) body += ",";
+                        body += "\"" + notes[i] + "\"";
+                    }
+                    body += "]}";
+                } else if (target == "/" || target == "/index.html" || target == "/ui" || target == "/ui/") {
+                    std::string f, c2;
+                    if (!serveFile("index.html", f, c2)) { code = 404; body = "{\"err\":\"web-ui not bundled\"}"; ct = "application/json; charset=utf-8"; }
+                    else { body = f; ct = c2; }
+                } else if (target.compare(0, 1, "/") == 0 && !isPost &&
+                           target.find("..") == std::string::npos && target.find("/api/") != 0) {
+                    std::string rel = target.substr(1);
+                    std::string f, c2;
+                    if (!serveFile(rel, f, c2)) { code = 404; body = "{\"err\":\"not found\"}"; }
+                    else { body = f; ct = c2; }
+                } else {
+                    code = 404; body = "{\"err\":\"unknown route\"}";
                 }
-                body += "]";
             }
-            std::string res = "HTTP/1.0 200 OK\r\nContent-Type: application/json\r\nContent-Length: " +
-                std::to_string(body.size()) + "\r\n\r\n" + body;
+            std::string status = (code == 200) ? "200 OK" : (code == 404 ? "404 Not Found" : (code == 503 ? "503 Busy" : "500 Error"));
+            std::string res = "HTTP/1.0 " + status + "\r\nContent-Type: " + ct + "\r\nContent-Length: " +
+                std::to_string(body.size()) + "\r\nConnection: close\r\n\r\n" + body;
             ::send(c2, res.c_str(), (int)res.size(), 0);
             ::closesocket(c2);
         }

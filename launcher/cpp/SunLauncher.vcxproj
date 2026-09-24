@@ -37,7 +37,9 @@
   <ItemGroup>
     <ClCompile Include="main.cpp" />
     <ClCompile Include="util.cpp" />
+    <ClCompile Include="fingerprint.cpp" />
     <ClInclude Include="SunLauncher.h" />
+    <ClInclude Include="fingerprint.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
 </Project>
