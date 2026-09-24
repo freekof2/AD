@@ -24,7 +24,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          $files = @("web-ui/index.html", "web-ui/css/app.css", "web-ui/js/api.js", "web-ui/js/mock.js", "web-ui/js/app.js", "web-ui/README.md")
+          $files = @("web-ui/index.html", "web-ui/css/app.css", "web-ui/js/fp.js", "web-ui/js/api.js", "web-ui/js/mock.js", "web-ui/js/app.js", "web-ui/README.md")
           foreach ($f in $files) {
             if (-not (Test-Path $f)) { throw "missing: $f" }
             Write-Host "ok: $f ($((Get-Item $f).Length) bytes)"
@@ -35,22 +35,23 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
           node --version
-          foreach ($f in @("web-ui/js/api.js", "web-ui/js/mock.js", "web-ui/js/app.js")) {
+          foreach ($f in @("web-ui/js/fp.js", "web-ui/js/api.js", "web-ui/js/mock.js", "web-ui/js/app.js")) {
             node --check $f
             Write-Host "syntax ok: $f"
           }
 
-      - name: HTML smoke check (8 pages + scripts)
+      - name: HTML smoke check (single-page anchors + scripts)
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
           $html = Get-Content web-ui/index.html -Raw
-          $pages = @("page-profiles", "page-groups", "page-proxy", "page-fingerprint", "page-cookie", "page-cache", "page-kernel", "page-imexport")
-          foreach ($p in $pages) {
-            if ($html -notmatch $p) { throw "missing page: $p" }
-            Write-Host "page ok: $p"
+          # 单页版锚点：环境表 + 指纹面板（旧 8 页 page-* 已不存在，见 build-app.yml 注释）
+          $anchors = @("sec-env", "sec-fp", "profileRows", "fpProfile", "fpBrowserDir", "fpCookie")
+          foreach ($p in $anchors) {
+            if ($html -notmatch $p) { throw "missing anchor: $p" }
+            Write-Host "anchor ok: $p"
           }
-          foreach ($s in @('js/api.js', 'js/mock.js', 'js/app.js')) {
+          foreach ($s in @('js/fp.js', 'js/api.js', 'js/mock.js', 'js/app.js')) {
             if ($html -notmatch [regex]::Escape($s)) { throw "missing script: $s" }
           }
           Write-Host "all scripts referenced"
