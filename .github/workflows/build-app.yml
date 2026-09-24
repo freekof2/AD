@@ -121,6 +121,32 @@ jobs:
             if ($cpp -notmatch [regex]::Escape($s)) { throw "missing symbol '$s' in fingerprint.cpp" }
             Write-Host "symbol ok: $s"
           }
+          # 2b. 原生指纹窗口模块（web-ui 1:1 纯原生重写，字段与 collectFp/applyUiExtra 对齐）
+          $fph = Get-Content launcher\cpp\fp_ui.h -Raw
+          foreach ($s in @("FpFormData", "proxyPass", "mediaDevices", "webglMeta", "webgpu",
+                           "cpuMode", "ramMode", "devNameMode", "macMode", "doNotTrack",
+                           "portScan", "hardwareAccel", "disableTls", "launchArgs",
+                           "FpUiShowModal", "FpFormToUiJson", "FpFormFromUiJson", "FpFormToFpConfig")) {
+            if ($fph -notmatch [regex]::Escape($s)) { throw "missing symbol '$s' in fp_ui.h" }
+            Write-Host "fp_ui.h ok: $s"
+          }
+          $fpc = Get-Content launcher\cpp\fp_ui.cpp -Raw
+          foreach ($s in @("FpFormToUiJson", "FpFormFromUiJson", "FpFormToFpConfig",
+                           "FpBuildUA", "FpRandomMac", "FpRandomDev",
+                           "audioinput_num", "videoinput_num", "audiooutput_num",
+                           "webgl_config", "webgpu_switch", "gpu_adapterinfo_vendor",
+                           "mac_address_config", "device_name_switch",
+                           "FpBuildPages", "FpFill", "FpCollect", "FpUiShowModal",
+                           "proxyPass", "FpSaveUiExtra", "FpSaveCookiesJson")) {
+            if ($fpc -notmatch [regex]::Escape($s)) { throw "missing symbol '$s' in fp_ui.cpp" }
+            Write-Host "fp_ui.cpp ok: $s"
+          }
+          # 2c. vcxproj 必须编译新模块
+          $vcx = Get-Content launcher\cpp\SunLauncher.vcxproj -Raw
+          foreach ($s in @("fp_ui.cpp", "fp_ui.h")) {
+            if ($vcx -notmatch [regex]::Escape($s)) { throw "missing '$s' in vcxproj" }
+            Write-Host "vcxproj ok: $s"
+          }
           # 3. C++ 离线 HTTP 路由齐备：
           #    A 组离线自有（web-ui/api.js 契约）：profiles/start/stop/fp/proxy/check + serveFile；
           #    B 组 asar 兼容（main.min.js 本地 Koa 路由离线版，见 main.cpp 注释）：

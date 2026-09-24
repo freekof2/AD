@@ -1,14 +1,18 @@
 // main.cpp — Win32 原生窗口：profile 列表 + 启动/关闭/新建 + 目录修改 + DEBUG 日志窗
 // 离线版：启动时经 fingerprint 模块注入 --extended-parameters（static/dynamic/cookies
 // 三文件指针 + UserId + fbcc 确定性噪声种子），只读写本地缓存目录，不做任何网络 IO。
+// 指纹配置原生窗口见 fp_ui.h/cpp（web-ui/index.html 单页版 1:1 纯原生重写，Tab 5 页）。
 #include "SunLauncher.h"
 #include "fingerprint.h"
+#include "fp_ui.h"
 
 static AppState g;
 
 enum {
     IDC_LIST = 100, IDC_START, IDC_STOP, IDC_REFRESH, IDC_NEWNAME, IDC_CREATE,
     IDC_DATADIR, IDC_BROWSERDIR, IDC_SAVEDIR, IDC_LOG, IDC_CLEARLOG, IDC_OPENDIR,
+    IDC_SEARCH, IDC_CHECKALL, IDC_BSTART, IDC_BSTOP, IDC_BDEL, IDC_FPCONFIG,
+    IDC_GROUPLBL,
     TIMER_POLL = 1,
 };
 
@@ -72,14 +76,30 @@ static void RefreshList() {
                 keep = tmp;
                 size_t p = keep.find(L"  [");
                 if (p != std::wstring::npos) keep = keep.substr(0, p);
+                // 去勾选前缀 "[x]/[ ] "
+                if (keep.size() > 4 && keep[0] == L'[' && keep[2] == L']' && keep[3] == L' ')
+                    keep = keep.substr(4);
             }
         }
     }
     auto profiles = ScanProfiles(g.cfg, g.procs, g.ports);
     ::SendMessageW(g.hList, LB_RESETCONTENT, 0, 0);
     int restore = -1;
+    // 运行计数（对齐 web-ui qWait/qRun/qOpen：等待=停止数，运行=运行数）
+    int nOpen = 0, nClosed = 0;
     for (auto& p : profiles) {
-        std::wstring item = p.name;
+        // 搜索过滤（对齐 web-ui globalSearch：按目录名子串，不区分大小写）
+        if (!g.searchFilter.empty()) {
+            std::wstring n = p.name, f = g.searchFilter;
+            for (auto& c : n) c = towlower(c);
+            for (auto& c : f) c = towlower(c);
+            if (n.find(f) == std::wstring::npos) continue;
+        }
+        if (p.running) nOpen++; else nClosed++;
+        std::wstring item = L"[";
+        auto ck = g.checked.find(p.name);
+        item += (ck != g.checked.end() && ck->second) ? L"x] " : L" ] ";
+        item += p.name;
         if (p.running) item += L"  [运行 pid=" + std::to_wstring(p.pid) +
             L" port=" + std::to_wstring(p.port) + L"]";
         else if (p.port) item += L"  [停止 port=" + std::to_wstring(p.port) + L"]";
@@ -89,6 +109,138 @@ static void RefreshList() {
         (void)idx;
     }
     if (restore >= 0) ::SendMessageW(g.hList, LB_SETCURSEL, restore, 0);
+    // 状态栏尾部追加队列计数（对齐 web-ui queue-card）
+    if (g.hStatus) {
+        wchar_t cur[512]{};
+        ::GetWindowTextW(g.hStatus, cur, 512);
+        std::wstring s = cur;
+        size_t q = s.find(L" | 队列");
+        if (q != std::wstring::npos) s = s.substr(0, q);
+        if (s.empty()) s = L"就绪";
+        s += L" | 队列 等待" + std::to_wstring(nClosed) +
+             L" 运行" + std::to_wstring(nOpen);
+        ::SetWindowTextW(g.hStatus, s.c_str());
+    }
+}
+
+// 从列表行文本反解 profile 名（去 "[x]/[ ] " 前缀，截 "  [" 后缀）
+static std::wstring ListNameOf(const std::wstring& item) {
+    std::wstring s = item;
+    if (s.size() > 4 && s[0] == L'[' && s[2] == L']' && s[3] == L' ')
+        s = s.substr(4);
+    size_t p = s.find(L"  [");
+    if (p != std::wstring::npos) s = s.substr(0, p);
+    return s;
+}
+
+static void OnStopOneLocked(const std::wstring& name, std::vector<DWORD>& killedOut);
+
+// 批量操作（对齐 web-ui batch-start/batch-stop/batch-del：按勾选集）
+static void OnBatchStart() {
+    std::vector<std::wstring> names;
+    {
+        std::lock_guard<std::mutex> lk(g.mu);
+        for (auto& kv : g.checked)
+            if (kv.second) names.push_back(kv.first);
+    }
+    if (names.empty()) { SetStatus(L"请先勾选需要操作的环境（双击列表行勾选/取消）"); return; }
+    int ok = 0;
+    {
+        std::lock_guard<std::mutex> lk(g.mu);
+        for (auto& n : names)
+            if (StartOneLocked(n)) ok++;
+    }
+    LOG(L"批量启动 " + std::to_wstring(ok) + L"/" + std::to_wstring(names.size()));
+    SetStatus(L"批量启动完成 " + std::to_wstring(ok) + L"/" + std::to_wstring(names.size()));
+}
+
+static void OnBatchStop() {
+    std::vector<std::wstring> names;
+    {
+        std::lock_guard<std::mutex> lk(g.mu);
+        for (auto& kv : g.checked)
+            if (kv.second) names.push_back(kv.first);
+    }
+    if (names.empty()) { SetStatus(L"请先勾选需要操作的环境（双击列表行勾选/取消）"); return; }
+    int cnt = 0;
+    {
+        std::lock_guard<std::mutex> lk(g.mu);
+        for (auto& n : names) {
+            std::vector<DWORD> k;
+            OnStopOneLocked(n, k);
+            cnt += (int)k.size();
+        }
+    }
+    LOG(L"批量关闭 " + std::to_wstring(names.size()) + L" 个环境，共结束 " + std::to_wstring(cnt) + L" 个进程");
+    SetStatus(L"批量关闭完成（结束 " + std::to_wstring(cnt) + L" 个进程）");
+}
+
+static void OnBatchDel() {
+    std::vector<std::wstring> names;
+    {
+        std::lock_guard<std::mutex> lk(g.mu);
+        for (auto& kv : g.checked)
+            if (kv.second) names.push_back(kv.first);
+    }
+    if (names.empty()) { SetStatus(L"请先勾选需要删除的环境"); return; }
+    // 运行中不删：先停再删
+    {
+        std::lock_guard<std::mutex> lk(g.mu);
+        for (auto& n : names) {
+            std::vector<DWORD> k;
+            OnStopOneLocked(n, k);
+        }
+    }
+    int del = 0;
+    for (auto& n : names) {
+        std::wstring dd = g.cfg.dataDir + L"\\" + n;
+        // 递归删目录（与 /api/deleteCacheById 同逻辑的本地版）
+        std::vector<std::wstring> stack;
+        stack.push_back(dd);
+        for (size_t si = 0; si < stack.size(); si++) {
+            WIN32_FIND_DATAW fd{};
+            HANDLE fh = ::FindFirstFileW((stack[si] + L"\\*").c_str(), &fd);
+            if (fh == INVALID_HANDLE_VALUE) continue;
+            do {
+                std::wstring n2 = fd.cFileName;
+                if (n2 == L"." || n2 == L"..") continue;
+                std::wstring fp = stack[si] + L"\\" + n2;
+                if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) stack.push_back(fp);
+                else ::DeleteFileW(fp.c_str());
+            } while (::FindNextFileW(fh, &fd));
+            ::FindClose(fh);
+        }
+        for (size_t si = stack.size(); si > 0; si--)
+            ::RemoveDirectoryW(stack[si - 1].c_str());
+        {
+            std::lock_guard<std::mutex> lk(g.mu);
+            g.checked.erase(n);
+            g.ports.erase(n);
+        }
+        del++;
+        LOG(L"删除环境 " + n);
+    }
+    {
+        std::lock_guard<std::mutex> lk(g.mu);
+        SavePorts(g.ports);
+    }
+    SetStatus(L"已删除 " + std::to_wstring(del) + L" 个环境");
+}
+
+// 新建环境（对齐 web-ui btnDrawerSave：中文名自动生成 ascii 目录名，中文存 remark 风格）
+// 原生版：输入名含非 ascii 或无下划线时生成 env<base36>_local 目录，并在 ui 存档 remark 留原名。
+static std::wstring MakeProfileDirName(const std::wstring& input, std::wstring& remarkOut) {
+    bool ascii = true, hasUnder = false;
+    for (auto c : input) {
+        if (c > 127 || c == L'_') { if (c == L'_') hasUnder = true; else if (c > 127) ascii = false; }
+        if (c > 127) ascii = false;
+    }
+    if (ascii && hasUnder) { remarkOut.clear(); return input; }
+    unsigned long long t = (unsigned long long)time(NULL);
+    wchar_t b[64];
+    wsprintfW(b, L"env%llx_local", t & 0xFFFFFFFF);
+    remarkOut = input;
+    return b;
 }
 
 static int AllocPortLocked(const std::wstring& name) {
@@ -109,33 +261,29 @@ static int AllocPortLocked(const std::wstring& name) {
 static std::wstring SelectedProfile() {
     int idx = (int)::SendMessageW(g.hList, LB_GETCURSEL, 0, 0);
     if (idx < 0) return L"";
+    wchar_t tmp[512]{};
+    if (::SendMessageW(g.hList, LB_GETTEXT, idx, (LPARAM)tmp) == LB_ERR) return L"";
+    // 注意：列表行带 "[x]/[ ] " 前缀与 "  [运行/停止...]" 后缀，直接反解，
+    // 不再按 ScanProfiles 索引（搜索过滤后索引会错位）。
     std::lock_guard<std::mutex> lk(g.mu);
-    auto profiles = ScanProfiles(g.cfg, g.procs, g.ports);
-    if (idx >= (int)profiles.size()) return L"";
-    return profiles[idx].name;
+    return ListNameOf(tmp);
 }
 
-static void OnStart() {
-    std::wstring name = SelectedProfile();
-    if (name.empty()) { SetStatus(L"请先在列表中选中一个 profile"); return; }
-    std::lock_guard<std::mutex> lk(g.mu);
+// 指定 profile 启动（单启 OnStart 与批量共用；调用方需持有 g.mu）
+static bool StartOneLocked(const std::wstring& name) {
     auto it = g.procs.find(name);
     if (it != g.procs.end() && it->second.hProcess) {
         DWORD code = 0;
-        if (::GetExitCodeProcess(it->second.hProcess, &code) && code == STILL_ACTIVE) {
-            SetStatus(L"已在运行 pid=" + std::to_wstring(it->second.pid));
-            return;
-        }
+        if (::GetExitCodeProcess(it->second.hProcess, &code) && code == STILL_ACTIVE)
+            return true; // 已在运行
         ::CloseHandle(it->second.hProcess);
         g.procs.erase(it);
     }
     std::wstring exe = g.cfg.sunBrowserDir + L"\\SunBrowser.exe";
     if (::GetFileAttributesW(exe.c_str()) == INVALID_FILE_ATTRIBUTES) {
         std::wstring m = L"找不到 SunBrowser.exe：" + exe;
-        LOG(m); SetStatus(m); return;
+        LOG(m); SetStatus(m); return false;
     }
-    // 预检：版本子目录 + chrome.dll 是否存在（静默退出的头号嫌疑）。
-    // 枚举浏览器目录下的 */chrome.dll，找到就记录路径和大小，找不到直接 abort。
     {
         WIN32_FIND_DATAW fd{};
         HANDLE fh = ::FindFirstFileW((g.cfg.sunBrowserDir + L"\\*").c_str(), &fd);
@@ -158,24 +306,21 @@ static void OnStart() {
         }
         if (!found) {
             std::wstring m = L"预检失败：浏览器目录下找不到 */chrome.dll（版本子目录缺失或损坏）";
-            LOG(m); SetStatus(m); return;
+            LOG(m); SetStatus(m); return false;
         }
     }
     std::wstring dataDir = g.cfg.dataDir + L"\\" + name;
     ::CreateDirectoryW(g.cfg.dataDir.c_str(), NULL);
     ::CreateDirectoryW(dataDir.c_str(), NULL);
     ::CreateDirectoryW((dataDir + L"\\Default").c_str(), NULL);
-    // 起前清理上次残留的单实例锁（官方同目录二次启动会直接静默退出）
     ::DeleteFileW((dataDir + L"\\LOCK").c_str());
     ::DeleteFileW((dataDir + L"\\DevToolsActivePort").c_str());
 
     int port = AllocPortLocked(name);
     if (port == 0) {
         std::wstring m = L"无可用调试端口（" + std::to_wstring(g.cfg.portBase) + L" 起 1000 个全占）";
-        LOG(m); SetStatus(m); return;
+        LOG(m); SetStatus(m); return false;
     }
-    // 指纹注入：以缓存为准组装 --extended-parameters（见 fingerprint.h 冲突规则）。
-    // ui_fingerprint.json（UI 35+ 参数明文存档）作为 extra 传入，其中保护键被丢弃。
     std::string uiExtra;
     FpLoadUiExtra(dataDir, uiExtra);
     std::wstring args = FpBuildCmdline(dataDir, port, uiExtra);
@@ -184,33 +329,47 @@ static void OnStart() {
     LOG(L"---- 启动 " + name + L" ----");
     if (!LaunchSunBrowser(exe, g.cfg.sunBrowserDir, args, &hProc, &pid, &err)) {
         std::wstring m = L"CreateProcess 失败 err=" + std::to_wstring(err) + L"，见 debug.log";
-        LOG(m); SetStatus(m); return;
+        LOG(m); SetStatus(m); return false;
     }
-    // 存活检查：Chromium 启动器静默退出分支会在 2 秒内结束。
-    // 注意 exit=4294967295 即 0xFFFFFFFF = STILL_ACTIVE(259)? 不，STILL_ACTIVE=259；
-    // 0xFFFFFFFF 是 Chromium 约定的“通用初始化失败”退出码，见 chrome exit_codes。
     ::Sleep(3000);
     DWORD code = 0;
     if (::GetExitCodeProcess(hProc, &code) && code != STILL_ACTIVE) {
-        // exit 码转 signed 显示，方便对照 Chromium 的 exit_codes.h
         LONG scode = (LONG)code;
         std::wstring m = L"SunBrowser 3 秒内退出 exit=" + std::to_wstring(code) +
             L" (signed=" + std::to_wstring(scode) + L")，[browser] 输出与完整命令见 debug.log";
         LOG(m + L" pid=" + std::to_wstring(pid));
         ::CloseHandle(hProc);
         SetStatus(m);
-        return;
+        return false;
     }
     g.procs[name] = { hProc, pid };
     std::wstring m = L"已启动 " + name + L" pid=" + std::to_wstring(pid) +
         L" port=" + std::to_wstring(port);
     LOG(m); SetStatus(m);
+    return true;
+}
+
+static void OnStart() {
+    std::wstring name = SelectedProfile();
+    if (name.empty()) { SetStatus(L"请先在列表中选中一个 profile"); return; }
+    std::lock_guard<std::mutex> lk(g.mu);
+    StartOneLocked(name);
 }
 
 static void OnStop() {
     std::wstring name = SelectedProfile();
     if (name.empty()) { SetStatus(L"请先在列表中选中一个 profile"); return; }
     std::lock_guard<std::mutex> lk(g.mu);
+    std::vector<DWORD> killed;
+    OnStopOneLocked(name, killed);
+    if (killed.empty()) { SetStatus(name + L" 未在运行"); return; }
+    std::wstring m = L"已关闭 " + name + L"（结束 " + std::to_wstring(killed.size()) + L" 个进程）";
+    LOG(m);
+    SetStatus(m);
+}
+
+// 指定 profile 停止（单停 OnStop、批量、删除共用；调用方需持有 g.mu）
+static void OnStopOneLocked(const std::wstring& name, std::vector<DWORD>& killedOut) {
     // 优先按 user-data-dir 树杀（覆盖 AdsPower 客户端起的、launcher 句柄之外的进程），
     // 再结束 launcher 自己拉起的句柄。纯本地操作，不通知任何远端。
     std::wstring dataDir = g.cfg.dataDir + L"\\" + name;
@@ -224,10 +383,7 @@ static void OnStop() {
         ::CloseHandle(it->second.hProcess);
         g.procs.erase(it);
     }
-    if (killed.empty()) { SetStatus(name + L" 未在运行"); return; }
-    std::wstring m = L"已关闭 " + name + L"（结束 " + std::to_wstring(killed.size()) + L" 个进程）";
-    LOG(m);
-    SetStatus(m);
+    killedOut = killed;
 }
 
 static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
@@ -254,6 +410,15 @@ static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
         mkBtn(IDC_START, L"启动", 444, 76, 100);
         mkBtn(IDC_STOP, L"关闭", 444, 114, 100);
         mkBtn(IDC_REFRESH, L"刷新", 444, 152, 100);
+        mkBtn(IDC_FPCONFIG, L"指纹配置", 444, 190, 100);
+        ::CreateWindowW(L"STATIC", L"搜索:", WS_CHILD | WS_VISIBLE, 12, 384, 40, 22, h, NULL, hi, NULL);
+        g.hSearch = ::CreateWindowW(L"EDIT", L"", WS_CHILD | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL,
+            56, 382, 240, 24, h, (HMENU)(INT_PTR)IDC_SEARCH, hi, NULL);
+        mkBtn(IDC_BSTART, L"批量启动", 306, 380, 84);
+        mkBtn(IDC_BSTOP, L"批量停止", 394, 380, 84);
+        mkBtn(IDC_BDEL, L"批量删除", 482, 380, 84);
+        ::CreateWindowW(L"STATIC", L"DEBUG 日志（debug.log 尾部，启动命令行/退出码都在里面；双击列表行=勾选/取消，多选后用批量按钮）:",
+            WS_CHILD | WS_VISIBLE, 12, 408, 560, 22, h, NULL, hi, NULL);
         ::CreateWindowW(L"STATIC", L"新建 profile:", WS_CHILD | WS_VISIBLE, 444, 200, 100, 22, h, NULL, hi, NULL);
         ::CreateWindowW(L"EDIT", L"", WS_CHILD | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL,
             444, 224, 232, 26, h, (HMENU)(INT_PTR)IDC_NEWNAME, hi, NULL);
@@ -273,9 +438,49 @@ static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
     }
     case WM_COMMAND: {
         int id = LOWORD(wp);
+        int code = HIWORD(wp);
         if (id == IDC_START) { OnStart(); RefreshList(); RefreshLogView(); }
         else if (id == IDC_STOP) { OnStop(); RefreshList(); RefreshLogView(); }
         else if (id == IDC_REFRESH) { RefreshList(); RefreshLogView(); SetStatus(L"已刷新"); }
+        else if (id == IDC_FPCONFIG) {
+            std::wstring name = SelectedProfile();
+            if (name.empty()) { SetStatus(L"请先选中一个环境再点指纹配置"); break; }
+            Config cfgCopy;
+            { std::lock_guard<std::mutex> lk(g.mu); cfgCopy = g.cfg; }
+            // 模态指纹窗口（fp_ui.cpp）：Tab 5 页，保存写 ui_fingerprint.json + cookies
+            if (FpUiShowModal(h, cfgCopy, name)) {
+                LOG(L"指纹已保存 " + name);
+                SetStatus(L"指纹已保存 " + name);
+            }
+            RefreshList(); RefreshLogView();
+        }
+        else if (id == IDC_BSTART) { OnBatchStart(); RefreshList(); RefreshLogView(); }
+        else if (id == IDC_BSTOP) { OnBatchStop(); RefreshList(); RefreshLogView(); }
+        else if (id == IDC_BDEL) {
+            // 二次确认（对齐 web-ui confirm）
+            if (::MessageBoxW(h, L"确定删除勾选的环境吗？目录将被整体删除。", L"批量删除",
+                    MB_YESNO | MB_ICONWARNING) == IDYES) {
+                OnBatchDel(); RefreshList(); RefreshLogView();
+            }
+        }
+        else if (id == IDC_SEARCH && code == EN_CHANGE) {
+            std::wstring q = GetEdit(g.hSearch);
+            { std::lock_guard<std::mutex> lk(g.mu); g.searchFilter = q; }
+            RefreshList();
+        }
+        else if (id == IDC_LIST && code == LBN_DBLCLK) {
+            // 双击=勾选/取消（对齐 web-ui 表格 checkbox）
+            int idx = (int)::SendMessageW(g.hList, LB_GETCURSEL, 0, 0);
+            if (idx >= 0) {
+                wchar_t tmp[512]{};
+                if (::SendMessageW(g.hList, LB_GETTEXT, idx, (LPARAM)tmp) != LB_ERR) {
+                    std::wstring nm = ListNameOf(tmp);
+                    std::lock_guard<std::mutex> lk(g.mu);
+                    g.checked[nm] = !g.checked[nm];
+                }
+                RefreshList();
+            }
+        }
         else if (id == IDC_CREATE) {
             std::wstring name = GetEdit(::GetDlgItem(h, IDC_NEWNAME));
             // 去首尾空格

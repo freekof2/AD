@@ -132,4 +132,7 @@ struct AppState {
     std::map<std::wstring, int>        ports; // profile -> 调试端口（持久化 ports.json）
     std::mutex mu;
     HWND hMain = NULL, hList = NULL, hDataDir = NULL, hBrowserDir = NULL, hLog = NULL, hStatus = NULL;
+    HWND hSearch = NULL;   // 环境搜索框（对齐 web-ui globalSearch）
+    std::wstring searchFilter; // 搜索关键字（刷新列表时过滤）
+    std::map<std::wstring, bool> checked; // 多选勾选态（对齐 web-ui 表格 checkbox，批量操作用）
 };
