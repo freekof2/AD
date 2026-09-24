@@ -134,6 +134,7 @@ static std::wstring ListNameOf(const std::wstring& item) {
 }
 
 static void OnStopOneLocked(const std::wstring& name, std::vector<DWORD>& killedOut);
+static bool StartOneLocked(const std::wstring& name);
 
 // 批量操作（对齐 web-ui batch-start/batch-stop/batch-del：按勾选集）
 static void OnBatchStart() {

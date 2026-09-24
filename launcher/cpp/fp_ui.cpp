@@ -38,8 +38,8 @@ std::string FpFormToUiJson(const FpFormData& f) {
     o += ",\"pageLanguage\":\"" + JEsc(f.pageLang) + "\",\"resMode\":\"" + JEsc(f.resMode) + "\"";
     o += ",\"resolution\":\"" + JEsc(f.resolution) + "\",\"resW\":\"" + JEsc(f.resW) + "\",\"resH\":\"" + JEsc(f.resH) + "\"";
     o += ",\"fontMode\":\"" + JEsc(f.fontMode) + "\",\"fonts\":\"" + JEsc(f.fonts) + "\"";
-    o += ",\"canvas\":\"" + std::string(f.swCanvas ? "1" : "0") + "\",\"webglImage\":\"" + (f.swWebglImg ? "1" : "0") + "\"";
-    o += ",\"audio\":\"" + std::string(f.swAudio ? "1" : "0") + "\",\"clientRects\":\"" + (f.swClientRects ? "1" : "0") + "\"";
+    o += ",\"canvas\":\"" + std::string(f.swCanvas ? "1" : "0") + "\",\"webglImage\":\"" + std::string(f.swWebglImg ? "1" : "0") + "\"";
+    o += ",\"audio\":\"" + std::string(f.swAudio ? "1" : "0") + "\",\"clientRects\":\"" + std::string(f.swClientRects ? "1" : "0") + "\"";
     o += ",\"speechSwitch\":\"" + std::string(f.swSpeech ? "1" : "0") + "\",\"mediaDevices\":\"" + JEsc(f.mediaDevices) + "\"";
     o += ",\"webglMeta\":\"" + JEsc(f.webglMeta) + "\",\"vendor\":\"" + JEsc(f.vendor) + "\"";
     o += ",\"renderer\":\"" + JEsc(f.renderer) + "\",\"webgpu\":\"" + JEsc(f.webgpu) + "\"";
@@ -193,9 +193,10 @@ std::string FpFormToFpConfig(const FpFormData& f) {
     if (f.geoIp != L"ip")
         o += ",\"latitude\":\"" + N(f.lat) + "\",\"longitude\":\"" + N(f.lng) + "\",\"accuracy\":\"" + N(f.accuracy) + "\"";
     else o += ",\"latitude\":\"\",\"longitude\":\"\",\"accuracy\":\"\"";
-    std::string lang = N(f.langList), cnt = 1;
+    std::string lang = N(f.langList);
+    int cnt = 1;
     { size_t p = 0; cnt = 0; while (p <= lang.size()) { size_t e = lang.find(',', p); cnt++; if (e == std::string::npos) break; p = e + 1; } }
-    o += ",\"language\":\"" + lang + "\",\"language_switch\":\"" + (cnt <= 1 ? "1" : "0") + "\"";
+    o += ",\"language\":\"" + lang + "\",\"language_switch\":\"" + std::string(cnt <= 1 ? "1" : "0") + "\"";
     std::string res = N(f.resolution);
     if (f.resMode == L"custom" && !f.resW.empty() && !f.resH.empty())
         res = N(f.resW) + "_" + N(f.resH);
@@ -206,8 +207,8 @@ std::string FpFormToFpConfig(const FpFormData& f) {
     std::string dnt = "";
     if (f.doNotTrack == L"open") dnt = "true"; else if (f.doNotTrack == L"close") dnt = "false";
     o += ",\"do_not_track\":\"" + dnt + "\"";
-    o += ",\"canvas\":\"" + std::string(f.swCanvas ? "1" : "0") + "\",\"webgl_image\":\"" + (f.swWebglImg ? "1" : "0") + "\"";
-    o += ",\"audio\":\"" + std::string(f.swAudio ? "1" : "0") + "\",\"client_rects\":\"" + (f.swClientRects ? "1" : "0") + "\"";
+    o += ",\"canvas\":\"" + std::string(f.swCanvas ? "1" : "0") + "\",\"webgl_image\":\"" + std::string(f.swWebglImg ? "1" : "0") + "\"";
+    o += ",\"audio\":\"" + std::string(f.swAudio ? "1" : "0") + "\",\"client_rects\":\"" + std::string(f.swClientRects ? "1" : "0") + "\"";
     // 媒体设备三数量：官方钳制 <=0 按 1、>=9 按 8（与 web-ui clampMedia 一致）
     auto clampMedia = [](const std::wstring& s) -> std::string {
         int n = 0;
@@ -220,7 +221,7 @@ std::string FpFormToFpConfig(const FpFormData& f) {
     o += ",\"media_devices_num\":{\"audioinput_num\":" + clampMedia(f.mediaIn) +
          ",\"videoinput_num\":" + clampMedia(f.mediaVid) +
          ",\"audiooutput_num\":" + clampMedia(f.mediaOut) + "}";
-    o += ",\"speech_switch\":\"" + (f.swSpeech ? "1" : "0") + "\"";
+    o += ",\"speech_switch\":\"" + std::string(f.swSpeech ? "1" : "0") + "\"";
     o += ",\"webgl\":\"" + std::string(f.webglMeta == L"custom" ? "2" : "0") + "\"";
     if (f.webglMeta == L"custom") {
         // webgpu_switch：disabled->0，其余 1；custom 时追加适配器 vendor/architecture
