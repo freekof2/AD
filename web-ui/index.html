@@ -8,16 +8,6 @@
 </head>
 <body>
 <div class="app single">
-  <!-- ============ 顶栏（代替原左边栏） ============ -->
-  <header class="topbar single-top">
-    <div class="top-actions">
-      <input class="search-input" id="globalSearch" placeholder="搜索环境目录名 / 备注...">
-      <input class="mini-input" id="apiBase" value="http://127.0.0.1:18900" spellcheck="false" title="本地启动器地址（本机离线，无云端）">
-      <span class="conn" id="connStatus">本地演示模式（mock）</span>
-      <button class="btn primary" id="btnNewProfile">+ 新建环境</button>
-    </div>
-  </header>
-
   <main class="main single-main">
     <!-- ===== 1. 环境/账号 CRUD + 启动/停止/激活/多开队列 ===== -->
     <section class="card" id="sec-env">
@@ -26,10 +16,13 @@
         <span class="queue-card">多开队列：等待中 <b id="qWait">0</b> · 启动中 <b id="qRun">0</b> · 运行中 <b id="qOpen">0</b></span>
       </h3>
       <div class="toolbar">
+        <button class="btn primary" id="btnNewProfile">+ 新建环境</button>
         <button class="btn" data-act="batch-start">批量启动</button>
         <button class="btn" data-act="batch-stop">批量停止</button>
         <button class="btn danger" data-act="batch-del">批量删除</button>
         <div class="spacer"></div>
+        <input class="search-input" id="globalSearch" placeholder="搜索环境目录名 / 备注...">
+        <input class="mini-input" id="apiBase" value="http://127.0.0.1:18900" spellcheck="false" title="本地启动器地址（本机离线，无云端）">
         <span class="hint">每行「指纹配置」按钮可直接定位到下方指纹面板</span>
       </div>
       <div class="tbl-container">
@@ -108,12 +101,7 @@
           </div>
           <div class="fp-input-row">
             <span class="fp-input-label">User-Agent</span>
-            <select class="fp-select" id="fpUaPreset" style="width:100px;flex-shrink:0;">
-              <option value="153">153</option>
-              <option value="144">144</option>
-              <option value="128">128</option>
-              <option value="121">121</option>
-            </select>
+            <input class="fp-input" id="fpUaPreset" value="152" placeholder="如 152" spellcheck="false" style="width:100px;flex-shrink:0;" title="UA大版本号，换按钮按此版本生成">
             <input class="fp-input flex-1" id="fpUA" spellcheck="false" placeholder="Mozilla/5.0 ...">
             <button class="btn sm" id="btnShuffleFpUA" type="button" title="按当前系统随机切换">换</button>
           </div>
@@ -160,54 +148,73 @@
         </div>
       </div>
 
-      <!-- 1. WebRTC -->
+      <!-- 1. WebRTC（对齐 main.min.js setWebRTC：disabled / disable_udp / proxy / forward） -->
       <div class="fp-row">
         <div class="fp-label">WebRTC</div>
         <div class="fp-content">
           <div class="capsule-group" data-fp-group="webrtc">
             <button class="capsule-btn" data-val="forward">转发</button>
-            <button class="capsule-btn active" data-val="replace">替换</button>
-            <button class="capsule-btn" data-val="real">真实</button>
+            <button class="capsule-btn active" data-val="proxy">替换</button>
             <button class="capsule-btn" data-val="disabled">禁用</button>
-            <button class="capsule-btn" data-val="proxy_udp">代理UDP</button>
+            <button class="capsule-btn" data-val="disable_udp">禁用UDP</button>
           </div>
+          <div class="hint">转发=forward（用代理IP替换并带STUN/TURN）· 替换=proxy（用代理IP替换）· 禁用=disabled · 禁用UDP=disable_udp（仅UDP走代理/阻断非代理UDP）</div>
         </div>
       </div>
 
-      <!-- 2. 时区 -->
+      <!-- 2. 时区（对齐 setTimezone：tzAuto 1=基于IP / 0=自定义；custom 值写 timezone，用空格转下划线） -->
       <div class="fp-row">
         <div class="fp-label">时区</div>
         <div class="fp-content">
           <div class="capsule-group" data-fp-group="timezoneMode">
             <button class="capsule-btn" data-val="ip">基于 IP</button>
-            <button class="capsule-btn" data-val="real">真实</button>
             <button class="capsule-btn active" data-val="custom">自定义</button>
           </div>
           <div>
             <select class="fp-select" id="fpTimezone" style="min-width: 320px;">
-              <option value="GMT-12:00 Etc/GMT+12">GMT-12:00 Etc/GMT+12</option>
-              <option value="GMT-08:00 America/Los_Angeles">GMT-08:00 America/Los_Angeles</option>
-              <option value="GMT+00:00 UTC">GMT+00:00 UTC</option>
-              <option value="GMT+08:00 Asia/Shanghai" selected>GMT+08:00 Asia/Shanghai</option>
-              <option value="GMT+09:00 Asia/Tokyo">GMT+09:00 Asia/Tokyo</option>
+              <option value="Etc/GMT+12">GMT-12:00 Etc/GMT+12</option>
+              <option value="Pacific/Midway">GMT-11:00 Pacific/Midway</option>
+              <option value="Pacific/Honolulu">GMT-10:00 Pacific/Honolulu</option>
+              <option value="America/Anchorage">GMT-09:00 America/Anchorage</option>
+              <option value="America/Los_Angeles">GMT-08:00 America/Los_Angeles</option>
+              <option value="America/Denver">GMT-07:00 America/Denver</option>
+              <option value="America/Chicago">GMT-06:00 America/Chicago</option>
+              <option value="America/New_York">GMT-05:00 America/New_York</option>
+              <option value="America/Halifax">GMT-04:00 America/Halifax</option>
+              <option value="America/Sao_Paulo">GMT-03:00 America/Sao_Paulo</option>
+              <option value="Atlantic/Azores">GMT-01:00 Atlantic/Azores</option>
+              <option value="UTC">GMT+00:00 UTC</option>
+              <option value="Europe/London">GMT+00:00 Europe/London</option>
+              <option value="Europe/Paris">GMT+01:00 Europe/Paris</option>
+              <option value="Europe/Berlin">GMT+01:00 Europe/Berlin</option>
+              <option value="Asia/Dubai">GMT+04:00 Asia/Dubai</option>
+              <option value="Asia/Karachi">GMT+05:00 Asia/Karachi</option>
+              <option value="Asia/Dhaka">GMT+06:00 Asia/Dhaka</option>
+              <option value="Asia/Bangkok">GMT+07:00 Asia/Bangkok</option>
+              <option value="Asia/Shanghai" selected>GMT+08:00 Asia/Shanghai</option>
+              <option value="Asia/Tokyo">GMT+09:00 Asia/Tokyo</option>
+              <option value="Australia/Sydney">GMT+10:00 Australia/Sydney</option>
+              <option value="Pacific/Auckland">GMT+12:00 Pacific/Auckland</option>
             </select>
           </div>
+          <div class="hint">基于IP=tzAuto:1（按代理国家/城市自动算时区）· 自定义=tzAuto:0（直接用下方 timezone，空格会转下划线）</div>
         </div>
       </div>
 
-      <!-- 3. 地理位置 -->
+      <!-- 3. 地理位置（对齐 setGEO：location=ask/allow/block；locationSwitch 1=基于IP / 0=自定义经纬度） -->
       <div class="fp-row">
         <div class="fp-label">地理位置</div>
         <div class="fp-content">
           <div class="capsule-group" data-fp-group="geoMode">
-            <button class="capsule-btn" data-val="ip">基于 IP</button>
-            <button class="capsule-btn active" data-val="custom">自定义</button>
+            <button class="capsule-btn" data-val="ask">询问</button>
+            <button class="capsule-btn active" data-val="allow">允许</button>
             <button class="capsule-btn" data-val="block">禁止</button>
           </div>
-          <div class="radio-group" style="margin-top: 2px;">
-            <label><input type="radio" name="geoAsk" value="prompt" checked> 每次询问</label>
-            <label><input type="radio" name="geoAsk" value="allow"> 始终允许</label>
+          <div class="capsule-group" data-fp-group="geoIp">
+            <button class="capsule-btn" data-val="ip">基于 IP</button>
+            <button class="capsule-btn active" data-val="custom">自定义</button>
           </div>
+          <div class="hint">location=ask（每次询问）/ allow（始终允许，对应旧版prompt+allow）/ block（禁止：GeolocationSetting=block，实时更新直接跳过） · 下方“基于IP/自定义”对应 locationSwitch=1/0</div>
           <div class="fp-sub-box">
             <div class="fp-input-row">
               <span class="fp-input-label"><span style="color:var(--danger)">*</span> 纬度 / 经度</span>
@@ -222,7 +229,7 @@
         </div>
       </div>
 
-      <!-- 4. 语言 -->
+      <!-- 4. 语言（对齐 setLangs：language 数组写 Langs/AcceptLang；languageSwitch 1=单语言自动展开 / 0=多语言；界面语言 pageLanguageSwitch 1=跟随语言 / 0=自定义 pageLanguage） -->
       <div class="fp-row">
         <div class="fp-label">语言</div>
         <div class="fp-content">
@@ -240,23 +247,28 @@
               <span style="color:var(--text-muted);cursor:pointer;">⋮</span>
             </div>
             <button class="shuffle-btn" style="width:fit-content;">+ 添加语言</button>
+            <textarea class="code-textarea" id="fpLangList" rows="2" placeholder="如 en-US,en（逗号分隔，保存时写 Langs / AcceptLang）" style="max-width:460px;">en-US,en</textarea>
+            <div class="hint">languageSwitch：单条语言=1（自动按首语言展开兼容）· 多条=0；界面语言“基于语言”=pageLanguageSwitch:1，否则按 pageLanguage 自定义</div>
           </div>
         </div>
       </div>
 
-      <!-- 5. 界面语言 -->
+      <!-- 5. 界面语言（对齐 setUILanguage：pageLanguageSwitch 1=基于语言 / 0=自定义；custom 值填下方 pageLanguage） -->
       <div class="fp-row">
         <div class="fp-label">界面语言</div>
         <div class="fp-content">
           <div class="capsule-group" data-fp-group="uiLang">
             <button class="capsule-btn active" data-val="follow_lang">基于语言</button>
-            <button class="capsule-btn" data-val="real">真实</button>
             <button class="capsule-btn" data-val="custom">自定义</button>
+          </div>
+          <div class="fp-input-row" style="max-width:360px;">
+            <span class="fp-input-label">自定义值</span>
+            <input class="fp-input flex-1" id="fpPageLang" placeholder="如 en-US（仅自定义时生效）">
           </div>
         </div>
       </div>
 
-      <!-- 6. 分辨率 -->
+      <!-- 6. 分辨率（对齐 setWindowSize/setScreenResolution：screenResolution 用 W_H 下划线，移动端写 DevtoolsPreferences + ScreenSize） -->
       <div class="fp-row">
         <div class="fp-label">分辨率</div>
         <div class="fp-content">
@@ -266,22 +278,28 @@
           </div>
           <div>
             <select class="fp-select" id="fpResolution" style="min-width: 280px;">
-              <option value="ua" selected>基于 User-Agent</option>
-              <option value="1920x1080">1920 x 1080</option>
-              <option value="2560x1440">2560 x 1440</option>
-              <option value="1440x900">1440 x 900</option>
-              <option value="1366x768">1366 x 768</option>
+              <option value="none" selected>真实 / 跟随系统</option>
+              <option value="1920_1080">1920 x 1080</option>
+              <option value="2560_1440">2560 x 1440</option>
+              <option value="1440_900">1440 x 900</option>
+              <option value="1366_768">1366 x 768</option>
             </select>
+          </div>
+          <div class="hint">保存为 screenResolution=宽_高（如 1920_1080）；“真实”=none（不覆盖）；自定义宽高填下方输入框</div>
+          <div class="fp-input-row" style="max-width:360px;">
+            <input class="fp-input" id="fpResW" placeholder="宽" style="width:110px;">
+            <span>×</span>
+            <input class="fp-input" id="fpResH" placeholder="高" style="width:110px;">
           </div>
         </div>
       </div>
 
-      <!-- 7. 字体 -->
+      <!-- 7. 字体（对齐 setFakeFonts/setFonts：fonts=all 即官方默认；自定义=传 disabledFonts 数组进 staticConfig.DisabledFonts） -->
       <div class="fp-row">
         <div class="fp-label">字体</div>
         <div class="fp-content">
           <div class="capsule-group" data-fp-group="fontMode">
-            <button class="capsule-btn" data-val="default">默认</button>
+            <button class="capsule-btn" data-val="all">默认(all)</button>
             <button class="capsule-btn active" data-val="custom">自定义</button>
           </div>
           <button class="shuffle-btn" id="btnShuffleFonts">
@@ -294,46 +312,54 @@
         </div>
       </div>
 
-      <!-- 8. 硬件噪音开关组 -->
+      <!-- 8. 硬件噪音开关组（对齐 setCanvasAndWebGL/setAudio/setClientRects：canvas/webglImage/audio=1 开噪音 / 0 关；clientRects 1=开；mediaDevices 0=关/1=自动/2=自定义；speechSwitch 1=开） -->
       <div class="fp-row">
         <div class="fp-label">硬件噪音</div>
         <div class="fp-content">
           <div class="switch-group">
             <label class="switch-item">
               <span class="switch"><input type="checkbox" id="swCanvas"><span class="slider"></span></span>
-              Canvas
+              Canvas(=1)
             </label>
             <label class="switch-item">
               <span class="switch"><input type="checkbox" id="swWebglImg"><span class="slider"></span></span>
-              WebGL图像
+              WebGL图像(=1)
             </label>
             <label class="switch-item">
               <span class="switch"><input type="checkbox" id="swAudio" checked><span class="slider"></span></span>
-              AudioContext
-            </label>
-            <label class="switch-item">
-              <span class="switch"><input type="checkbox" id="swMedia" checked><span class="slider"></span></span>
-              媒体设备 [Auto] <a href="javascript:void(0)" style="color:var(--primary);margin-left:2px;">编辑</a>
+              AudioContext(=1)
             </label>
             <label class="switch-item">
               <span class="switch"><input type="checkbox" id="swClientRects" checked><span class="slider"></span></span>
-              ClientRects
+              ClientRects(=1)
             </label>
             <label class="switch-item">
               <span class="switch"><input type="checkbox" id="swSpeech" checked><span class="slider"></span></span>
-              SpeechVoices
+              SpeechVoices(=1)
             </label>
           </div>
+          <div class="fp-input-row" style="max-width:560px;">
+            <span class="fp-input-label">媒体设备</span>
+            <select class="fp-select" id="fpMediaDevices" style="min-width:180px;">
+              <option value="0" selected>真实 / 关闭 (0)</option>
+              <option value="1">随机 (1)</option>
+              <option value="2">自定义 (2)</option>
+            </select>
+            <input class="fp-input" id="fpMediaIn" type="number" min="0" max="8" value="1" style="width:70px;" title="audioinput_num（0-8，超出按1/8钳制）">
+            <input class="fp-input" id="fpMediaVid" type="number" min="0" max="8" value="1" style="width:70px;" title="videoinput_num">
+            <input class="fp-input" id="fpMediaOut" type="number" min="0" max="8" value="1" style="width:70px;" title="audiooutput_num">
+          </div>
+          <div class="hint">0=真实/关闭（不写MediaDevices）· 1=随机（按fbccId生成mediaDevicesConfig）· 2=自定义（写MediaDevicesMask + 下方三数量，对应 media_devices_num，≤0按1、≥9按8/9钳制）· 移动端MacIntel/Android/iPhone强制默认三件套</div>
         </div>
       </div>
 
-      <!-- 9. WebGL元数据 -->
+      <!-- 9. WebGL元数据（对齐 getWebGlConfig：webgl 0=真实 / 2=自定义；custom 时写 webgl_config={unmasked_vendor, unmasked_renderer, webgpu:{webgpu_switch:1}}） -->
       <div class="fp-row">
         <div class="fp-label">WebGL元数据</div>
         <div class="fp-content">
           <div class="capsule-group" data-fp-group="webglMeta">
-            <button class="capsule-btn" data-val="real">真实</button>
-            <button class="capsule-btn active" data-val="custom">自定义</button>
+            <button class="capsule-btn" data-val="real">真实(0)</button>
+            <button class="capsule-btn active" data-val="custom">自定义(2)</button>
           </div>
           <div class="fp-sub-box" style="max-width:540px;">
             <div class="fp-input-row">
@@ -356,31 +382,43 @@
         </div>
       </div>
 
-      <!-- 10. WebGPU -->
+      <!-- 10. WebGPU（对齐 setWebGPU + getWebGlConfig：webgl=0时webgpu不生效；webgl=2/custom时 webgpu_switch 0=禁用(追--disable-features) / 1=跟随(默认)；另有 2=自定义适配器(带vendor/architecture)） -->
       <div class="fp-row">
         <div class="fp-label">WebGPU</div>
         <div class="fp-content">
           <div class="capsule-group" data-fp-group="webgpu">
-            <button class="capsule-btn active" data-val="follow_webgl">基于 WebGL</button>
-            <button class="capsule-btn" data-val="real">真实</button>
-            <button class="capsule-btn" data-val="disabled">禁用</button>
+            <button class="capsule-btn active" data-val="follow_webgl">跟随 WebGL(1)</button>
+            <button class="capsule-btn" data-val="disabled">禁用(0)</button>
+            <button class="capsule-btn" data-val="custom">自定义适配器(2)</button>
           </div>
+          <div class="fp-input-row" style="max-width:560px;">
+            <span class="fp-input-label">适配器厂商</span>
+            <input class="fp-input" id="fpGpuVendor" placeholder="如 Google Inc.（仅自定义时写 gpu_adapterinfo_vendor）" style="flex:1;min-width:160px;">
+            <span class="fp-input-label">架构</span>
+            <input class="fp-input" id="fpGpuArch" placeholder="如 angle-d3d11（仅自定义时写 gpu_adapterinfo_architecture）" style="flex:1;min-width:160px;">
+          </div>
+          <div class="hint">仅WebGL元数据=自定义(2)时生效：禁用=webgpu_switch:0（启动参数追加WebGPU,WebGPUService）· 跟随=1（默认）· 自定义=1+适配器vendor/architecture（写GPUAdapterInfo）</div>
         </div>
       </div>
 
-      <!-- 11. CPU -->
+      <!-- 11. CPU（对齐 setDoNotTrack：hardwareConcurrency=default 真实，否则 2/4/8/16/20/24；iPhone 强制 0） -->
       <div class="fp-row">
         <div class="fp-label">CPU</div>
         <div class="fp-content">
           <div class="capsule-group" data-fp-group="cpuMode">
-            <button class="capsule-btn" data-val="real">真实</button>
+            <button class="capsule-btn" data-val="real">真实(default)</button>
             <button class="capsule-btn active" data-val="custom">自定义</button>
           </div>
           <div>
             <select class="fp-select" id="fpCpu" style="min-width: 280px;">
+              <option value="default">真实 / 默认</option>
               <option value="2">2 核</option>
+              <option value="3">3 核</option>
               <option value="4">4 核</option>
+              <option value="6">6 核</option>
               <option value="8">8 核</option>
+              <option value="10">10 核</option>
+              <option value="12">12 核</option>
               <option value="16">16 核</option>
               <option value="20" selected>20 核</option>
               <option value="24">24 核</option>
@@ -389,33 +427,39 @@
         </div>
       </div>
 
-      <!-- 12. RAM -->
+      <!-- 12. RAM（对齐两处：导入校验 [2,4,6,8] 白名单，非法→8；setDoNotTrack default=真实；iPhone 强制 0；指随机/导入范围） -->
       <div class="fp-row">
         <div class="fp-label">RAM</div>
         <div class="fp-content">
           <div class="capsule-group" data-fp-group="ramMode">
-            <button class="capsule-btn" data-val="real">真实</button>
+            <button class="capsule-btn" data-val="real">真实(default)</button>
             <button class="capsule-btn active" data-val="custom">自定义</button>
           </div>
           <div>
             <select class="fp-select" id="fpRam" style="min-width: 280px;">
+              <option value="default">真实 / 默认</option>
               <option value="2">2 GB</option>
               <option value="4">4 GB</option>
+              <option value="6">6 GB</option>
               <option value="8" selected>8 GB</option>
               <option value="16">16 GB</option>
               <option value="32">32 GB</option>
+              <option value="64">64 GB</option>
+              <option value="128">128 GB</option>
             </select>
           </div>
+          <div class="hint">官方白名单为 2/4/6/8（非法值官方回退8）；16/32/64/128 为本面板扩展选项，直传 DeviceMemory；真实=default（不写）；iOS/iPhone 强制 0</div>
         </div>
       </div>
 
-      <!-- 13. 设备名称 -->
+      <!-- 13. 设备名称（对齐 setDeviceName：deviceNameSwitch 0=关闭 / 1=随机DESKTOP- / 2=自定义deviceName；1 时同步 ProductType） -->
       <div class="fp-row">
         <div class="fp-label">设备名称</div>
         <div class="fp-content">
           <div class="capsule-group" data-fp-group="devNameMode">
-            <button class="capsule-btn" data-val="real">真实</button>
-            <button class="capsule-btn active" data-val="custom">自定义</button>
+            <button class="capsule-btn" data-val="off">关闭(0)</button>
+            <button class="capsule-btn" data-val="random">随机(1)</button>
+            <button class="capsule-btn active" data-val="custom">自定义(2)</button>
           </div>
           <div class="fp-input-row" style="max-width: 360px;">
             <input class="fp-input flex-1" id="fpDevName" value="LAPTOP31PX2UO">
@@ -426,13 +470,13 @@
         </div>
       </div>
 
-      <!-- 14. MAC地址 -->
+      <!-- 14. MAC地址（对齐 setMacAddress：macAddressConfig {model:0关闭/2自定义, address}） -->
       <div class="fp-row">
         <div class="fp-label">MAC地址</div>
         <div class="fp-content">
           <div class="capsule-group" data-fp-group="macMode">
-            <button class="capsule-btn" data-val="real">真实</button>
-            <button class="capsule-btn active" data-val="custom">自定义</button>
+            <button class="capsule-btn" data-val="off">关闭(0)</button>
+            <button class="capsule-btn active" data-val="custom">自定义(2)</button>
           </div>
           <div class="fp-input-row" style="max-width: 360px;">
             <input class="fp-input flex-1" id="fpMac" value="00-50-43-3C-49-4B">
@@ -443,50 +487,54 @@
         </div>
       </div>
 
-      <!-- 15. Do Not Track -->
+      <!-- 15. Do Not Track（对齐两处：导入/新建 do_not_track=true/false 字符串；setDoNotTrack 仅"true"写EnableDoNotTrack；navigator.doNotTrack存在才写true） -->
       <div class="fp-row">
         <div class="fp-label">Do Not Track</div>
         <div class="fp-content">
           <div class="capsule-group" data-fp-group="doNotTrack">
-            <button class="capsule-btn active" data-val="default">默认</button>
-            <button class="capsule-btn" data-val="open">开启</button>
-            <button class="capsule-btn" data-val="close">关闭</button>
+            <button class="capsule-btn active" data-val="default">默认(不写)</button>
+            <button class="capsule-btn" data-val="open">开启(true)</button>
+            <button class="capsule-btn" data-val="close">关闭(false)</button>
           </div>
+          <div class="hint">开启=do_not_track:"true"（写EnableDoNotTrack）· 关闭="false"（setDoNotTrack不写，但导入/新建链路保留该字符串）· 默认=不传字段</div>
         </div>
       </div>
 
-      <!-- 16. 端口扫描保护 -->
+      <!-- 16. 端口扫描保护（对齐 setScanPort：scanPortType 0=关闭(AllowScanPorts=0) / 1=启用(allowScanPorts白名单)；不传=默认） -->
       <div class="fp-row">
         <div class="fp-label">端口扫描保护</div>
         <div class="fp-content">
           <div class="capsule-group" data-fp-group="portScan">
-            <button class="capsule-btn active" data-val="open">启用</button>
-            <button class="capsule-btn" data-val="close">关闭</button>
+            <button class="capsule-btn" data-val="default">默认(不写)</button>
+            <button class="capsule-btn active" data-val="open">启用(1)</button>
+            <button class="capsule-btn" data-val="close">关闭(0)</button>
           </div>
-          <input class="fp-input" id="fpWhitePorts" placeholder="选填，允许被扫描的端口" style="max-width: 360px;">
+          <input class="fp-input" id="fpWhitePorts" placeholder="选填，允许被扫描的端口（对应 allowScanPorts）" style="max-width: 360px;">
         </div>
       </div>
 
-      <!-- 17. 硬件加速 -->
+      <!-- 17. 硬件加速（对齐 setGPU：("0"+gpuSwitch0) 或 "2" → --disable-gpu；其余不加。gpu/gpuSwitch 另存，不止开关） -->
       <div class="fp-row">
         <div class="fp-label">硬件加速</div>
         <div class="fp-content">
           <div class="capsule-group" data-fp-group="hardwareAccel">
-            <button class="capsule-btn active" data-val="default">默认</button>
-            <button class="capsule-btn" data-val="open">开启</button>
-            <button class="capsule-btn" data-val="close">关闭</button>
+            <button class="capsule-btn active" data-val="default">默认(不写)</button>
+            <button class="capsule-btn" data-val="open">开启(0+1)</button>
+            <button class="capsule-btn" data-val="close">关闭(2)</button>
           </div>
+          <div class="hint">开启=gpu:0+gpuSwitch:1（不加--disable-gpu）· 关闭=gpu:2（加--disable-gpu）· 默认=不传（另有 0+0 也会禁用，仅调试用）</div>
         </div>
       </div>
 
-      <!-- 18. 禁用TLS特性 -->
+      <!-- 18. TLS（对齐 setTls：tlsSwitch=1 且 tls 非空 → --cipher-suite-blacklist=；默认不写） -->
       <div class="fp-row">
-        <div class="fp-label">禁用TLS特性</div>
+        <div class="fp-label">TLS指纹</div>
         <div class="fp-content">
           <div class="capsule-group" data-fp-group="disableTls">
-            <button class="capsule-btn" data-val="open">开启</button>
-            <button class="capsule-btn active" data-val="close">关闭</button>
+            <button class="capsule-btn active" data-val="close">默认(不写)</button>
+            <button class="capsule-btn" data-val="open">自定义黑名单(1)</button>
           </div>
+          <input class="fp-input" id="fpTlsBlacklist" placeholder="如 ECDHE-RSA-AES128-GCM-SHA256（对应 tls，tlsSwitch=1 时生效）" style="max-width: 460px;">
         </div>
       </div>
 

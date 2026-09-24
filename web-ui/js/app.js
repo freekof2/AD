@@ -1,6 +1,5 @@
-/* SunLauncher 离线版交互：目录即环境 + 指纹注入启动/停止 + 缓存为准的参数保存。
- * 零网络：只调本地 :18900 离线接口（api.js）或 File System Access 直读写（fp.js）。
- * 以缓存为准：PROTECTED_KEYS 在启动时被 C++ 丢弃，UI 中冲突项标“缓存为准”徽标并在保存时提示。 */
+/* SunLauncher 离线版交互：目录即环境 + 指纹注入启动/停止 + 参数保存。
+ * 零网络：只调本地 :18900 离线接口（api.js）或 File System Access 直读写（fp.js）。 */
 (function () {
   const $ = (id) => document.getElementById(id);
   const db = () => window.__db;
@@ -161,6 +160,10 @@
   });
 
   // 离线导入结果回填：static/dynamic 解码 JSON -> 表单；cookies 清洗后进 Cookie 框
+  // 底层字段 -> 自定义选项映射（与 collectFp 互逆）：
+  //   tzAuto/locationSwitch/scanPortType/do_not_track/hardware_concurrency/device_memory/
+  //   screen_resolution/canvas/webgl_image/audio/client_rects/media_devices/speech_switch/
+  //   webgl+webgl_config/mac_address_config/device_name_switch/language+language_switch 等
   function applyImportResult(out) {
     const notes = out.notes || [];
     let hitCount = 1;
@@ -201,7 +204,7 @@
       notes.push(...clean.notes);
       hitCount++;
     }
-    if (out.ua) { $("fpUA").value = out.ua; notes.push("UA已回填"); hitCount++; }
+    if (out.ua) { $("fpUA").value = out.ua; syncUaPresetFromUA(); notes.push("UA已回填"); hitCount++; }
     // 注册到环境列表（目录即环境）
     if (out.dirName && !db().profiles.some((p) => pname(p) === out.dirName)) {
       db().profiles.push({ name: out.dirName, group: "默认", proxy: "-", kernel: "Chrome 152 (SunBrowser)", status: "closed", remark: "", browser: "sun", browserDir: out.dirName, ua: $("fpUA").value, cookie: $("fpCookie").value });
@@ -213,7 +216,54 @@
     toast("目录导入完成（CLIENT_HOST 已剥离，绝不上传）");
   }
 
-  /* ================= 指纹面板：环境切换 ================= */
+  // fingerprint_config（下划线命名，导入文件/API 形态）-> 自定义选项 + 表单
+  // 对齐 main.min.js：webrtc/proxy|disabled；tzAuto/timezone；location/location_switch；
+  // language/language_switch；screen_resolution/hardware_concurrency/device_memory/do_not_track；
+  // canvas/webgl_image/audio/client_rects/media_devices/speech_switch；webgl/webgl_config；
+  // mac_address_config/device_name_switch/scan_port_type/allow_scan_ports
+  function applyFpConfig(cfg) {
+    if (!cfg || typeof cfg !== "object") return [];
+    const notes = [];
+    const pickCap = (group, val) => {
+      const g = document.querySelector(`[data-fp-group="${group}"]`);
+      if (!g || val === undefined) return;
+      g.querySelectorAll(".capsule-btn").forEach((b) => b.classList.toggle("active", b.dataset.val === val));
+    };
+    const get = (...ks) => { for (const k of ks) if (cfg[k] !== undefined) return cfg[k]; return undefined; };
+    let v;
+    v = get("webrtc"); if (v !== undefined) { pickCap("webrtc", v); notes.push("WebRTC=" + v); }
+    v = get("automatic_timezone", "tzAuto", "tz_auto"); if (v !== undefined) { pickCap("timezoneMode", String(v) === "1" ? "ip" : "custom"); }
+    v = get("timezone"); if (v !== undefined && $("fpTimezone")) { $("fpTimezone").value = String(v).replace(/_/g, " "); notes.push("时区=" + v); }
+    v = get("location"); if (v !== undefined) { pickCap("geoMode", v); notes.push("地理位置=" + v); }
+    v = get("location_switch", "locationSwitch"); if (v !== undefined) { pickCap("geoIp", String(v) === "1" ? "ip" : "custom"); }
+    v = get("latitude"); if (v !== undefined) $("fpLat").value = v;
+    v = get("longitude"); if (v !== undefined) $("fpLng").value = v;
+    v = get("accuracy"); if (v !== undefined) $("fpAccuracy").value = v;
+    v = get("language"); if (v !== undefined) { const arr = Array.isArray(v) ? v : String(v).split(","); if ($("fpLangList")) $("fpLangList").value = arr.join(","); pickCap("langMode", "custom"); notes.push("语言=" + arr.join(",")); }
+    v = get("language_switch", "languageSwitch"); if (v !== undefined) notes.push("languageSwitch=" + v);
+    v = get("screen_resolution", "screenResolution"); if (v !== undefined && v !== "none" && $("fpResolution")) { $("fpResolution").value = v; notes.push("分辨率=" + v); }
+    v = get("hardware_concurrency", "hardwareConcurrency"); if (v !== undefined && $("fpCpu")) { pickCap("cpuMode", String(v) === "default" ? "real" : "custom"); if (String(v) !== "default") $("fpCpu").value = String(v); }
+    v = get("device_memory", "deviceMemory"); if (v !== undefined && $("fpRam")) { pickCap("ramMode", String(v) === "default" ? "real" : "custom"); if (String(v) !== "default") $("fpRam").value = String(v); }
+    v = get("do_not_track", "doNotTrack"); if (v !== undefined) { pickCap("doNotTrack", String(v) === "true" ? "open" : String(v) === "false" ? "close" : "default"); }
+    v = get("canvas"); if (v !== undefined && $("swCanvas")) $("swCanvas").checked = String(v) === "1";
+    v = get("webgl_image", "webglImage"); if (v !== undefined && $("swWebglImg")) $("swWebglImg").checked = String(v) === "1";
+    v = get("audio"); if (v !== undefined && $("swAudio")) $("swAudio").checked = String(v) === "1";
+    v = get("client_rects", "clientRects"); if (v !== undefined && $("swClientRects")) $("swClientRects").checked = String(v) === "1";
+    v = get("speech_switch", "speechSwitch"); if (v !== undefined && $("swSpeech")) $("swSpeech").checked = String(v) === "1";
+    v = get("media_devices", "mediaDevices"); if (v !== undefined && $("fpMediaDevices")) $("fpMediaDevices").value = String(v);
+    v = get("media_devices_num", "mediaDevicesNum"); if (v && typeof v === "object") { if ($("fpMediaIn") && v.audioinput_num !== undefined) $("fpMediaIn").value = v.audioinput_num; if ($("fpMediaVid") && v.videoinput_num !== undefined) $("fpMediaVid").value = v.videoinput_num; if ($("fpMediaOut") && v.audiooutput_num !== undefined) $("fpMediaOut").value = v.audiooutput_num; }
+    v = get("webgl"); if (v !== undefined) { pickCap("webglMeta", String(v) === "2" || String(v) === "3" ? "custom" : "real"); }
+    v = get("webgl_config", "webglConfig"); if (v && typeof v === "object") { if (v.unmasked_vendor && $("fpVendor")) $("fpVendor").value = v.unmasked_vendor; if (v.unmasked_renderer && $("fpRenderer")) $("fpRenderer").value = v.unmasked_renderer; if (v.webgpu && v.webgpu.webgpu_switch !== undefined) { const sw = String(v.webgpu.webgpu_switch); if (sw === "0") pickCap("webgpu", "disabled"); else if (v.webgpu.gpu_adapterinfo_vendor || v.webgpu.gpu_adapterinfo_architecture) { pickCap("webgpu", "custom"); if ($("fpGpuVendor") && v.webgpu.gpu_adapterinfo_vendor) $("fpGpuVendor").value = v.webgpu.gpu_adapterinfo_vendor; if ($("fpGpuArch") && v.webgpu.gpu_adapterinfo_architecture) $("fpGpuArch").value = v.webgpu.gpu_adapterinfo_architecture; } else pickCap("webgpu", "follow_webgl"); } }
+    v = get("mac_address_config", "macAddressConfig"); if (v && typeof v === "object") { pickCap("macMode", String(v.model) === "2" ? "custom" : "off"); if (v.address && $("fpMac")) $("fpMac").value = v.address; }
+    v = get("device_name_switch", "deviceNameSwitch"); if (v !== undefined) { pickCap("devNameMode", String(v) === "2" ? "custom" : String(v) === "1" ? "random" : "off"); }
+    v = get("device_name", "deviceName"); if (v !== undefined && $("fpDevName")) $("fpDevName").value = v;
+    v = get("scan_port_type", "scanPortType"); if (v !== undefined) { pickCap("portScan", String(v) === "1" ? "open" : String(v) === "0" ? "close" : "default"); }
+    v = get("allow_scan_ports", "allowScanPorts"); if (v !== undefined && $("fpWhitePorts")) $("fpWhitePorts").value = Array.isArray(v) ? v.join(",") : v;
+    v = get("fonts"); if (v !== undefined && $("fpFontsList")) { if (Array.isArray(v) && v.length === 1 && v[0] === "all") { pickCap("fontMode", "all"); } else { pickCap("fontMode", "custom"); $("fpFontsList").textContent = Array.isArray(v) ? v.join(", ") : v; } }
+    v = get("ua", "userAgent"); if (v !== undefined && $("fpUA")) { $("fpUA").value = v; syncUaPresetFromUA(); }
+    v = get("gpu"); if (v !== undefined) { const gv = String(v); pickCap("hardwareAccel", gv === "2" ? "close" : gv === "0" ? "open" : "default"); }
+    return notes;
+  }
   function syncFpProfileSelect() {
     const opts = db().profiles.map((p) => `<option value="${pname(p)}">${pname(p)}${p.name && p.sn ? " - " + p.name : ""}</option>`).join("");
     if ($("fpProfile")) $("fpProfile").innerHTML = opts;
@@ -229,9 +279,12 @@
         try { applyUiExtra(JSON.parse(r.json)); toast(`已载入 ${nm} 的 UI 存档`); return; } catch (e) { /* 回退行内 */ }
       }
     }).catch(() => {});
+    // 全量存档（内存态）优先回填自定义选项
+    if (p.fp) { try { applyUiExtra(p.fp); } catch (e) { /* 忽略 */ } }
     if (p.browser) $("fpBrowser").value = p.browser;
     if (p.browserDir !== undefined) $("fpBrowserDir").value = p.browserDir || "";
     if (p.ua) $("fpUA").value = p.ua;
+    if (p.ua) syncUaPresetFromUA();
     if (p.cookie) $("fpCookie").value = p.cookie;
     if (p.remark !== undefined) { $("fpRemark").value = p.remark || ""; $("fpRemarkCount").textContent = ($("fpRemark").value || "").length; }
     if (p.kernel && $("fpKernelVer")) {
@@ -268,19 +321,30 @@
     "Helvetica, PingFang SC, Hiragino Sans GB, Microsoft YaHei, WenQuanYi Micro Hei, Roboto, Segoe UI, Tahoma, Trebuchet MS, Verdana, Lucida Sans... (184)",
     "San Francisco, Monaco, Menlo, Consolas, Lucida Console, Apple Color Emoji, Noto Color Emoji, DejaVu Sans, Liberation Sans... (195)",
   ];
-  const UA_POOL = {
-    win: [
-      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/153.0.0.0 Safari/537.36",
-      "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:128.0) Gecko/20100101 Firefox/128.0",
-    ],
-    mac: ["Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/153.0.0.0 Safari/537.36"],
-    linux: ["Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/153.0.0.0 Safari/537.36"],
-    android: ["Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/153.0.0.0 Mobile Safari/537.36"],
-    ios: ["Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1"],
-  };
   const curOS = () => ($("fpOsGroup").querySelector(".active") || {}).dataset?.os || "win";
-  const setFpUA = () => { const pool = UA_POOL[curOS()]; $("fpUA").value = pool[Math.floor(Math.random() * pool.length)]; };
-  $("btnShuffleFpUA").addEventListener("click", () => { setFpUA(); toast("已按当前系统随机切换 User-Agent"); });
+  // UA大版本号输入框：取纯数字，非法/为空时回退 152
+  const uaVer = () => {
+    const v = ($("fpUaPreset") && $("fpUaPreset").value || "").trim().match(/\d{2,3}/);
+    return v ? v[0] : "152";
+  };
+  const buildUA = (os, ver) => {
+    switch (os) {
+      case "mac": return `Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${ver}.0.0.0 Safari/537.36`;
+      case "linux": return `Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${ver}.0.0.0 Safari/537.36`;
+      case "android": return `Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${ver}.0.0.0 Mobile Safari/537.36`;
+      case "ios": return "Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1";
+      default: return `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${ver}.0.0.0 Safari/537.36`;
+    }
+  };
+  // 从 UA 文本反解析版本号回填输入框（导入/载入存档时调用）
+  const syncUaPresetFromUA = () => {
+    if (!$("fpUaPreset") || !$("fpUA")) return;
+    const m = ($("fpUA").value || "").match(/(?:Chrome|CriOS|Firefox)\/(\d{2,3})/);
+    if (m) $("fpUaPreset").value = m[1];
+  };
+  const setFpUA = () => { $("fpUA").value = buildUA(curOS(), uaVer()); };
+  $("btnShuffleFpUA").addEventListener("click", () => { setFpUA(); toast(`已按当前系统生成 Chrome ${uaVer()} 的 User-Agent`); });
+  if ($("fpUA")) $("fpUA").addEventListener("input", syncUaPresetFromUA);
   if (!$("fpUA").value) setFpUA();
 
   function randomMac() {
@@ -333,7 +397,6 @@
     renderProfiles();
     syncFpProfileSelect();
     if (db().profiles.length) loadProfileToFp(pname(db().profiles[0]));
-    markConflictBadges();
   }
 
   /* ---- 从环境目录导入指纹（离线：优先 File System Access 直读三件套） ---- */
@@ -375,7 +438,7 @@
             const j = JSON.parse(txt);
             const ua = j?.profile?.user_agent || j?.webkit?.webprefs?.user_agent;
             const lang = j?.intl?.accept_languages || j?.profile?.accept_languages;
-            if (ua) { $("fpUA").value = ua; notes.push("UA已回填"); hitCount++; }
+            if (ua) { $("fpUA").value = ua; syncUaPresetFromUA(); notes.push("UA已回填"); hitCount++; }
             if (lang) { notes.push("语言=" + lang); hitCount++; }
             const lat = j?.profile?.geolocation?.latitude ?? j?.geolocation?.latitude;
             const lng = j?.profile?.geolocation?.longitude ?? j?.geolocation?.longitude;
@@ -466,39 +529,17 @@
   });
   $("fpRemark").addEventListener("input", (e) => { $("fpRemarkCount").textContent = (e.target.value || "").length; });
 
-  /* ---- 保存指纹：以缓存为准写回（static/dynamic/cookies + ui 侧车） ---- */
-  // 冲突徽标：保护键对应的表单项标“缓存为准”
-  function markConflictBadges() {
-    if (!window.FP) return;
-    const badge = '<span class="cache-badge" title="以缓存为准：启动注入时该值被丢弃，实际生效的是缓存文件里的值">缓存为准</span>';
-    const map = {
-      fpProxyHost: 1, fpProxyPort: 1, fpProxyType: 1,   // ProxyChain 在 static
-      fpLat: 1, fpLng: 1, fpAccuracy: 1,                // Geoposition 在 dynamic
-      fpDevName: 1, fpMac: 1,                           // DeviceName/MacAddress 在 static
-      fpCpu: 1, fpRam: 1,                               // HardwareConcurrency/DeviceMemory 在 static
-    };
-    Object.keys(map).forEach((id) => {
-      const el = $(id);
-      if (!el || el.dataset.badged) return;
-      el.dataset.badged = "1";
-      const s = document.createElement("span");
-      s.className = "cache-badge-wrap";
-      s.innerHTML = badge;
-      el.parentNode.insertBefore(s, el.nextSibling);
-    });
-    const st = $("fpImportStatus");
-    if (st && !st.dataset.conflict) {
-      st.dataset.conflict = "1";
-      const d = document.createElement("div");
-      d.className = "hint conflict-notes";
-      d.innerHTML = "<b>冲突规则（以缓存为准）：</b><br>" + window.FP.CONFLICT_NOTES.map((t) => "· " + t).join("<br>");
-      st.parentNode.insertBefore(d, st.nextSibling);
-    }
-  }
-  // 把 ui_fingerprint.json 存档回填表单（非保护键全量，保护键仅展示）
+  /* ---- 保存指纹：写回（static/dynamic/cookies + ui 侧车） ---- */
+  // 把 ui_fingerprint.json 存档回填表单（含自定义选项映射字段）
   function applyUiExtra(fp) {
     if (!fp || typeof fp !== "object") return;
     const set = (id, v) => { if (v !== undefined && $(id)) $(id).value = v; };
+    const pickCap = (group, val) => {
+      const g = document.querySelector(`[data-fp-group="${group}"]`);
+      if (!g || val === undefined) return;
+      g.querySelectorAll(".capsule-btn").forEach((b) => b.classList.toggle("active", b.dataset.val === val));
+    };
+    set("fpUaPreset", fp.uaPreset);
     set("fpProxyHost", fp.proxyHost); set("fpProxyPort", fp.proxyPort);
     set("fpLat", fp.lat); set("fpLng", fp.lng); set("fpAccuracy", fp.accuracy);
     set("fpDevName", fp.devName); set("fpMac", fp.mac);
@@ -508,15 +549,91 @@
     set("fpVendor", fp.vendor); set("fpCpu", fp.cpu); set("fpRam", fp.ram);
     set("fpWhitePorts", fp.whitePorts); set("fpLaunchArgs", fp.launchArgs);
     set("fpBrowserDir", fp.browserDir);
+    set("fpPageLang", fp.pageLanguage);
+    set("fpResW", fp.resW); set("fpResH", fp.resH);
+    set("fpTlsBlacklist", fp.tls);
+    set("fpGpuVendor", fp.gpuVendor); set("fpGpuArch", fp.gpuArch);
+    set("fpMediaIn", fp.mediaDevicesNum && fp.mediaDevicesNum.audioinput_num);
+    set("fpMediaVid", fp.mediaDevicesNum && fp.mediaDevicesNum.videoinput_num);
+    set("fpMediaOut", fp.mediaDevicesNum && fp.mediaDevicesNum.audiooutput_num);
+    if (fp.language) set("fpLangList", Array.isArray(fp.language) ? fp.language.join(",") : fp.language);
+    if (fp.mediaDevices) set("fpMediaDevices", fp.mediaDevices);
+    pickCap("webrtc", fp.webrtc);
+    pickCap("timezoneMode", fp.timezoneMode);
+    pickCap("geoMode", fp.geoMode || fp.location);
+    pickCap("geoIp", fp.geoIp);
+    pickCap("langMode", fp.langMode);
+    pickCap("uiLang", fp.uiLang);
+    pickCap("resMode", fp.resMode);
+    pickCap("fontMode", fp.fontMode);
+    pickCap("webglMeta", fp.webglMeta);
+    pickCap("webgpu", fp.webgpu);
+    pickCap("cpuMode", fp.cpuMode);
+    pickCap("ramMode", fp.ramMode);
+    pickCap("devNameMode", fp.devNameMode);
+    pickCap("macMode", fp.macMode);
+    pickCap("doNotTrack", fp.doNotTrack);
+    pickCap("portScan", fp.portScan);
+    pickCap("hardwareAccel", fp.hardwareAccel);
+    pickCap("disableTls", fp.disableTls);
+    if (fp.hwNoise) {
+      if ($("swCanvas")) $("swCanvas").checked = !!fp.hwNoise.canvas;
+      if ($("swWebglImg")) $("swWebglImg").checked = !!fp.hwNoise.webglImg;
+      if ($("swAudio")) $("swAudio").checked = !!fp.hwNoise.audio;
+      if ($("swClientRects")) $("swClientRects").checked = !!fp.hwNoise.clientRects;
+      if ($("swSpeech")) $("swSpeech").checked = !!fp.hwNoise.speech;
+    }
+    if (fp.canvas !== undefined && $("swCanvas")) $("swCanvas").checked = fp.canvas === "1";
+    if (fp.webglImage !== undefined && $("swWebglImg")) $("swWebglImg").checked = fp.webglImage === "1";
+    if (fp.audio !== undefined && $("swAudio")) $("swAudio").checked = fp.audio === "1";
+    if (fp.clientRects !== undefined && $("swClientRects")) $("swClientRects").checked = fp.clientRects === "1";
+    if (fp.speechSwitch !== undefined && $("swSpeech")) $("swSpeech").checked = fp.speechSwitch === "1";
+    if (fp.fonts && typeof fp.fonts === "string" && $("fpFontsList")) $("fpFontsList").textContent = fp.fonts;
     if (fp.remark !== undefined) { $("fpRemarkCount").textContent = ($("fpRemark").value || "").length; }
   }
   function collectFp() {
     const cap = (g) => { const el = document.querySelector(`[data-fp-group="${g}"] .capsule-btn.active`); return el ? el.dataset.val : ""; };
+    // —— 自定义选项 -> 官方底层字段映射（对齐 main.min.js 各 set* 语义） ——
+    const webrtc = cap("webrtc");                       // forward / proxy / disabled / disable_udp（直传）
+    const tzMode = cap("timezoneMode");                 // ip -> tzAuto:1；custom -> tzAuto:0 + timezone
+    const geoMode = cap("geoMode");                     // ask / allow / block（直传 location）
+    const geoIp = cap("geoIp");                         // ip -> locationSwitch:1；custom -> 0 + 经纬度
+    const langMode = cap("langMode");
+    const langList = (($("fpLangList") && $("fpLangList").value) || "en-US,en").split(/[,;\n]+/).map((s) => s.trim()).filter(Boolean);
+    const uiLang = cap("uiLang");                       // follow_lang -> pageLanguageSwitch:1；custom -> 0 + pageLanguage
+    const resMode = cap("resMode");
+    let resolution = $("fpResolution").value;           // none / 宽_高（直传 screenResolution）
+    if (resMode === "custom" && $("fpResW").value.trim() && $("fpResH").value.trim()) {
+      resolution = $("fpResW").value.trim() + "_" + $("fpResH").value.trim();
+    }
+    const fontMode = cap("fontMode");                   // all -> fonts:["all"]；custom -> fonts:掩码列表 + disabledFonts
+    const webglMeta = cap("webglMeta");                 // real -> webgl:0；custom -> webgl:2 + webgl_config
+    const webgpu = cap("webgpu");                       // follow_webgl -> 1；disabled -> 0；custom -> 1+适配器
+    const gpuVendor = ($("fpGpuVendor") && $("fpGpuVendor").value || "").trim();
+    const gpuArch = ($("fpGpuArch") && $("fpGpuArch").value || "").trim();
+    const cpuMode = cap("cpuMode");                     // real -> default；custom -> 下拉值
+    const ramMode = cap("ramMode");
+    // RAM：官方白名单 [2,4,6,8]（非法官方回退8）；本面板扩展 16/32/64/128，直传 DeviceMemory
+    const ramVal = $("fpRam").value;
+    const devMode = cap("devNameMode");                 // off -> 0；random -> 1；custom -> 2 + deviceName
+    const macMode = cap("macMode");                     // off -> 0；custom -> 2 + address
+    const dnt = cap("doNotTrack");                      // open -> true；close -> false；default 不传
+    const portScan = cap("portScan");                   // default 不写；open -> 1；close -> 0
+    const hwAccel = cap("hardwareAccel");               // open -> gpu:0+gpuSwitch:1；close -> gpu:2；default 不写
+    const tlsMode = cap("disableTls");                  // open -> tlsSwitch:1 + tls 黑名单
+    // 媒体设备三数量钳制（对齐官方：<=0按1，>=9按8/9）
+    const clampMedia = (id) => {
+      let n = parseInt(($(id) && $(id).value) || "1", 10);
+      if (isNaN(n) || n <= 0) return 1;
+      if (n >= 9) return 8;
+      return n;
+    };
     return {
       browser: $("fpBrowser").value,
       kernelVer: $("fpKernelVer").value,
       browserDir: $("fpBrowserDir").value.trim(),
       os: curOS(),
+      uaPreset: ($("fpUaPreset") && $("fpUaPreset").value || "").trim(),
       ua: $("fpUA").value.trim(),
       proxyType: $("fpProxyType").value,
       proxyHost: $("fpProxyHost").value.trim(),
@@ -524,32 +641,76 @@
       proxyUser: $("fpProxyUser").value.trim(),
       cookie: $("fpCookie").value.trim(),
       remark: $("fpRemark").value.trim(),
-      webrtc: cap("webrtc"),
-      timezoneMode: cap("timezoneMode"),
+      webrtc,
+      timezoneMode: tzMode,
+      tzAuto: tzMode === "ip" ? "1" : "0",
       timezone: $("fpTimezone").value,
-      geoMode: cap("geoMode"),
+      geoMode,
+      location: geoMode,
+      geoIp,
+      locationSwitch: geoIp === "ip" ? "1" : "0",
       lat: $("fpLat").value, lng: $("fpLng").value, accuracy: $("fpAccuracy").value,
-      langMode: cap("langMode"),
-      uiLang: cap("uiLang"),
-      resMode: cap("resMode"),
-      resolution: $("fpResolution").value,
-      fontMode: cap("fontMode"),
-      fonts: $("fpFontsList").textContent,
+      langMode,
+      language: langList,
+      languageSwitch: langList.length <= 1 ? "1" : "0",
+      uiLang,
+      pageLanguageSwitch: uiLang === "custom" ? "0" : "1",
+      pageLanguage: ($("fpPageLang") && $("fpPageLang").value || "").trim(),
+      resMode,
+      resolution,
+      screenResolution: resolution,
+      fontMode,
+      fonts: fontMode === "all" ? ["all"] : $("fpFontsList").textContent,
       hwNoise: {
         canvas: $("swCanvas").checked, webglImg: $("swWebglImg").checked,
-        audio: $("swAudio").checked, media: $("swMedia").checked,
+        audio: $("swAudio").checked,
         clientRects: $("swClientRects").checked, speech: $("swSpeech").checked,
       },
-      webglMeta: cap("webglMeta"),
+      canvas: $("swCanvas").checked ? "1" : "0",
+      webglImage: $("swWebglImg").checked ? "1" : "0",
+      audio: $("swAudio").checked ? "1" : "0",
+      clientRects: $("swClientRects").checked ? "1" : "0",
+      speechSwitch: $("swSpeech").checked ? "1" : "0",
+      mediaDevices: $("fpMediaDevices").value,
+      mediaDevicesNum: {
+        audioinput_num: clampMedia("fpMediaIn"),
+        videoinput_num: clampMedia("fpMediaVid"),
+        audiooutput_num: clampMedia("fpMediaOut"),
+      },
+      webglMeta,
+      webgl: webglMeta === "custom" ? "2" : "0",
       vendor: $("fpVendor").value,
       renderer: $("fpRenderer").value,
-      webgpu: cap("webgpu"),
-      cpu: $("fpCpu").value, ram: $("fpRam").value,
+      webglConfig: webglMeta === "custom"
+        ? { unmasked_vendor: $("fpVendor").value, unmasked_renderer: $("fpRenderer").value, webgpu: Object.assign({ webgpu_switch: webgpu === "disabled" ? "0" : "1" }, webgpu === "custom" ? { gpu_adapterinfo_vendor: gpuVendor, gpu_adapterinfo_architecture: gpuArch } : {}) }
+        : "",
+      webgpu,
+      webgpuSwitch: webgpu === "disabled" ? "0" : "1",
+      gpuVendor, gpuArch,
+      cpuMode,
+      hardwareConcurrency: cpuMode === "real" ? "default" : $("fpCpu").value,
+      cpu: cpuMode === "real" ? "default" : $("fpCpu").value,
+      ramMode,
+      deviceMemory: ramMode === "real" ? "default" : ramVal,
+      ram: ramMode === "real" ? "default" : ramVal,
+      devNameMode: devMode,
+      deviceNameSwitch: devMode === "off" ? "0" : devMode === "random" ? "1" : "2",
       devName: $("fpDevName").value, mac: $("fpMac").value,
-      doNotTrack: cap("doNotTrack"),
-      portScan: cap("portScan"), whitePorts: $("fpWhitePorts").value,
-      hardwareAccel: cap("hardwareAccel"),
-      disableTls: cap("disableTls"),
+      macMode,
+      macAddressConfig: macMode === "custom"
+        ? { model: "2", address: $("fpMac").value.trim() }
+        : { model: "0", address: "" },
+      doNotTrack: dnt,
+      do_not_track: dnt === "open" ? "true" : dnt === "close" ? "false" : "",
+      portScan, whitePorts: $("fpWhitePorts").value,
+      scanPortType: portScan === "open" ? "1" : portScan === "close" ? "0" : "",
+      allowScanPorts: $("fpWhitePorts").value.trim(),
+      hardwareAccel: hwAccel,
+      gpu: hwAccel === "close" ? "2" : hwAccel === "open" ? "0" : "",
+      gpuSwitch: hwAccel === "open" ? "1" : hwAccel === "close" ? "" : "",
+      disableTls: tlsMode,
+      tlsSwitch: tlsMode === "open" ? "1" : "0",
+      tls: ($("fpTlsBlacklist") && $("fpTlsBlacklist").value || "").trim(),
       launchArgs: $("fpLaunchArgs").value,
     };
   }
@@ -570,12 +731,47 @@
       renderProfiles($("globalSearch").value.trim());
     }
     toast(`指纹配置已保存${nm ? "到 " + nm : ""}（35+ 参数全量存档）`);
-    // 离线写回：static/dynamic/cookies + ui 侧车（保护键进 ui 存档，启动时丢弃，缓存为准）
+    // 离线写回：static/dynamic/cookies + ui 侧车
+    // 保存时同时组装底层 fingerprint_config（下划线命名，直传官方字段）+ ui 存档（自定义选项）
+    const fpConfig = {
+      webrtc: fp.webrtc,
+      automatic_timezone: fp.tzAuto,
+      timezone: fp.tzAuto === "0" ? fp.timezone.replace(/\s+/g, "_") : "",
+      location: fp.location,
+      location_switch: fp.locationSwitch,
+      latitude: fp.locationSwitch === "0" ? fp.lat : "",
+      longitude: fp.locationSwitch === "0" ? fp.lng : "",
+      accuracy: fp.locationSwitch === "0" ? fp.accuracy : "",
+      language: fp.language,
+      language_switch: fp.languageSwitch,
+      screen_resolution: fp.screenResolution,
+      hardware_concurrency: fp.hardwareConcurrency,
+      device_memory: fp.deviceMemory,
+      do_not_track: fp.do_not_track,
+      canvas: fp.canvas,
+      webgl_image: fp.webglImage,
+      audio: fp.audio,
+      client_rects: fp.clientRects,
+      media_devices: fp.mediaDevices,
+      media_devices_num: fp.mediaDevices === "2" ? fp.mediaDevicesNum : undefined,
+      speech_switch: fp.speechSwitch,
+      webgl: fp.webgl,
+      webgl_config: fp.webglConfig || undefined,
+      gpu: fp.gpu || undefined,
+      gpuSwitch: fp.gpuSwitch || undefined,
+      mac_address_config: fp.macAddressConfig,
+      device_name: fp.devName,
+      device_name_switch: fp.deviceNameSwitch,
+      scan_port_type: fp.scanPortType,
+      allow_scan_ports: fp.allowScanPorts,
+      fonts: fp.fontMode === "all" ? ["all"] : String(fp.fonts).split(/[,，\n]+/).map((s) => s.trim()).filter(Boolean),
+      ua: fp.ua,
+    };
     try {
       const fbcc = (window.FP ? window.FP.fbccOf(nm) : nm.split("_")[0]);
       const cleanCookie = window.FP ? window.FP.sanitizeCookies(fp.cookie || "[]", fbcc) : { text: fp.cookie };
-      const payload = { ui: JSON.stringify(fp) };
-      // 代理/设备等保护键不碰 static（缓存为准），只进 ui 存档；Cookie 清洗后可写 cookies 文件
+      const payload = { ui: JSON.stringify(fp), fingerprint_config: JSON.stringify(fpConfig) };
+      // 代理/设备等只进 ui 存档；Cookie 清洗后可写 cookies 文件
       try { JSON.parse(cleanCookie.text); payload.cookies = cleanCookie.text; } catch (e) { /* 非 JSON 则不写 */ }
       if (dirHandle && dirName === nm) {
         const notes = await window.FP.exportToDirHandle(dirHandle, nm, payload);

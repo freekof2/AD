@@ -1,10 +1,6 @@
 /* 离线指纹编解码 + 缓存目录导入导出。
  * 对应 C++ fingerprint.h/cpp 的 JS 移植：换表Base64、md5(fbcc+"_static/_webrtc/_cookies")
  * 文件名约定、ui_fingerprint.json 侧车。零网络：File System Access API 直读直写本地目录。
- * 冲突规则（与 C++ FpBuildCmdline 一致，以缓存为准）：
- *   PROTECTED_KEYS 在启动注入时被丢弃；UI 面板仍可编辑展示，但保存时写入 ui_fingerprint.json，
- *   C++ 启动时读到这些键会忽略，实际生效的是 static/dynamic 文件里的值。
- *   另见本文件底部 CONFLICT_NOTES（展示给用户的冲突说明文案）。
  */
 (function () {
   "use strict";
@@ -68,20 +64,11 @@
   const dynamicName = (fbcc) => md5Hex(fbcc + "_webrtc");
   const cookiesName = (fbcc) => md5Hex(fbcc + "_cookies");
 
-  // 启动注入保护键（与 C++ kProtected 一致）：UI 给了也丢弃，以缓存 static/dynamic 为准
+  // 启动注入保护键（与 C++ kProtected 一致）
   const PROTECTED_KEYS = ["UserId","StaticConfig","DynamicConfig","CookiesFile",
     "CanvasMark","WebGLMark","AudioFp","ClientRectFp","TimeZone","Geoposition",
     "WebRTCAddress","DisableWebRTC","ProxyChain","DeviceName","MacAddress",
     "MediaDevices","TTSEngines","Langs","AcceptLang"];
-
-  const CONFLICT_NOTES = [
-    "UserId / CanvasMark / WebGLMark / AudioFp / ClientRectFp：以缓存为准（fbccId 确定性种子派生，UI 值启动时丢弃）",
-    "ProxyChain（代理类型/主机/端口/账号）：以 static 文件为准，UI 代理表单值仅写入 ui_fingerprint.json 存档",
-    "TimeZone / Geoposition / WebRTCAddress / DisableWebRTC：以 dynamic 文件为准",
-    "Langs / AcceptLang / DeviceName / MacAddress / MediaDevices / TTSEngines：以 static 文件为准",
-    "CLIENT_HOST Cookie（含 127.0.0.1:20725 云端地址）：导入时自动剥离，不写入不上传",
-    "BROWSER_ID Cookie：以目录名 fbccId 为准，导入时自动校正",
-  ];
 
   // ---- File System Access 目录读写（Chromium 系浏览器；不支持时回退 webkitdirectory 导入） ----
   async function pickDir() {
@@ -160,7 +147,7 @@
   }
 
   window.FP = {
-    C1, C2, PROTECTED_KEYS, CONFLICT_NOTES,
+    C1, C2, PROTECTED_KEYS,
     fpEncode, fpDecode, md5Hex, fbccOf, staticName, dynamicName, cookiesName,
     pickDir, readFile, writeFile, importFromDirHandle, exportToDirHandle, sanitizeCookies,
   };
