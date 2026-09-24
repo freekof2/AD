@@ -126,7 +126,8 @@ jobs:
           foreach ($s in @("FpFormData", "proxyPass", "mediaDevices", "webglMeta", "webgpu",
                            "cpuMode", "ramMode", "devNameMode", "macMode", "doNotTrack",
                            "portScan", "hardwareAccel", "disableTls", "launchArgs",
-                           "FpUiShowModal", "FpFormToUiJson", "FpFormFromUiJson", "FpFormToFpConfig")) {
+                           "FpUiShowModal", "FpFormToUiJson", "FpFormFromUiJson", "FpFormToFpConfig",
+                           "FpOsToAsarPlatform", "FpBuildDisabledFontsJson", "FpBuildFakefontsJson")) {
             if ($fph -notmatch [regex]::Escape($s)) { throw "missing symbol '$s' in fp_ui.h" }
             Write-Host "fp_ui.h ok: $s"
           }
@@ -137,15 +138,82 @@ jobs:
                            "webgl_config", "webgpu_switch", "gpu_adapterinfo_vendor",
                            "mac_address_config", "device_name_switch",
                            "FpBuildPages", "FpFill", "FpCollect", "FpUiShowModal",
-                           "proxyPass", "FpSaveUiExtra", "FpSaveCookiesJson")) {
+                           "proxyPass", "FpSaveUiExtra", "FpSaveCookiesJson",
+                           "clampMedia", "syncUaPresetFromUA", "parseCookieRaw", "btnFpRandom",
+                           "kAsarFontsU", "kAsarMobileFonts", "kAsarFontsUCount",
+                           "FpOsToAsarPlatform", "FpBuildDisabledFontsJson", "FpBuildFakefontsJson",
+                           "Caurier Regular")) {
             if ($fpc -notmatch [regex]::Escape($s)) { throw "missing symbol '$s' in fp_ui.cpp" }
             Write-Host "fp_ui.cpp ok: $s"
           }
+          # 2d2. 字体表 1:1 行级校验（181 条 u[] + 12 条 mobile，顺序无关、数量与笔误必须一致）
+          $asarU = ([regex]::Matches($fpc, 'L"[A-Za-z][^"]*"')) | ForEach-Object { $_.Value }
+          if ($fpc -notmatch "kAsarFontsUCount = 181") { throw "kAsarFontsUCount != 181" }
+          if ($fpc -notmatch "kAsarMobileFontsCount = 12") { throw "kAsarMobileFontsCount != 12" }
+          Write-Host "font table counts ok (u=181, mobile=12)"
+          # 2d3. web-ui 侧 asar 字体表一致性（fp.js 与 C++ 同源）
+          $fpjs = Get-Content web-ui\js\fp.js -Raw
+          foreach ($s in @("ASAR_FONTS_U", "ASAR_MOBILE_FONTS", "asarPlatformOf",
+                           "asarDisabledFonts", "asarFakeKeys", "Caurier Regular")) {
+            if ($fpjs -notmatch [regex]::Escape($s)) { throw "missing '$s' in web-ui/js/fp.js" }
+            Write-Host "fp.js ok: $s"
+          }
+          # app.js 预览字段（fontsDisabledPreview/fontsFakePreviewKeys，与 C++ 预览同算法）
+          if ($app -notmatch "fontsDisabledPreview") { throw "fontsDisabledPreview missing in app.js" }
+          if ($app -notmatch "fontsFakePreviewKeys") { throw "fontsFakePreviewKeys missing in app.js" }
+          Write-Host "app.js font preview ok"
+          # 2d. 指纹设置内容对齐 web-ui（选项值/默认值/行为一致性）
+          $fpc2 = Get-Content launcher\cpp\fp_ui.cpp -Raw
+          $web = Get-Content web-ui\index.html -Raw
+          $app = Get-Content web-ui\js\app.js -Raw
+          # (a) WebRTC 四选项：forward/proxy/disabled/disable_udp
+          foreach ($v in @("forward", "proxy", "disabled", "disable_udp")) {
+            if ($fpc2 -notmatch [regex]::Escape($v)) { throw "webrtc option '$v' missing in fp_ui.cpp" }
+          }
+          Write-Host "webrtc options ok"
+          # (b) 地理三态 ask/allow/block + 时区 Asia/Shanghai 默认 + 默认经纬度
+          foreach ($v in @("ask - ", "allow - ", "block - ", "Asia/Shanghai", "31.2304", "121.4737")) {
+            if ($fpc2 -notmatch [regex]::Escape($v)) { throw "geo/tz default '$v' missing in fp_ui.cpp" }
+          }
+          Write-Host "geo/tz defaults ok"
+          # (c) 开关默认值：Canvas关/WebGL关/Audio开/ClientRects开/Speech开（与 index.html checked 一致）
+          if ($fpc2 -notmatch "swCanvas = false") { throw "swCanvas default mismatch" }
+          if ($fpc2 -notmatch "swAudio = true") { throw "swAudio default mismatch" }
+          Write-Host "switch defaults ok"
+          # (d) CPU 默认 20、RAM 默认 8、UA 默认 152（与 index.html selected/value 一致）
+          foreach ($v in @('value="20" selected', 'value="8" selected', 'value="152"')) {
+            if ($web -notmatch [regex]::Escape($v)) { throw "web default '$v' missing in index.html" }
+          }
+          foreach ($v in @('"20"', '"8"')) {
+            if ($fpc2 -notmatch [regex]::Escape($v)) { throw "native default '$v' missing in fp_ui.cpp" }
+          }
+          Write-Host "cpu/ram/ua defaults ok"
+          # (e) 随机库一致：渲染器 5 项、字体 3 项（与 app.js RENDERER_LIST/FONT_PRESETS 同数）
+          if ($fpc2 -notmatch "Apple M1 Max") { throw "renderer list incomplete in fp_ui.cpp" }
+          if ($fpc2 -notmatch "San Francisco, Monaco") { throw "font presets incomplete in fp_ui.cpp" }
+          Write-Host "random libs ok"
+          # (f) 一键随机含精度 500~3500（与 app.js btnFpRandom 一致）
+          if ($fpc2 -notmatch "rand\(\) % 3000 \+ 500") { throw "random accuracy range missing in fp_ui.cpp" }
+          if ($app -notmatch "Math\.floor\(Math\.random\(\) \* 3000 \+ 500\)") { throw "web random accuracy changed?" }
+          Write-Host "random accuracy ok"
+          # (g) 语言计数分隔符：逗号/分号/换行（与 collectFp split(/[,;\n]+/) 一致，查注释行）
+          if ($fpc2 -notmatch '按逗号/分号/换行切分计数') { throw "lang split separators missing in fp_ui.cpp" }
+          Write-Host "lang split ok"
+          # (h) 字体切分含中文逗号 U+FF0C（与 collectFp split(/[,，\n]+/) 一致）
+          if ($fpc2 -notmatch "0xEF") { throw "fonts chinese-comma handling missing in fp_ui.cpp" }
+          Write-Host "fonts split ok"
           # 2c. vcxproj 必须编译新模块
           $vcx = Get-Content launcher\cpp\SunLauncher.vcxproj -Raw
           foreach ($s in @("fp_ui.cpp", "fp_ui.h")) {
             if ($vcx -notmatch [regex]::Escape($s)) { throw "missing '$s' in vcxproj" }
             Write-Host "vcxproj ok: $s"
+          }
+          # 2d. 指纹内容对齐 web-ui 注释溯源（注释即契约，防实现漂移）
+          #     注释关键词与 web-ui 函数/按钮名一一对应：syncUaPresetFromUA=UA反解析、
+          #     parseCookieRaw=合并Cookie解析、btnFpRandom=一键随机（含精度500~3500）。
+          foreach ($s in @("clampMedia", "syncUaPresetFromUA", "parseCookieRaw", "btnFpRandom")) {
+            if ($fpc -notmatch $s) { throw "alignment comment '$s' missing in fp_ui.cpp" }
+            Write-Host "align comment ok: $s"
           }
           # 3. C++ 离线 HTTP 路由齐备：
           #    A 组离线自有（web-ui/api.js 契约）：profiles/start/stop/fp/proxy/check + serveFile；

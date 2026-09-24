@@ -180,6 +180,56 @@ bool FpFormFromUiJson(const std::string& json, FpFormData& f) {
 }
 
 // 表单 -> fingerprint_config（与 web-ui btnFpSave 的 fpConfig 组装一致）
+// ---- asar 1:1 setFakeFonts/setFonts 语义（main.min.js 全文移植）----
+// platform: Win32|MacIntel|Linux x86_64|Linux armv7I|Linux armv8I|Linux armv81|Linux i686|iPhone|Windows Phone
+// hostOs: 离线本机固定 win32（SunLauncher 只跑 Windows；asar process.platform 分支收敛到 win32）
+// fontsMode: all -> 输出 DisabledFonts=getFonts-mobileFonts；custom -> 输出切分数组（调用方已在 fp_config 处理，此处返回 ""）
+// Fakefonts 输出 JSON 对象（键=伪装表全键，值=本机表轮转；asar n[e]=win32[t%len]，t 为键序号）
+// 云端表缺失回退：win32/darwin/linux 键表与值表均用 u[] 全集；mobile 键表用 mobileFonts 精确 12 条。
+static std::string FpBuildFakefontsJson(const std::wstring& platform) {
+    bool useMobile = (platform == L"MacIntel" || platform == L"Linux armv7I" ||
+        platform == L"Linux armv8I" || platform == L"Linux armv81" ||
+        platform == L"Linux i686" || platform == L"iPhone" ||
+        platform == L"Windows Phone");
+    // 键表：Win32->u[]全集；MacIntel->darwin(离线=u[]全集)；移动系->mobileFonts 12 条；Linux x86_64->u[]全集
+    int keyCount = useMobile ? kAsarMobileFontsCount : kAsarFontsUCount;
+    std::string o = "{";
+    for (int t = 0; t < keyCount; t++) {
+        std::wstring key = useMobile ? kAsarMobileFonts[t] : kAsarFontsU[t];
+        // 值表：本机 win32 -> u[] 全集轮转（asar win32[t%len]，云端缺失回退同表）
+        std::wstring val = kAsarFontsU[t % kAsarFontsUCount];
+        if (t) o += ",";
+        o += "\"" + N(key) + "\":\"" + N(val) + "\"";
+    }
+    o += "}";
+    return o;
+}
+// DisabledFonts（fonts=all）：getFonts(u[] 181 条) - mobileFonts(12 条)，顺序保留含重复（asar filter 原样，不去重）
+static std::string FpBuildDisabledFontsJson() {
+    std::string arr = "[";
+    bool first = true;
+    for (int i = 0; i < kAsarFontsUCount; i++) {
+        std::wstring w = kAsarFontsU[i];
+        bool isMobile = false;
+        for (int j = 0; j < kAsarMobileFontsCount; j++)
+            if (w == kAsarMobileFonts[j]) { isMobile = true; break; }
+        if (isMobile) continue;
+        if (!first) arr += ",";
+        first = false;
+        arr += "\"" + N(w) + "\"";
+    }
+    arr += "]";
+    return arr;
+}
+// 平台下拉值（web-ui os 胶囊 win|mac|linux|android|ios）-> asar e.platform（setFakeFonts switch 用）
+static std::wstring FpOsToAsarPlatform(const std::wstring& os) {
+    if (os == L"mac") return L"MacIntel";
+    if (os == L"linux") return L"Linux x86_64";
+    if (os == L"android") return L"Linux armv8I";
+    if (os == L"ios") return L"iPhone";
+    return L"Win32";
+}
+
 std::string FpFormToFpConfig(const FpFormData& f) {
     std::string sp = N(f.webrtc), tz = (f.timezoneMode == L"ip") ? "1" : "0";
     std::string o = "{\"webrtc\":\"" + sp + "\",\"automatic_timezone\":\"" + tz + "\"";
@@ -195,7 +245,8 @@ std::string FpFormToFpConfig(const FpFormData& f) {
     else o += ",\"latitude\":\"\",\"longitude\":\"\",\"accuracy\":\"\"";
     std::string lang = N(f.langList);
     int cnt = 1;
-    { size_t p = 0; cnt = 0; while (p <= lang.size()) { size_t e = lang.find(',', p); cnt++; if (e == std::string::npos) break; p = e + 1; } }
+    // 与 web-ui collectFp 一致：按逗号/分号/换行切分计数（单行 EDIT 无换行，但兼容粘贴值）
+    { size_t p = 0; cnt = 0; while (p <= lang.size()) { size_t e = lang.find_first_of(",;\n", p); cnt++; if (e == std::string::npos) break; p = e + 1; } }
     o += ",\"language\":\"" + lang + "\",\"language_switch\":\"" + std::string(cnt <= 1 ? "1" : "0") + "\"";
     std::string res = N(f.resolution);
     if (f.resMode == L"custom" && !f.resW.empty() && !f.resH.empty())
@@ -249,10 +300,18 @@ std::string FpFormToFpConfig(const FpFormData& f) {
     // TLS：open->tlsSwitch:1 + tls 黑名单；否则 tlsSwitch:0
     o += ",\"tlsSwitch\":\"" + std::string(f.disableTls == L"open" ? "1" : "0") + "\"";
     if (f.disableTls == L"open") o += ",\"tls\":\"" + JEsc(f.tlsBlacklist) + "\"";
-    // 字体：all->["all"]；custom->按逗号/中文逗号/换行切分数组
+    // 字体：all->["all"]（语义标记；真正的 DisabledFonts 由 FpBuildDisabledFontsJson() 按 asar 生成，
+    // 见 F_OK 保存分支）；custom->按逗号/中文逗号/换行切分数组（与 web-ui split(/[,，\n]+/) 一致）
     if (f.fontMode == L"all") o += ",\"fonts\":[\"all\"]";
     else {
-        std::string fs = N(f.fonts), arr = "[";
+        std::string fs8 = N(f.fonts), fs, arr = "[";
+        // UTF-8 中文逗号 U+FF0C = EF BC 8C，先替换为 ASCII 逗号再切分
+        for (size_t i = 0; i < fs8.size();) {
+            if (i + 2 < fs8.size() && (unsigned char)fs8[i] == 0xEF &&
+                (unsigned char)fs8[i + 1] == 0xBC && (unsigned char)fs8[i + 2] == 0x8C) {
+                fs += ','; i += 3;
+            } else { fs += fs8[i]; i++; }
+        }
         size_t p = 0; bool first = true;
         while (p <= fs.size()) {
             size_t e = fs.find_first_of(",\n", p);
@@ -311,6 +370,68 @@ static const wchar_t* kFonts[] = {
     L"Helvetica, PingFang SC, Hiragino Sans GB, Microsoft YaHei, Segoe UI (184)",
     L"San Francisco, Monaco, Menlo, Apple Color Emoji, Noto Color Emoji (195)",
 };
+// ---- asar 1:1 移植字体表（main.min.js 内嵌 u[]，181 条含重复，顺序保留）----
+// 用途1: fonts=all 时 DisabledFonts = getFonts - mobileFonts（setScreenResolution 尾部，mobileFonts=内嵌 c[] 12 条）
+// 用途2: Fakefonts = 伪装 platform 查表取键、本机 platform 查表轮转取值（setFakeFonts 全文移植见 FpBuildFakefontsJson）
+// 云端表（FINGERPRINT_FONTS_CONFIG 下发 win32/darwin/linux）离线不可达：win32/darwin/linux 用 u[] 全集代替；
+// mobileFonts 用内嵌 c[] 精确 12 条。注意 asar 原表含拼写 "Caurier Regular"（Courier 笔误），1:1 保留。
+static const wchar_t* kAsarFontsU[] = {
+    L"Arial",L"Calibri",L"Cambria",L"Cambria Math",L"Candara",L"Comic Sans MS",
+    L"Comic Sans MS Bold",L"Comic Sans",L"Consolas",L"Constantia",L"Corbel",
+    L"Courier New",L"Caurier Regular",L"Ebrima",L"Fixedsys Regular",
+    L"Franklin Gothic",L"Gabriola Regular",L"Gadugi",L"Georgia",
+    L"HoloLens MDL2 Assets Regular",L"Impact Regular",L"Javanese Text Regular",
+    L"Leelawadee UI",L"Lucida Console Regular",L"Lucida Sans Unicode Regular",
+    L"Malgun Gothic",L"Microsoft Himalaya Regular",L"Microsoft JhengHei",
+    L"Microsoft JhengHei UI",L"Microsoft PhangsPa",L"Microsoft Sans Serif Regular",
+    L"Microsoft Tai Le",L"Microsoft YaHei",L"Microsoft YaHei UI",
+    L"Microsoft Yi Baiti Regular",L"MingLiU_HKSCS-ExtB Regular",
+    L"MingLiu-ExtB Regular",L"Modern Regular",L"Mongolia Baiti Regular",
+    L"MS Gothic Regular",L"MS PGothic Regular",L"MS Sans Serif Regular",
+    L"MS Serif Regular",L"MS UI Gothic Regular",L"MV Boli Regular",
+    L"Myanmar Text",L"Nimarla UI",L"MV Boli Regular",L"Myanmar Tet",
+    L"Nirmala UI",L"NSimSun Regular",L"Palatino Linotype",
+    L"PMingLiU-ExtB Regular",L"Roman Regular",L"Script Regular",
+    L"Segoe MDL2 Assets Regular",L"Segoe Print",L"Segoe Script",L"Segoe UI",
+    L"Segoe UI Emoji Regular",L"Segoe UI Historic Regular",
+    L"Segoe UI Symbol Regular",L"SimSun Regular",
+    L"SimSun-ExtB Regular",L"Sitka Banner",L"Sitka Display",L"Sitka Heading",
+    L"Sitka Small",L"Sitka Subheading",L"Sitka Text",L"Small Fonts Regular",
+    L"Sylfaen Regular",L"Symbol Regular",L"System Bold",L"Tahoma",L"Terminal",
+    L"Times New Roman",L"Trebuchet MS",L"Verdana",L"Webdings Regular",
+    L"Wingdings Regular",L"Yu Gothic",L"Yu Gothic UI",L"Arial",L"Arial Black",
+    L"Calibri",L"Calibri Light",L"Cambria",L"Cambria Math",L"Candara",
+    L"Comic Sans MS",L"Consolas",L"Constantia",L"Corbel",L"Courier",
+    L"Courier New",L"Ebrima",L"Fixedsys",L"Franklin Gothic Medium",
+    L"Gabriola",L"Gadugi",L"Georgia",L"HoloLens MDL2 Assets",L"Impact",
+    L"Javanese Text",L"Leelawadee UI",L"Leelawadee UI Semilight",
+    L"Lucida Console",L"Lucida Sans Unicode",L"MS Gothic",L"MS PGothic",
+    L"MS Sans Serif",L"MS Serif",L"MS UI Gothic",L"MV Boli",L"Malgun Gothic",
+    L"Malgun Gothic Semilight",L"Marlett",L"Microsoft Himalaya",
+    L"Microsoft JhengHei",L"Microsoft JhengHei Light",L"Microsoft JhengHei UI",
+    L"Microsoft JhengHei UI Light",L"Microsoft New Tai Lue",
+    L"Microsoft PhagsPa",L"Microsoft Sans Serif",L"Microsoft Tai Le",
+    L"Microsoft YaHei",L"Microsoft YaHei Light",L"Microsoft YaHei UI",
+    L"Microsoft YaHei UI Light",L"Microsoft Yi Baiti",L"MingLiU-ExtB",
+    L"MingLiU_HKSCS-ExtB",L"Modern",L"Mongolian Baiti",L"Myanmar Text",
+    L"NSimSun",L"Nirmala UI",L"Nirmala UI Semilight",L"PMingLiU-ExtB",
+    L"Palatino Linotype",L"Roman",L"Script",L"Segoe MDL2 Assets",
+    L"Segoe Print",L"Segoe Script",L"Segoe UI",L"Segoe UI Black",
+    L"Segoe UI Emoji",L"Segoe UI Historic",L"Segoe UI Light",
+    L"Segoe UI Semibold",L"Segoe UI Semilight",L"Segoe UI Symbol",
+    L"SimSun",L"SimSun-ExtB",L"Sitka Banner",L"Sitka Display",
+    L"Sitka Heading",L"Sitka Small",L"Sitka Subheading",L"Sitka Text",
+    L"Small Fonts",L"Sylfaen",L"Symbol",L"System",L"Tahoma",L"Terminal",
+    L"Times New Roman",L"Trebuchet MS",L"Verdana",L"Webdings",L"Wingdings",
+    L"Yu Gothic",L"Yu Gothic Light",L"Yu Gothic Medium",L"Yu Gothic UI",
+    L"Yu Gothic UI Light",L"Yu Gothic UI Semibold",L"Yu Gothic UI Semilight",
+};
+static const int kAsarFontsUCount = 181;
+static const wchar_t* kAsarMobileFonts[] = {
+    L"Arial",L"Courier",L"Courier New",L"Georgia",L"Helvetica",L"Monaco",
+    L"Palatino",L"Tahoma",L"Times",L"Times New Roman",L"Verdana",L"Baskerville",
+};
+static const int kAsarMobileFontsCount = 12;
 static const wchar_t* kTz[] = {
     L"Etc/GMT+12", L"Pacific/Midway", L"Pacific/Honolulu", L"America/Anchorage",
     L"America/Los_Angeles", L"America/Denver", L"America/Chicago", L"America/New_York",
@@ -646,6 +767,22 @@ static void FpFill(FpWnd* w) {
     selByVal(F_KERNEL, f.kernelVer.empty() ? L"chrome143" : f.kernelVer);
     FpSet(C(F_BDIR), f.browserDir);
     selByVal(F_OS, f.os.empty() ? L"win" : f.os);
+    // UA 版本号回填：空则从 UA 文本反解析 Chrome/CriOS/Firefox 后 2-3 位数字（与 web-ui syncUaPresetFromUA 一致）
+    if (f.uaPreset.empty() && !f.ua.empty()) {
+        const wchar_t* p = f.ua.c_str();
+        for (const wchar_t* q = p; *q; q++) {
+            const wchar_t* tag = NULL;
+            if (wcsncmp(q, L"Chrome/", 7) == 0) tag = q + 7;
+            else if (wcsncmp(q, L"CriOS/", 6) == 0) tag = q + 6;
+            else if (wcsncmp(q, L"Firefox/", 8) == 0) tag = q + 8;
+            if (tag) {
+                wchar_t dig[8]{};
+                int n = 0;
+                while (n < 3 && tag[n] >= L'0' && tag[n] <= L'9') { dig[n] = tag[n]; n++; }
+                if (n >= 2) { f.uaPreset.assign(dig, n); break; }
+            }
+        }
+    }
     FpSet(C(F_UAPRESET), f.uaPreset);
     FpSet(C(F_UA), f.ua);
     selByVal(F_PTYPE, f.proxyType.empty() ? L"socks5" : f.proxyType);
@@ -896,6 +1033,14 @@ static LRESULT CALLBACK FpWndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
         if (id == F_CANCEL) { ::DestroyWindow(h); return 0; }
         if (id == F_SHUFFLEUA) {
             FpCollect(w);
+            // UA 大版本号取纯数字，非法/为空回退 152（与 web-ui uaVer 一致）
+            {
+                std::wstring v = w->form.uaPreset, dig;
+                for (auto c : v) { if (c >= L'0' && c <= L'9') dig += c; }
+                if (dig.size() < 2 || dig.size() > 3) dig = L"152";
+                w->form.uaPreset = dig;
+                FpSet(C(F_UAPRESET), dig);
+            }
             FpSet(C(F_UA), FpBuildUA(w->form.os, w->form.uaPreset));
             ::SetWindowTextW(w->hStatus, L"UA 已按当前系统重新生成");
             return 0;
@@ -912,7 +1057,109 @@ static LRESULT CALLBACK FpWndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
         if (id == F_SHUFFLEDEV) { FpSet(C(F_DEVNAME), FpRandomDev()); return 0; }
         if (id == F_SHUFFLEMAC) { FpSet(C(F_MAC), FpRandomMac()); return 0; }
         if (id == F_MERGECOOKIE) {
-            ::SetWindowTextW(w->hStatus, L"Cookie 已为 JSON 数组形态（保存时清洗后写入）");
+            // 与 web-ui parseCookieRaw/btnMergeFpCookie 一致：JSON 数组直通；
+            // Netscape/制表符/Name=Value 统一转 JSON 数组
+            FpCollect(w);
+            std::string raw = N(w->form.cookie);
+            size_t a = raw.find_first_not_of(" \t\r\n");
+            size_t b = raw.find_last_not_of(" \t\r\n");
+            std::string t = (a == std::string::npos) ? "" : raw.substr(a, b - a + 1);
+            if (t.empty()) { ::SetWindowTextW(w->hStatus, L"请先粘贴 Cookie 内容"); return 0; }
+            int n = 0;
+            if (t.front() == '[') {
+                // 已是 JSON 数组：计数后回写（规范化失败则原样保留）
+                size_t p = 0;
+                while ((p = t.find("\"name\"", p)) != std::string::npos) { n++; p += 6; }
+                if (n == 0) n = 1; // 空数组也算 1 次合并
+            } else {
+                std::string arr = "[";
+                bool first = true;
+                size_t ls = 0;
+                auto emitPair = [&](const std::string& nm, const std::string& vv) {
+                    if (nm.empty()) return;
+                    if (!first) arr += ",";
+                    first = false;
+                    std::string e1, e2;
+                    for (char c : nm) { if (c == '"' || c == '\\') e1 += '\\'; e1 += c; }
+                    for (char c : vv) { if (c == '"' || c == '\\') e2 += '\\'; e2 += c; }
+                    arr += "{\"name\":\"" + e1 + "\",\"value\":\"" + e2 + "\"}";
+                    n++;
+                };
+                while (ls <= t.size()) {
+                    size_t le = t.find('\n', ls);
+                    std::string line = t.substr(ls, le == std::string::npos ? le : le - ls);
+                    // 去 \r
+                    while (!line.empty() && (line.back() == '\r')) line.pop_back();
+                    // 跳过空行与注释（保留 #HttpOnly 行）
+                    std::string tr = line;
+                    size_t ta = tr.find_first_not_of(" \t");
+                    if (ta != std::string::npos) tr = tr.substr(ta);
+                    if (!tr.empty() && tr[0] != '#' && tr.find("#HttpOnly") != 0) {
+                        // Netscape 制表符：7 列以上取 [5]=name [6]=value
+                        std::vector<std::string> cols;
+                        size_t cs = 0;
+                        while (cs <= line.size()) {
+                            size_t ce = line.find('\t', cs);
+                            cols.push_back(line.substr(cs, ce == std::string::npos ? ce : ce - cs));
+                            if (ce == std::string::npos) break;
+                            cs = ce + 1;
+                        }
+                        if (cols.size() >= 7) {
+                            std::string vv = cols[6];
+                            size_t va = vv.find_first_not_of(" \t");
+                            size_t vb = vv.find_last_not_of(" \t");
+                            emitPair(cols[5], (va == std::string::npos) ? "" : vv.substr(va, vb - va + 1));
+                        } else if (line.find('=') != std::string::npos) {
+                            size_t eq = line.find('=');
+                            std::string nm = line.substr(0, eq), vv = line.substr(eq + 1);
+                            size_t na = nm.find_first_not_of(" \t;"), nb = nm.find_last_not_of(" \t;");
+                            size_t va = vv.find_first_not_of(" \t;"), vb = vv.find_last_not_of(" \t;");
+                            emitPair((na == std::string::npos) ? "" : nm.substr(na, nb - na + 1),
+                                     (va == std::string::npos) ? "" : vv.substr(va, vb - va + 1));
+                        } else if (!line.empty() && line.find(';') != std::string::npos) {
+                            // 分号分隔的 k=v 串：逐段拆
+                            size_t ks = 0;
+                            while (ks <= line.size()) {
+                                size_t ke = line.find(';', ks);
+                                std::string seg = line.substr(ks, ke == std::string::npos ? ke : ke - ks);
+                                size_t eq = seg.find('=');
+                                if (eq != std::string::npos) {
+                                    std::string nm = seg.substr(0, eq), vv = seg.substr(eq + 1);
+                                    size_t na = nm.find_first_not_of(" \t"), nb = nm.find_last_not_of(" \t");
+                                    size_t va = vv.find_first_not_of(" \t"), vb = vv.find_last_not_of(" \t");
+                                    if (na != std::string::npos)
+                                        emitPair(nm.substr(na, nb - na + 1),
+                                                 (va == std::string::npos) ? "" : vv.substr(va, vb - va + 1));
+                                }
+                                if (ke == std::string::npos) break;
+                                ks = ke + 1;
+                            }
+                        }
+                    } else if (tr.find("#HttpOnly") == 0) {
+                        // #HttpOnly 前缀的 Netscape 行：去掉前缀后按制表符解析
+                        std::string rest = tr.substr(10);
+                        size_t sa = rest.find_first_not_of(" \t");
+                        if (sa != std::string::npos) rest = rest.substr(sa);
+                        std::vector<std::string> cols;
+                        size_t cs = 0;
+                        while (cs <= rest.size()) {
+                            size_t ce = rest.find('\t', cs);
+                            cols.push_back(rest.substr(cs, ce == std::string::npos ? ce : ce - cs));
+                            if (ce == std::string::npos) break;
+                            cs = ce + 1;
+                        }
+                        if (cols.size() >= 7) emitPair(cols[5], cols[6]);
+                    }
+                    if (le == std::string::npos) break;
+                    ls = le + 1;
+                }
+                arr += "]";
+                w->form.cookie = W(arr);
+                FpSet(C(F_COOKIE), w->form.cookie);
+            }
+            wchar_t msg[128]{};
+            swprintf_s(msg, L"Cookie 合并成功，共 %d 个", n);
+            ::SetWindowTextW(w->hStatus, msg);
             return 0;
         }
         if (id == F_IMPORT) {
@@ -963,10 +1210,12 @@ static LRESULT CALLBACK FpWndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
             FpSet(C(F_RENDERER), kRenderers[rand() % 5]);
             FpSet(C(F_DEVNAME), FpRandomDev());
             FpSet(C(F_MAC), FpRandomMac());
-            wchar_t la[32], ln[32];
+            // 与 web-ui btnFpRandom 一致：纬度 ±40、经度 ±180、精度 500~3500，并刷新 UA
+            wchar_t la[32], ln[32], ac[32];
             swprintf_s(la, L"%.4f", (rand() % 8000 - 4000) / 100.0);
             swprintf_s(ln, L"%.4f", (rand() % 36000 - 18000) / 100.0);
-            FpSet(C(F_LAT), la); FpSet(C(F_LNG), ln);
+            swprintf_s(ac, L"%d", rand() % 3000 + 500);
+            FpSet(C(F_LAT), la); FpSet(C(F_LNG), ln); FpSet(C(F_ACC), ac);
             FpCollect(w);
             FpSet(C(F_UA), FpBuildUA(w->form.os, w->form.uaPreset));
             ::SetWindowTextW(w->hStatus, L"已随机全部指纹（点保存才写盘）");
@@ -1037,6 +1286,17 @@ static LRESULT CALLBACK FpWndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
                 else
                     ui = FpJsonSet(ui, "macAddressConfig", "{\"model\":\"0\",\"address\":\"\"}");
                 if (w->form.fontMode == L"all") ui = FpJsonSet(ui, "fonts", "[\"all\"]");
+                // asar 1:1：fonts=all 时 static.DisabledFonts=getFonts-mobileFonts；
+                // custom 时 static.DisabledFonts=表单切分数组（setFonts 语义：disabledFonts 直写）。
+                // 注意 main.cpp /api/fp/save 的 protectFill 会用缓存值覆盖这 3 个键（以缓存为准），
+                // 此处写入的是“首次建档”值；已有缓存时以缓存为准，与 asar 行为一致。
+                {
+                    std::string asarPlatform = N(FpOsToAsarPlatform(w->form.os));
+                    std::string dis = FpBuildDisabledFontsJson();
+                    ui = FpJsonSet(ui, "staticDisabledFontsPreview", dis);
+                    std::string fake = FpBuildFakefontsJson(W(asarPlatform));
+                    ui = FpJsonSet(ui, "staticFakefontsPreview", fake);
+                }
                 if (w->form.hardwareAccel == L"close") { ui = FpJsonSet(ui, "gpu", "\"2\""); }
                 else if (w->form.hardwareAccel == L"open") {
                     ui = FpJsonSet(ui, "gpu", "\"0\"");

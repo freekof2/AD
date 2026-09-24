@@ -92,3 +92,10 @@ std::string FpFormToUiJson(const FpFormData& f);
 bool FpFormFromUiJson(const std::string& json, FpFormData& f);
 // 表单 -> fingerprint_config（下划线命名，直传官方字段，与 web-ui btnFpSave 一致）。
 std::string FpFormToFpConfig(const FpFormData& f);
+// ---- asar 1:1 字体语义（main.min.js setScreenResolution 尾部 + setFakeFonts 全文移植）----
+// os 胶囊值 -> asar e.platform（win->Win32，mac->MacIntel，linux->Linux x86_64，android->Linux armv8I，ios->iPhone）
+std::wstring FpOsToAsarPlatform(const std::wstring& os);
+// fonts=all -> DisabledFonts JSON 数组（getFonts(u[] 181 条) - mobileFonts(12 条)，顺序保留含重复）
+std::string FpBuildDisabledFontsJson();
+// Fakefonts JSON 对象（键=伪装表全键，值=本机 win32 表轮转；云端表缺失时 win32/darwin/linux 用 u[] 全集代替）
+std::string FpBuildFakefontsJson(const std::wstring& asarPlatform);

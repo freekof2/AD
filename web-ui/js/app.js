@@ -765,6 +765,15 @@
       scan_port_type: fp.scanPortType,
       allow_scan_ports: fp.allowScanPorts,
       fonts: fp.fontMode === "all" ? ["all"] : String(fp.fonts).split(/[,，\n]+/).map((s) => s.trim()).filter(Boolean),
+      // asar 1:1（main.min.js setScreenResolution 尾部 + setFakeFonts，见 launcher/cpp/fp_ui.cpp）：
+      // fonts=all -> static.DisabledFonts = getFonts(u[] 181 条) - mobileFonts(c[] 12 条)；
+      // custom -> static.DisabledFonts = 上行切分数组（setFonts 直写 disabledFonts）。
+      // Fakefonts 键值映射见 C++ FpBuildFakefontsJson（伪装 platform 查表取键、本机轮转取值）。
+      // 预览（与 C++ 同算法，浏览器端可直接验算，不写盘）：
+      fontsDisabledPreview: fp.fontMode === "all"
+        ? window.FP.asarDisabledFonts()
+        : String(fp.fonts).split(/[,，\n]+/).map((s) => s.trim()).filter(Boolean),
+      fontsFakePreviewKeys: window.FP.asarFakeKeys(fp.os || "win"),
       ua: fp.ua,
     };
     try {

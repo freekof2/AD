@@ -146,8 +146,34 @@
     return { text: JSON.stringify(out, null, 2), notes };
   }
 
+  // ---- asar 1:1 字体表（main.min.js 内嵌 u[] 181 条含重复 + c[] 12 条，顺序保留） ----
+  // 与 launcher/cpp/fp_ui.cpp kAsarFontsU/kAsarMobileFonts 同源。注意原表含拼写
+  // "Caurier Regular"（Courier 笔误），1:1 保留。
+  const ASAR_FONTS_U = ["Arial","Calibri","Cambria","Cambria Math","Candara","Comic Sans MS","Comic Sans MS Bold","Comic Sans","Consolas","Constantia","Corbel","Courier New","Caurier Regular","Ebrima","Fixedsys Regular","Franklin Gothic","Gabriola Regular","Gadugi","Georgia","HoloLens MDL2 Assets Regular","Impact Regular","Javanese Text Regular","Leelawadee UI","Lucida Console Regular","Lucida Sans Unicode Regular","Malgun Gothic","Microsoft Himalaya Regular","Microsoft JhengHei","Microsoft JhengHei UI","Microsoft PhangsPa","Microsoft Sans Serif Regular","Microsoft Tai Le","Microsoft YaHei","Microsoft YaHei UI","Microsoft Yi Baiti Regular","MingLiU_HKSCS-ExtB Regular","MingLiu-ExtB Regular","Modern Regular","Mongolia Baiti Regular","MS Gothic Regular","MS PGothic Regular","MS Sans Serif Regular","MS Serif Regular","MS UI Gothic Regular","MV Boli Regular","Myanmar Text","Nimarla UI","MV Boli Regular","Myanmar Tet","Nirmala UI","NSimSun Regular","Palatino Linotype","PMingLiU-ExtB Regular","Roman Regular","Script Regular","Segoe MDL2 Assets Regular","Segoe Print","Segoe Script","Segoe UI","Segoe UI Emoji Regular","Segoe UI Historic Regular","Segoe UI Symbol Regular","SimSun Regular","SimSun-ExtB Regular","Sitka Banner","Sitka Display","Sitka Heading","Sitka Small","Sitka Subheading","Sitka Text","Small Fonts Regular","Sylfaen Regular","Symbol Regular","System Bold","Tahoma","Terminal","Times New Roman","Trebuchet MS","Verdana","Webdings Regular","Wingdings Regular","Yu Gothic","Yu Gothic UI","Arial","Arial Black","Calibri","Calibri Light","Cambria","Cambria Math","Candara","Comic Sans MS","Consolas","Constantia","Corbel","Courier","Courier New","Ebrima","Fixedsys","Franklin Gothic Medium","Gabriola","Gadugi","Georgia","HoloLens MDL2 Assets","Impact","Javanese Text","Leelawadee UI","Leelawadee UI Semilight","Lucida Console","Lucida Sans Unicode","MS Gothic","MS PGothic","MS Sans Serif","MS Serif","MS UI Gothic","MV Boli","Malgun Gothic","Malgun Gothic Semilight","Marlett","Microsoft Himalaya","Microsoft JhengHei","Microsoft JhengHei Light","Microsoft JhengHei UI","Microsoft JhengHei UI Light","Microsoft New Tai Lue","Microsoft PhagsPa","Microsoft Sans Serif","Microsoft Tai Le","Microsoft YaHei","Microsoft YaHei Light","Microsoft YaHei UI","Microsoft YaHei UI Light","Microsoft Yi Baiti","MingLiU-ExtB","MingLiU_HKSCS-ExtB","Modern","Mongolian Baiti","Myanmar Text","NSimSun","Nirmala UI","Nirmala UI Semilight","PMingLiU-ExtB","Palatino Linotype","Roman","Script","Segoe MDL2 Assets","Segoe Print","Segoe Script","Segoe UI","Segoe UI Black","Segoe UI Emoji","Segoe UI Historic","Segoe UI Light","Segoe UI Semibold","Segoe UI Semilight","Segoe UI Symbol","SimSun","SimSun-ExtB","Sitka Banner","Sitka Display","Sitka Heading","Sitka Small","Sitka Subheading","Sitka Text","Small Fonts","Sylfaen","Symbol","System","Tahoma","Terminal","Times New Roman","Trebuchet MS","Verdana","Webdings","Wingdings","Yu Gothic","Yu Gothic Light","Yu Gothic Medium","Yu Gothic UI","Yu Gothic UI Light","Yu Gothic UI Semibold","Yu Gothic UI Semilight"];
+  const ASAR_MOBILE_FONTS = ["Arial","Courier","Courier New","Georgia","Helvetica","Monaco","Palatino","Tahoma","Times","Times New Roman","Verdana","Baskerville"];
+  // os 胶囊值 -> asar e.platform（与 C++ FpOsToAsarPlatform 一致）
+  function asarPlatformOf(os) {
+    if (os === "mac") return "MacIntel";
+    if (os === "linux") return "Linux x86_64";
+    if (os === "android") return "Linux armv8I";
+    if (os === "ios") return "iPhone";
+    return "Win32";
+  }
+  // fonts=all -> DisabledFonts = getFonts - mobileFonts（顺序保留含重复，与 C++ FpBuildDisabledFontsJson 同算法）
+  function asarDisabledFonts() {
+    return ASAR_FONTS_U.filter((f) => ASAR_MOBILE_FONTS.indexOf(f) < 0);
+  }
+  // Fakefonts 键集合预览（键=伪装表全键；值=本机轮转，见 C++ FpBuildFakefontsJson）
+  function asarFakeKeys(os) {
+    const p = asarPlatformOf(os || "win");
+    const useMobile = (p === "MacIntel" || p === "iPhone" || p.indexOf("Linux armv") === 0 ||
+      p === "Linux i686" || p === "Windows Phone");
+    return (useMobile ? ASAR_MOBILE_FONTS : ASAR_FONTS_U).slice();
+  }
+
   window.FP = {
-    C1, C2, PROTECTED_KEYS,
+    C1, C2, PROTECTED_KEYS, ASAR_FONTS_U, ASAR_MOBILE_FONTS,
+    asarPlatformOf, asarDisabledFonts, asarFakeKeys,
     fpEncode, fpDecode, md5Hex, fbccOf, staticName, dynamicName, cookiesName,
     pickDir, readFile, writeFile, importFromDirHandle, exportToDirHandle, sanitizeCookies,
   };
