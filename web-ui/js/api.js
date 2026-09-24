@@ -33,6 +33,8 @@
     // —— 指纹三件套 + UI 侧车 ——
     fpGet(kind, name) { return this.get("/api/fp/" + kind + "?name=" + encodeURIComponent(name)); },
     fpSave(name, payload) { return this.post("/api/fp/save", Object.assign({ name }, payload)); },
+    // —— 代理检测（纯本机 TCP 连通性探测，不走任何云端测速） ——
+    checkProxy(addr) { return this.get("/api/proxy/check?addr=" + encodeURIComponent(addr)); },
   };
   window.API = api;
   // 连接指示灯：只探本地，不探云端

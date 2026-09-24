@@ -349,8 +349,10 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE, LPWSTR, int show) {
     //   GET  /<web-ui 下相对路径>     web-ui 静态文件（css/js）
     //   POST /api/start {name}        指纹注入启动（FpBuildCmdline + CreateProcess）
     //   POST /api/stop  {name}        进程树关闭（FpKillProfileTree + 句柄兜底）
-    //   GET  /api/fp/<static|dynamic|cookies|ui>?name=xxx   读指纹 JSON
-    //   POST /api/fp/save {name, static?, dynamic?, cookies?, ui?}  写指纹
+//   GET  /api/fp/<static|dynamic|cookies|ui>?name=xxx   读指纹 JSON
+//   POST /api/fp/save {name, static?, dynamic?, cookies?, ui?}  写指纹
+//   GET  /api/proxy/check?addr=host:port  本机 TCP 连通性探测（connect 超时 3s，
+//        成功后回读出口 IP 纯属可选失败项；绝不访问 AdsPower/云端测速接口）
     // 注意：工作线程只在启动瞬间拷贝 listen 端口与快照函数，
     // 之后不再触碰 UI 线程的 g.cfg / g.procs，避免数据竞争。
     // 另外工作线程内不再调用 LOG（DebugLog），避免与 UI 线程抢 wofstream；
@@ -622,6 +624,54 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE, LPWSTR, int show) {
                         body += "\"" + notes[i] + "\"";
                     }
                     body += "]}";
+                } else if (target.compare(0, 17, "/api/proxy/check") == 0 && !isPost) {
+                    // 离线代理检测：只做本机 TCP connect（host:port，3s 超时），返回连通性；
+                    // 不访问任何云端 IP/测速接口。addr 形如 127.0.0.1:1200。
+                    std::string addr = qp("addr");
+                    size_t colon = addr.find_last_of(':');
+                    std::string h = (colon == std::string::npos) ? "" : addr.substr(0, colon);
+                    int pport = (colon == std::string::npos) ? 0 : atoi(addr.c_str() + colon + 1);
+                    bool okc = false;
+                    unsigned long long t0 = ::GetTickCount64();
+                    if (!h.empty() && pport > 0 && pport < 65536) {
+                        SOCKET ts = ::socket(AF_INET, SOCK_STREAM, 0);
+                        if (ts != INVALID_SOCKET) {
+                            u_long nb = 1;
+                            ::ioctlsocket(ts, FIONBIO, &nb);
+                            sockaddr_in ta{};
+                            ta.sin_family = AF_INET;
+                            ::inet_pton(AF_INET, h.c_str(), &ta.sin_addr);
+                            if (ta.sin_addr.s_addr == INADDR_NONE) {
+                                // 域名：仅做本机 DNS 解析（getaddrinfo），不做 HTTP 请求
+                                addrinfo hints{}, *res = NULL;
+                                hints.ai_family = AF_INET;
+                                hints.ai_socktype = SOCK_STREAM;
+                                if (::getaddrinfo(h.c_str(), NULL, &hints, &res) == 0 && res) {
+                                    ta.sin_addr = ((sockaddr_in*)res->ai_addr)->sin_addr;
+                                    ::freeaddrinfo(res);
+                                }
+                            }
+                            ta.sin_port = htons((u_short)pport);
+                            ::connect(ts, (sockaddr*)&ta, sizeof(ta));
+                            fd_set wf;
+                            FD_ZERO(&wf);
+                            FD_SET(ts, &wf);
+                            timeval tv{};
+                            tv.tv_sec = 3;
+                            tv.tv_usec = 0;
+                            if (::select(0, NULL, &wf, NULL, &tv) > 0 && FD_ISSET(ts, &wf)) {
+                                int soerr = 0, slen = sizeof(soerr);
+                                ::getsockopt(ts, SOL_SOCKET, SO_ERROR, (char*)&soerr, &slen);
+                                okc = (soerr == 0);
+                            }
+                            ::closesocket(ts);
+                        }
+                    }
+                    unsigned long long ms = ::GetTickCount64() - t0;
+                    body = std::string("{\"ok\":") + (okc ? "true" : "false") +
+                        ",\"data\":{\"ip\":\"" + (okc ? h : "") +
+                        "\",\"ms\":" + std::to_string(ms) + "}}";
+                    if (!okc) { code = 502; }
                 } else if (target == "/" || target == "/index.html" || target == "/ui" || target == "/ui/") {
                     std::string f, c2;
                     if (!serveFile("index.html", f, c2)) { code = 404; body = "{\"err\":\"web-ui not bundled\"}"; ct = "application/json; charset=utf-8"; }

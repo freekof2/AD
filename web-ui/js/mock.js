@@ -31,6 +31,9 @@
     if (path.indexOf("/api/fp/") === 0 && method === "GET") {
       return { json: "", mock: true, note: "mock 下无真实缓存，请用目录导入" };
     }
+    if (path.indexOf("/api/proxy/check") === 0 && method === "GET") {
+      return { ok: false, mock: true, note: "mock 下不做真实探测：演示模式仅展示表单" };
+    }
     if (path === "/api/fp/save") return { ok: true, mock: true, notes: ["mock：未写盘"] };
     return {};
   };
