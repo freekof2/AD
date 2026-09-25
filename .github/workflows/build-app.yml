@@ -246,7 +246,7 @@ jobs:
             Write-Host "nolb ok: $s"
           }
           # 2f. 指纹单页（860x640 滚动，无 Tab；数据层符号保留）
-          foreach ($s in @("kFpWinW = 860", "kFpWinH = 640", "kFpContentW = 828", "kFpContentH = 2050",
+          foreach ($s in @("kFpWinW = 860", "kFpWinH = 640", "kFpContentW = 828", "kFpContentH = 1720",
                            "FpMkScroll", "FpScrollTo", "FpScrollInit", "WS_VSCROLL",
                            "SW_SCROLLCHILDREN", "SB_THUMBTRACK", "WM_MOUSEWHEEL")) {
             if ($fpc -notmatch [regex]::Escape($s)) { throw "single-page symbol '$s' missing in fp_ui.cpp" }
