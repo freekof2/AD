@@ -446,9 +446,11 @@ static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
         mkBtn(IDC_SAVEDIR, L"保存目录", 606, 10, 100);
         mkBtn(IDC_OPENDIR, L"打开日志目录", 606, 42, 100);
         // 环境表：LISTVIEW 三列（环境目录/状态/端口）+ 复选框 + 整行选择（对齐 web-ui 9 列表格）
+        LOG(L"probe wmcreate listview-pre");
         g.hList = ::CreateWindowW(WC_LISTVIEWW, NULL,
             WS_CHILD | WS_VISIBLE | WS_BORDER | LVS_REPORT | LVS_SHOWSELALWAYS | LVS_SINGLESEL,
             12, 78, 470, 300, h, (HMENU)(INT_PTR)IDC_LIST, hi, NULL);
+        LOG(std::wstring(L"probe wmcreate listview=") + (g.hList ? L"ok" : (L"fail err=" + std::to_wstring(::GetLastError()))));
         {
             DWORD ex = (DWORD)::SendMessageW(g.hList, LVM_GETEXTENDEDLISTVIEWSTYLE, 0, 0);
             ex |= LVS_EX_FULLROWSELECT | LVS_EX_CHECKBOXES | LVS_EX_GRIDLINES;
@@ -491,10 +493,13 @@ static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
             WS_CHILD | WS_VISIBLE | WS_BORDER | WS_VSCROLL | ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL,
             12, 440, 694, 150, h, (HMENU)(INT_PTR)IDC_LOG, hi, NULL);
         g.hStatus = ::CreateWindowW(L"STATIC", L"就绪", WS_CHILD | WS_VISIBLE, 12, 598, 694, 22, h, NULL, hi, NULL);
+        LOG(L"probe wmcreate ctrls-done");
         ::SetWindowTextW(g.hDataDir, g.cfg.dataDir.c_str());
         ::SetWindowTextW(g.hBrowserDir, g.cfg.sunBrowserDir.c_str());
         ::SetTimer(h, TIMER_POLL, 2000, NULL);
+        LOG(L"probe wmcreate timer-ok");
         RefreshList(); RefreshLogView();
+        LOG(L"probe wmcreate refresh-done");
         return 0;
     }
     case WM_COMMAND: {
