@@ -35,8 +35,9 @@ static void SetStatus(const std::wstring& s) {
 
 // 从 debug.log 尾部刷新日志窗（避免跨线程写控件）
 static void RefreshLogView() {
+    if (!g.hLog || !::IsWindowW(g.hLog)) return;
     std::wstring path = DebugLog::Instance().Path();
-    if (path.empty() || !g.hLog) return;
+    if (path.empty()) return;
     HANDLE h = ::CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
         NULL, OPEN_EXISTING, 0, NULL);
     if (h == INVALID_HANDLE_VALUE) return;
@@ -64,6 +65,7 @@ static void RefreshLogView() {
 }
 
 static void RefreshList() {
+    if (!g.hList || !::IsWindowW(g.hList)) return; // 定时器/HTTP 线程早于 WM_CREATE 触发时直接返回
     std::lock_guard<std::mutex> lk(g.mu);
     // LISTVIEW：记住刷新前的选中项（定时器重填会清空选择，刷新后按名字恢复选中）。
     std::wstring keep;
@@ -152,6 +154,7 @@ static void RefreshList() {
 
 // 从 LISTVIEW 当前选中行取 profile 名（第 0 列文本即目录名，无需反解）
 static std::wstring ListNameOfRow(int idx) {
+    if (!g.hList || !::IsWindowW(g.hList) || idx < 0) return L"";
     wchar_t tmp[512]{};
     LVITEMW li{};
     li.mask = LVIF_TEXT;
@@ -638,10 +641,18 @@ static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
 }
 
 int WINAPI wWinMain(HINSTANCE hi, HINSTANCE, LPWSTR, int show) {
-    ::InitCommonControls();
+    // 崩溃二分探针：异常码 0xc0000409（offset 0x121591）发生在“4 条 config 日志之后、窗口出现之前”，
+    // 候选只剩 InitCommonControls/RegisterClass/CreateWindow/RefreshList/HTTP 线程。
+    // 每过一个候选点写一条 debug.log，复现后看最后一条即定罪。
+#ifdef NDEBUG
+    ::SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX);
+#endif
+    INITCOMMONCONTROLSEX icc{ sizeof(icc), ICC_LISTVIEW_CLASSES | ICC_STANDARD_CLASSES };
+    BOOL iccOk = ::InitCommonControlsEx(&icc);
+    DebugLog::Instance().Init(AppDir());
+    LOG(std::wstring(L"probe iccOk=") + (iccOk ? L"1" : L"0"));
     g.cfg = LoadConfig();
     g.ports = LoadPorts();
-    DebugLog::Instance().Init(AppDir());
     LOG(L"config dataDir=" + g.cfg.dataDir);
     LOG(L"config browserDir=" + g.cfg.sunBrowserDir);
     LOG(L"config listen=" + g.cfg.listen);
@@ -653,14 +664,22 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE, LPWSTR, int show) {
     wc.lpszClassName = cls;
     wc.hbrBackground = ::CreateSolidBrush(kUiBg); // 浅灰蓝底（对齐 --bg），WM_CTLCOLOR* 透底同色
     wc.hCursor = ::LoadCursor(NULL, IDC_ARROW);
-    ::RegisterClassW(&wc);
+    ATOM regOk = ::RegisterClassW(&wc);
+    LOG(std::wstring(L"probe RegisterClass=") + std::to_wstring((unsigned)regOk));
 
-    g.hMain = ::CreateWindowW(cls, L"SunLauncher（SunBrowser 启动器）",
+    g.hMain = ::CreateWindowExW(0, cls, L"SunLauncher（SunBrowser 启动器）",
         WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_CLIPCHILDREN,
         CW_USEDEFAULT, CW_USEDEFAULT, 760, 660,
         NULL, NULL, hi, NULL);
+    LOG(std::wstring(L"probe CreateWindow=") + (g.hMain ? L"ok" : (L"fail err=" + std::to_wstring(::GetLastError()))));
+    if (!g.hMain) {
+        ::MessageBoxW(NULL, L"CreateWindow 失败，见 debug.log（probe CreateWindow 行）", L"SunLauncher", MB_OK | MB_ICONERROR);
+        return 1;
+    }
     ::ShowWindow(g.hMain, show);
     ::UpdateWindow(g.hMain);
+    LOG(L"probe ShowWindow ok");
+    LOG(L"probe http-thread-start");
     AppendLog(L"日志文件：" + DebugLog::Instance().Path());
 
     // 轻量 HTTP 离线接口（给同目录 web-ui 用 + 给 RPA 用），失败不影响主窗口。
@@ -1476,6 +1495,7 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE, LPWSTR, int show) {
             ::closesocket(c2);
         }
     }).detach();
+    LOG(L"probe msgloop-enter");
 
     MSG m{};
     while (::GetMessageW(&m, NULL, 0, 0)) {
