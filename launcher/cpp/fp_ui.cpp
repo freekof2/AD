@@ -736,9 +736,9 @@ static void FpBuildPages(FpWnd* w, HWND p, HINSTANCE hi) {
     FpComboAdd(w->ctl[F_WGPU - F_BASE], L"disabled - 禁用(0)");
     FpComboAdd(w->ctl[F_WGPU - F_BASE], L"custom - 自定义适配器(2)");
     FpMkLabel(p, w, F_GVENDOR, L"厂商", 320, 1160, 44);
-    FpMkEdit(p, w, F_GVENDOR, 368, 1158, 150));
+    FpMkEdit(p, w, F_GVENDOR, 368, 1158, 150);
     FpMkLabel(p, w, F_GARCH, L"架构", 528, 1160, 44);
-    FpMkEdit(p, w, F_GARCH, 576, 1158, 150));
+    FpMkEdit(p, w, F_GARCH, 576, 1158, 150);
     // ---- 页3 设备伪装：CPU/RAM/设备名/MAC ----
     // ---- 11. CPU（y 1228..1264，h=36）----
     FpMkLabel(p, w, F_CPUM, L"CPU模式", 12, 12, 80);
