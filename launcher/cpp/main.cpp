@@ -102,12 +102,14 @@ static void RefreshList() {
             if (n.find(f) == std::wstring::npos) continue;
         }
         if (p.running) nOpen++; else nClosed++;
+        if (row == 0) LOG(std::wstring(L"probe refresh row0-begin name=") + p.name);
         LVITEMW li{};
         li.mask = LVIF_TEXT;
         li.iItem = row;
         li.iSubItem = 0;
         li.pszText = (LPWSTR)p.name.c_str();
         int idx = (int)::SendMessageW(g.hList, LVM_INSERTITEMW, 0, (LPARAM)&li);
+        if (row == 0) LOG(std::wstring(L"probe refresh row0-insert idx=") + std::to_wstring(idx));
         std::wstring st = p.running ? (L"运行中 pid=" + std::to_wstring(p.pid)) : L"已停止";
         LVITEMW li1{};
         li1.mask = LVIF_TEXT;
@@ -115,6 +117,7 @@ static void RefreshList() {
         li1.iSubItem = 1;
         li1.pszText = (LPWSTR)st.c_str();
         ::SendMessageW(g.hList, LVM_SETITEMTEXTW, (WPARAM)idx, (LPARAM)&li1);
+        if (row == 0) LOG(L"probe refresh row0-col1");
         std::wstring port = p.port ? std::to_wstring(p.port) : L"-";
         LVITEMW li2{};
         li2.mask = LVIF_TEXT;
@@ -122,6 +125,7 @@ static void RefreshList() {
         li2.iSubItem = 2;
         li2.pszText = (LPWSTR)port.c_str();
         ::SendMessageW(g.hList, LVM_SETITEMTEXTW, (WPARAM)idx, (LPARAM)&li2);
+        if (row == 0) LOG(L"probe refresh row0-col2");
         // 复选框镜像 g.checked（批量操作用；LVS_EX_CHECKBOXES 状态图：2=勾选，1=未勾选）
         auto ck = g.checked.find(p.name);
         LVITEMW liS{};
@@ -130,6 +134,7 @@ static void RefreshList() {
         liS.stateMask = LVIS_STATEIMAGEMASK;
         liS.state = INDEXTOSTATEIMAGEMASK((ck != g.checked.end() && ck->second) ? 2 : 1);
         ::SendMessageW(g.hList, LVM_SETITEMSTATE, (WPARAM)idx, (LPARAM)&liS);
+        if (row == 0) LOG(L"probe refresh row0-state");
         // 运行中行着 success 色由 CustomDraw 负责，此处只记 restore
         if (!keep.empty() && p.name == keep) restore = idx;
         row++;
