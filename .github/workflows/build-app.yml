@@ -269,6 +269,27 @@ jobs:
             if ($fpc -notmatch [regex]::Escape($s)) { throw "bottom-row rect '$s' missing in fp_ui.cpp" }
             Write-Host "bottomrow ok: $s"
           }
+          # 模态退出语义：子窗口 WM_DESTROY 绝不能 PostQuitMessage（否则取消=退出主程序）；
+          # 模态循环退出条件只看 IsWindow
+          foreach ($s in @("绝不能 PostQuitMessage", "只看 IsWindow", "while (::IsWindow(h)")) {
+            if ($fpc -notmatch [regex]::Escape($s)) { throw "modal-exit guard '$s' missing in fp_ui.cpp" }
+            Write-Host "modalexit ok: $s"
+          }
+          if ($fpc -match "FpWndProc[\s\S]{0,800}PostQuitMessage") { throw "PostQuitMessage still in FpWndProc" }
+          Write-Host "noquit in wndproc ok"
+          # 内容区无重叠回归：噪音复选框行(940/964) + 媒体行(966/992) + CPU/RAM/MAC/白名单/启动参数标签行
+          foreach ($s in @("260, 856, 80", "12, 940, 130", "150, 940, 150", "12, 964, 130",
+                           "150, 966, 80", "100, 992, 150", "260, 992, 60",
+                           "12, 1230, 80", "12, 1272, 80", "100, 1354, 150",
+                           "12, 1440, 90", "12, 1566, 90")) {
+            if ($fpc -notmatch [regex]::Escape($s)) { throw "content rect '$s' missing in fp_ui.cpp" }
+            Write-Host "contentrect ok: $s"
+          }
+          # 旧重叠坐标不得残留（Tab 5 页时代的错误 y：130/156 噪音行、112 MAC、46 CPU/RAM/白名单、146 启动参数、42 换一换）
+          foreach ($s in @("L`"换一换`", 260, 42, 80", "L`"MAC`", 12, 1356, 80);`n    FpMkCombo(p, w, F_MACM, 100, 112, 150")) {
+            if ($fpc -match [regex]::Escape($s)) { throw "legacy overlap rect still in fp_ui.cpp" }
+            Write-Host "nooverlap ok"
+          }
           # 单页 24 行顺序锚点（与 web-ui fp-row 顺序一致：A/B/C/D + 1..19）
           foreach ($s in @("---- A.", "---- C.", "---- 1. WebRTC", "---- 6. 分辨率",
                            "---- 9. WebGL", "---- 10. WebGPU", "---- 11. CPU",

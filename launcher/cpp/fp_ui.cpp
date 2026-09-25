@@ -702,21 +702,22 @@ static void FpBuildPages(FpWnd* w, HWND p, HINSTANCE hi) {
     FpMkCombo(p, w, F_FONTM, 100, 856, 150);
     FpComboAdd(w->ctl[F_FONTM - F_BASE], L"all - 默认");
     FpComboAdd(w->ctl[F_FONTM - F_BASE], L"custom - 自定义");
-    FpMkBtn(p, w, F_SHUFFLEFONTS, L"换一换", 260, 42, 80);
+    FpMkBtn(p, w, F_SHUFFLEFONTS, L"换一换", 260, 856, 80);
     FpMkEdit(p, w, F_FONTS, 100, 888, 560, 44);
-    FpMkCheck(p, w, F_SWCVS, L"Canvas(=1)", 12, 130, 130);
-    FpMkCheck(p, w, F_SWWGL, L"WebGL图像(=1)", 150, 130, 150);
-    FpMkCheck(p, w, F_SWAUD, L"Audio(=1)", 310, 130, 120);
-    FpMkCheck(p, w, F_SWRECT, L"ClientRects(=1)", 440, 130, 150);
-    FpMkCheck(p, w, F_SWSPEECH, L"Speech(=1)", 12, 156, 130);
-    FpMkLabel(p, w, F_MEDIA, L"媒体设备", 12, 972, 80);
-    FpMkCombo(p, w, F_MEDIA, 100, 970, 150);
+    // ---- 8. 硬件噪音开关（y 940..990：两行复选框，避开字体区 888..932 与媒体行 970）----
+    FpMkCheck(p, w, F_SWCVS, L"Canvas(=1)", 12, 940, 130);
+    FpMkCheck(p, w, F_SWWGL, L"WebGL图像(=1)", 150, 940, 150);
+    FpMkCheck(p, w, F_SWAUD, L"Audio(=1)", 310, 940, 120);
+    FpMkCheck(p, w, F_SWRECT, L"ClientRects(=1)", 440, 940, 150);
+    FpMkCheck(p, w, F_SWSPEECH, L"Speech(=1)", 12, 964, 130);
+    FpMkLabel(p, w, F_MEDIA, L"媒体设备", 150, 966, 80);
+    FpMkCombo(p, w, F_MEDIA, 100, 992, 150);
     FpComboAdd(w->ctl[F_MEDIA - F_BASE], L"0 - 真实/关闭");
     FpComboAdd(w->ctl[F_MEDIA - F_BASE], L"1 - 随机");
     FpComboAdd(w->ctl[F_MEDIA - F_BASE], L"2 - 自定义");
-    FpMkEdit(p, w, F_MIN, 260, 970, 60);
-    FpMkEdit(p, w, F_MVID, 330, 970, 60);
-    FpMkEdit(p, w, F_MOUT, 400, 970, 60);
+    FpMkEdit(p, w, F_MIN, 260, 992, 60);
+    FpMkEdit(p, w, F_MVID, 330, 992, 60);
+    FpMkEdit(p, w, F_MOUT, 400, 992, 60);
     // ---- 9. WebGL元数据（y 1044..1152，h=108）----
     FpMkLabel(p, w, F_WGLM, L"WebGL元数据", 12, 1046, 90);
     FpMkCombo(p, w, F_WGLM, 110, 1044, 150);
@@ -741,13 +742,13 @@ static void FpBuildPages(FpWnd* w, HWND p, HINSTANCE hi) {
     FpMkEdit(p, w, F_GARCH, 576, 1158, 150);
     // ---- 页3 设备伪装：CPU/RAM/设备名/MAC ----
     // ---- 11. CPU（y 1228..1264，h=36）----
-    FpMkLabel(p, w, F_CPUM, L"CPU模式", 12, 12, 80);
+    FpMkLabel(p, w, F_CPUM, L"CPU模式", 12, 1230, 80);
     FpMkCombo(p, w, F_CPUM, 100, 1228, 150);
     FpComboAdd(w->ctl[F_CPUM - F_BASE], L"real - 真实");
     FpComboAdd(w->ctl[F_CPUM - F_BASE], L"custom - 自定义");
     FpMkCombo(p, w, F_CPU, 260, 1228, 180);
     for (auto c : { L"default", L"2", L"4", L"6", L"8", L"10", L"12", L"16", L"20", L"24" }) FpComboAdd(w->ctl[F_CPU - F_BASE], c);
-    FpMkLabel(p, w, F_RAMM, L"RAM模式", 12, 46, 80);
+    FpMkLabel(p, w, F_RAMM, L"RAM模式", 12, 1272, 80);
     FpMkCombo(p, w, F_RAMM, 100, 1270, 150);
     FpComboAdd(w->ctl[F_RAMM - F_BASE], L"real - 真实");
     FpComboAdd(w->ctl[F_RAMM - F_BASE], L"custom - 自定义");
@@ -762,7 +763,7 @@ static void FpBuildPages(FpWnd* w, HWND p, HINSTANCE hi) {
     FpMkEdit(p, w, F_DEVNAME, 260, 1312, 220);
     FpMkBtn(p, w, F_SHUFFLEDEV, L"随机", 490, 1310, 70);
     FpMkLabel(p, w, F_MACM, L"MAC", 12, 1356, 80);
-    FpMkCombo(p, w, F_MACM, 100, 112, 150);
+    FpMkCombo(p, w, F_MACM, 100, 1354, 150);
     FpComboAdd(w->ctl[F_MACM - F_BASE], L"off - 关闭(0)");
     FpComboAdd(w->ctl[F_MACM - F_BASE], L"custom - 自定义(2)");
     FpMkEdit(p, w, F_MAC, 260, 1354, 220);
@@ -779,7 +780,7 @@ static void FpBuildPages(FpWnd* w, HWND p, HINSTANCE hi) {
     FpComboAdd(w->ctl[F_PORTSCAN - F_BASE], L"default - 默认");
     FpComboAdd(w->ctl[F_PORTSCAN - F_BASE], L"open - 启用(1)");
     FpComboAdd(w->ctl[F_PORTSCAN - F_BASE], L"close - 关闭(0)");
-    FpMkLabel(p, w, F_WPORTS, L"白名单端口", 12, 46, 90);
+    FpMkLabel(p, w, F_WPORTS, L"白名单端口", 12, 1440, 90);
     FpMkEdit(p, w, F_WPORTS, 110, 1438, 420);
     // ---- 17. 硬件加速（y 1480..1516，h=36）----
     FpMkLabel(p, w, F_HWACC, L"硬件加速", 12, 1482, 90);
@@ -793,7 +794,7 @@ static void FpBuildPages(FpWnd* w, HWND p, HINSTANCE hi) {
     FpComboAdd(w->ctl[F_TLSM - F_BASE], L"open - 自定义(1)");
     FpMkEdit(p, w, F_TLS, 110, 1522, 460);
     // ---- 19. 启动参数（y 1564..1684，h=120）----
-    FpMkLabel(p, w, F_ARGS, L"启动参数", 12, 146, 90);
+    FpMkLabel(p, w, F_ARGS, L"启动参数", 12, 1566, 90);
     FpMkEdit(p, w, F_ARGS, 110, 1564, 560, 110);
 }
 // fp_ui.cpp — part 5/6：回填 + 收集
@@ -1408,7 +1409,9 @@ static LRESULT CALLBACK FpWndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
         return 0;
     }
     case WM_DESTROY:
-        ::PostQuitMessage(0);
+        // 注意：指纹窗口是模态子窗口（FpUiShowModal 自有消息循环，靠 IsWindow 破环退出），
+        // 此处绝不能 PostQuitMessage——否则 WM_QUIT 会漏进主线程消息队列，主窗口跟随退出。
+        // “取消按钮变退出程序”的根因即此。保存/取消分支只 DestroyWindow 即可。
         return 0;
     }
     return ::DefWindowProcW(h, msg, wp, lp);
@@ -1435,14 +1438,13 @@ bool FpUiShowModal(HWND hParent, const Config& cfg, const std::wstring& profileN
     if (!h) return false;
     ::ShowWindow(h, SW_SHOW);
     ::UpdateWindow(h);
-    // 模态循环：只处理本窗口消息，父窗口禁用
+    // 模态循环：只处理本窗口消息，父窗口禁用；退出条件只看 IsWindow（不再看 WM_QUIT，
+    // 与上 WM_DESTROY 不发 PostQuitMessage 对应，避免 QUIT 漏进主循环导致主窗口退出）。
     ::EnableWindow(hParent, FALSE);
     MSG m{};
-    while (::GetMessageW(&m, NULL, 0, 0)) {
-        if (m.message == WM_QUIT) break;
+    while (::IsWindow(h) && ::GetMessageW(&m, NULL, 0, 0)) {
         ::TranslateMessage(&m);
         ::DispatchMessageW(&m);
-        if (!::IsWindow(h)) break;
     }
     ::EnableWindow(hParent, TRUE);
     ::SetForegroundWindow(hParent);
