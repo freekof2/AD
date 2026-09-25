@@ -2,8 +2,12 @@
 // 单窗口：profile 列表 + 启动/关闭按钮 + 数据目录可改 + DEBUG 日志文件。
 #pragma once
 
+#ifndef UNICODE
 #define UNICODE
+#endif
+#ifndef _UNICODE
 #define _UNICODE
+#endif
 #define WIN32_LEAN_AND_MEAN
 #define _WIN32_WINNT 0x0A00
 

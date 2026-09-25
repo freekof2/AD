@@ -35,7 +35,7 @@ static void SetStatus(const std::wstring& s) {
 
 // 从 debug.log 尾部刷新日志窗（避免跨线程写控件）
 static void RefreshLogView() {
-    if (!g.hLog || !::IsWindowW(g.hLog)) return;
+    if (!g.hLog || !::IsWindow(g.hLog)) return;
     std::wstring path = DebugLog::Instance().Path();
     if (path.empty()) return;
     HANDLE h = ::CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
@@ -65,7 +65,7 @@ static void RefreshLogView() {
 }
 
 static void RefreshList() {
-    if (!g.hList || !::IsWindowW(g.hList)) return; // 定时器/HTTP 线程早于 WM_CREATE 触发时直接返回
+    if (!g.hList || !::IsWindow(g.hList)) return; // 定时器/HTTP 线程早于 WM_CREATE 触发时直接返回
     std::lock_guard<std::mutex> lk(g.mu);
     // LISTVIEW：记住刷新前的选中项（定时器重填会清空选择，刷新后按名字恢复选中）。
     std::wstring keep;
@@ -154,7 +154,7 @@ static void RefreshList() {
 
 // 从 LISTVIEW 当前选中行取 profile 名（第 0 列文本即目录名，无需反解）
 static std::wstring ListNameOfRow(int idx) {
-    if (!g.hList || !::IsWindowW(g.hList) || idx < 0) return L"";
+    if (!g.hList || !::IsWindow(g.hList) || idx < 0) return L"";
     wchar_t tmp[512]{};
     LVITEMW li{};
     li.mask = LVIF_TEXT;
