@@ -72,6 +72,10 @@ jobs:
           $exe = Get-ChildItem launcher\cpp\x64\Release\SunLauncher.exe -ErrorAction Stop
           Write-Host "built: $($exe.FullName) ($($exe.Length) bytes)"
           if ($exe.Length -lt 10240) { throw "SunLauncher.exe suspiciously small" }
+          # 符号产物：PDB + MAP（dumpbin 符号化 0xc0000409 offset 用，随包发布，离线可用）
+          $pdb = Get-ChildItem launcher\cpp\x64\Release\*.pdb -ErrorAction SilentlyContinue
+          if ($pdb) { Write-Host "symbols: $($pdb.FullName) ($($pdb.Length) bytes)" }
+          else { Write-Host "warning: no pdb emitted" }
 
       - name: Check web-ui required files
         shell: pwsh
@@ -319,6 +323,9 @@ jobs:
           if (Test-Path $out) { Remove-Item $out -Recurse -Force }
           New-Item -ItemType Directory -Path $out | Out-Null
           Copy-Item launcher\cpp\x64\Release\SunLauncher.exe (Join-Path $out "SunLauncher.exe") -Force
+          # PDB 符号随包（本地 dumpbin/windbg 符号化崩溃 offset 用，不影响离线运行）
+          $pdbFiles = Get-ChildItem launcher\cpp\x64\Release\*.pdb -ErrorAction SilentlyContinue
+          foreach ($p in $pdbFiles) { Copy-Item $p.FullName (Join-Path $out $p.Name) -Force; Write-Host "packed symbol: $($p.Name)" }
           Copy-Item web-ui (Join-Path $out "web-ui") -Recurse -Force
           Copy-Item ports.json (Join-Path $out "ports.json") -Force
           @"

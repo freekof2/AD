@@ -67,12 +67,21 @@ static void RefreshLogView() {
 }
 
 static void RefreshList() {
-    if (!g.hList || !::IsWindow(g.hList)) return; // 定时器/HTTP 线程早于 WM_CREATE 触发时直接返回
-    std::lock_guard<std::mutex> lk(g.mu);
-    // LISTVIEW：记住刷新前的选中项（定时器重填会清空选择，刷新后按名字恢复选中）。
+    HWND hList = g.hList;
+    if (!hList || !::IsWindow(hList)) return; // 定时器/HTTP 线程早于 WM_CREATE 触发时直接返回
+    // 快照模式：锁内只拷贝 POD 数据 + 短字符串，锁外再发 LVM 消息。
+    // 背景：0xc0000409 定罪到 LVM_INSERTITEMW（row0-begin 后即崩）。INSERTITEM 在同线程
+    // 同步触发 LVN_ITEMCHANGED -> WndProc -> ListNameOfRow(+lock g.mu) 及 NM_CUSTOMDRAW
+    // 回调（也在 WndProc 内读 g.hList），若此时 RefreshList 持有 g.mu 就是“UI 线程自己
+    // 锁自己 + 回调重入”的未定义行为：MSVC /GS 熔断即报 0xc0000409。锁外发消息消重入。
+    struct RowSnap { std::wstring name; std::wstring st; std::wstring port; bool checked; };
     std::wstring keep;
+    std::vector<RowSnap> rows;
+    std::wstring filter;
     {
-        int cur = (int)::SendMessageW(g.hList, LVM_GETNEXTITEM, (WPARAM)-1, (LPARAM)LVNI_SELECTED);
+        std::lock_guard<std::mutex> lk(g.mu);
+        filter = g.searchFilter;
+        int cur = (int)::SendMessageW(hList, LVM_GETNEXTITEM, (WPARAM)-1, (LPARAM)LVNI_SELECTED);
         if (cur >= 0) {
             wchar_t tmp[512]{};
             LVITEMW li{};
@@ -81,62 +90,68 @@ static void RefreshList() {
             li.iSubItem = 0;
             li.pszText = tmp;
             li.cchTextMax = 512;
-            if (::SendMessageW(g.hList, LVM_GETITEMTEXTW, (WPARAM)cur, (LPARAM)&li))
+            if (::SendMessageW(hList, LVM_GETITEMTEXTW, (WPARAM)cur, (LPARAM)&li))
                 keep = tmp;
         }
-    }
-    auto profiles = ScanProfiles(g.cfg, g.procs, g.ports);
-    LOG(std::wstring(L"probe refresh scan-done n=") + std::to_wstring(profiles.size()));
-    ::SendMessageW(g.hList, LVM_DELETEALLITEMS, 0, 0);
+        auto profiles = ScanProfiles(g.cfg, g.procs, g.ports);
+        LOG(std::wstring(L"probe refresh scan-done n=") + std::to_wstring(profiles.size()));
+        for (auto& p : profiles) {
+            // 搜索过滤（对齐 web-ui globalSearch：按目录名子串，不区分大小写）
+            if (!filter.empty()) {
+                std::wstring n = p.name, f = filter;
+                for (auto& c : n) c = towlower(c);
+                for (auto& c : f) c = towlower(c);
+                if (n.find(f) == std::wstring::npos) continue;
+            }
+            RowSnap r;
+            r.name = p.name;
+            r.st = p.running ? (L"运行中 pid=" + std::to_wstring(p.pid)) : L"已停止";
+            r.port = p.port ? std::to_wstring(p.port) : L"-";
+            auto ck = g.checked.find(p.name);
+            r.checked = (ck != g.checked.end() && ck->second);
+            rows.push_back(std::move(r));
+        }
+    } // 解锁：以下 LVM 消息同步触发 LVN_ITEMCHANGED/NM_CUSTOMDRAW 回调，不再持锁
+    ::SendMessageW(hList, LVM_DELETEALLITEMS, 0, 0);
     LOG(L"probe refresh clear-done");
     int restore = -1;
-    // 运行计数（对齐 web-ui qWait/qRun/qOpen：等待=停止数，运行=运行数）
     int nOpen = 0, nClosed = 0;
     int row = 0;
-    for (auto& p : profiles) {
-        // 搜索过滤（对齐 web-ui globalSearch：按目录名子串，不区分大小写）
-        if (!g.searchFilter.empty()) {
-            std::wstring n = p.name, f = g.searchFilter;
-            for (auto& c : n) c = towlower(c);
-            for (auto& c : f) c = towlower(c);
-            if (n.find(f) == std::wstring::npos) continue;
-        }
-        if (p.running) nOpen++; else nClosed++;
-        if (row == 0) LOG(std::wstring(L"probe refresh row0-begin name=") + p.name);
+    for (auto& r : rows) {
+        if (r.st[0] == L'运') nOpen++; else nClosed++;
+        if (row == 0) LOG(std::wstring(L"probe refresh row0-begin name=") + r.name);
         LVITEMW li{};
         li.mask = LVIF_TEXT;
         li.iItem = row;
         li.iSubItem = 0;
-        li.pszText = (LPWSTR)p.name.c_str();
-        int idx = (int)::SendMessageW(g.hList, LVM_INSERTITEMW, 0, (LPARAM)&li);
+        li.pszText = (LPWSTR)r.name.c_str();
+        int idx = (int)::SendMessageW(hList, LVM_INSERTITEMW, 0, (LPARAM)&li);
         if (row == 0) LOG(std::wstring(L"probe refresh row0-insert idx=") + std::to_wstring(idx));
-        std::wstring st = p.running ? (L"运行中 pid=" + std::to_wstring(p.pid)) : L"已停止";
+        if (idx < 0) { row++; continue; } // 插入失败跳过本行，避免后续 SETITEM 用野 idx
         LVITEMW li1{};
         li1.mask = LVIF_TEXT;
         li1.iItem = idx;
         li1.iSubItem = 1;
-        li1.pszText = (LPWSTR)st.c_str();
-        ::SendMessageW(g.hList, LVM_SETITEMTEXTW, (WPARAM)idx, (LPARAM)&li1);
+        li1.pszText = (LPWSTR)r.st.c_str();
+        ::SendMessageW(hList, LVM_SETITEMTEXTW, (WPARAM)idx, (LPARAM)&li1);
         if (row == 0) LOG(L"probe refresh row0-col1");
-        std::wstring port = p.port ? std::to_wstring(p.port) : L"-";
         LVITEMW li2{};
         li2.mask = LVIF_TEXT;
         li2.iItem = idx;
         li2.iSubItem = 2;
-        li2.pszText = (LPWSTR)port.c_str();
-        ::SendMessageW(g.hList, LVM_SETITEMTEXTW, (WPARAM)idx, (LPARAM)&li2);
+        li2.pszText = (LPWSTR)r.port.c_str();
+        ::SendMessageW(hList, LVM_SETITEMTEXTW, (WPARAM)idx, (LPARAM)&li2);
         if (row == 0) LOG(L"probe refresh row0-col2");
         // 复选框镜像 g.checked（批量操作用；LVS_EX_CHECKBOXES 状态图：2=勾选，1=未勾选）
-        auto ck = g.checked.find(p.name);
         LVITEMW liS{};
         liS.mask = LVIF_STATE;
         liS.iItem = idx;
         liS.stateMask = LVIS_STATEIMAGEMASK;
-        liS.state = INDEXTOSTATEIMAGEMASK((ck != g.checked.end() && ck->second) ? 2 : 1);
-        ::SendMessageW(g.hList, LVM_SETITEMSTATE, (WPARAM)idx, (LPARAM)&liS);
+        liS.state = INDEXTOSTATEIMAGEMASK(r.checked ? 2 : 1);
+        ::SendMessageW(hList, LVM_SETITEMSTATE, (WPARAM)idx, (LPARAM)&liS);
         if (row == 0) LOG(L"probe refresh row0-state");
         // 运行中行着 success 色由 CustomDraw 负责，此处只记 restore
-        if (!keep.empty() && p.name == keep) restore = idx;
+        if (!keep.empty() && r.name == keep) restore = idx;
         row++;
     }
     if (restore >= 0) {
@@ -145,7 +160,7 @@ static void RefreshList() {
         li.iItem = restore;
         li.stateMask = LVIS_SELECTED | LVIS_FOCUSED;
         li.state = LVIS_SELECTED | LVIS_FOCUSED;
-        ::SendMessageW(g.hList, LVM_SETITEMSTATE, (WPARAM)restore, (LPARAM)&li);
+        ::SendMessageW(hList, LVM_SETITEMSTATE, (WPARAM)restore, (LPARAM)&li);
     }
     LOG(L"probe refresh rows-done");
     // 状态栏尾部追加队列计数（对齐 web-ui queue-card）
@@ -608,7 +623,9 @@ static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
                     }
                 }
             } else if (nm->code == NM_CUSTOMDRAW) {
-                // 状态列着色：运行中绿(kUiSuccess)、已停止灰(kUiMuted)（对齐 web-ui pill）
+                // 状态列着色（对齐 web-ui pill）。注意：RefreshList 快照模式已不在持锁时发
+                // LVM 消息，但 CustomDraw 仍可能与 HTTP 线程的 ScanProfiles 只读并发，
+                // 此处只读 g.hList 句柄 + SendMessage 同步取文本，不碰 g.mu/g.checked。
                 NMLVCUSTOMDRAW* cd = (NMLVCUSTOMDRAW*)lp;
                 if (cd->nmcd.dwDrawStage == CDDS_PREPAINT)
                     return CDRF_NOTIFYITEMDRAW;
