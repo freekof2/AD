@@ -2,7 +2,8 @@
 // 对应 web-ui 75 个控件 id：环境表(11) + 浏览器/系统/代理/Cookie/备注(13)
 // + WebRTC/时区/地理/语言/界面语言/分辨率(6组) + 字体/硬件噪音/WebGL/WebGPU(4组)
 // + CPU/RAM/设备名/MAC/DNT/端口/加速/TLS(8组) + 启动参数。
-// 布局：Tab 5 页（基础/网络指纹/硬件指纹/设备伪装/高级），无第三方依赖。
+// 布局：单页滚动 860x640（对齐网页 fp-row 顺序，无 Tab，无云端），无第三方依赖。
+// 配色：浅灰蓝底 kUiBg(#f5f7fa)+白输入框（对齐 app.css --bg/--panel/--border/--primary）。
 #pragma once
 #include "SunLauncher.h"
 #include <commctrl.h>

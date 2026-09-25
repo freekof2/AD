@@ -496,18 +496,23 @@ static void FpFormDefaults(FpFormData& f, const std::wstring& profileName) {
     f.doNotTrack = L"default"; f.portScan = L"open";
     f.hardwareAccel = L"default"; f.disableTls = L"close";
 }
-// fp_ui.cpp — part 3/4：窗口骨架（Tab 5 页 + 底部按钮）
+// fp_ui.cpp — 单页滚动布局（对齐 web-ui/index.html fp-row 顺序，无 Tab，无云端）
+// 版式常量：窗口 860x640（客户确认）；内容区宽 828；行高按网页 fp-row(14px padding+内容) 逐行累加。
+// 数据层（FpFormData/FpFill/FpCollect/ToUiJson/FromUiJson/ToFpConfig/Build*）零改动，只换父窗口与坐标。
+static const int kFpWinW = 860;
+static const int kFpWinH = 640;
+static const int kFpContentW = 828;   // 内容区宽（窗口 860 - 边距 2*16）
+static const int kFpContentH = 2050;  // 内容总高（约 24 行，按行高累加，滚动范围即此）
+
+// 单页窗口状态（滚动位置 + 内容容器；Tab 相关已删除，见 git 历史）
 struct FpWnd {
-    HWND hDlg = NULL, hTab = NULL, hStatus = NULL;
+    HWND hDlg = NULL, hScroll = NULL, hStatus = NULL;
     HWND ctl[F_END - F_BASE] = {};
     FpFormData form;
     Config cfg;
     std::wstring profile;
     bool saved = false;
-};
-
-static const wchar_t* kTabNames[] = {
-    L"基础", L"网络指纹", L"硬件指纹", L"设备伪装", L"高级",
+    int scrollY = 0; // 当前滚动偏移（0..kFpContentH-可见高）
 };
 
 static HWND FpMk(HWND p, const wchar_t* cls, const wchar_t* txt, DWORD st, int x, int y, int w, int h, int id, HINSTANCE hi) {
@@ -554,19 +559,51 @@ static std::wstring FpGet(HWND c) {
 }
 static void FpSet(HWND c, const std::wstring& s) { ::SetWindowTextW(c, s.c_str()); }
 
-// Tab 页容器：5 个 child panel，切换时 show/hide
-static HWND FpMkPanel(HWND tab, HINSTANCE hi) {
-    RECT rc{};
-    ::GetClientRect(tab, &rc);
-    ::MapWindowPoints(tab, ::GetParent(tab), (POINT*)&rc, 2);
-    HWND p = ::CreateWindowW(L"STATIC", L"", WS_CHILD, rc.left + 8, rc.top + 30, 740, 440,
-        ::GetParent(tab), NULL, hi, NULL);
-    return p;
+// 单页滚动容器：在父窗口客户区内建一个 WS_VSCROLL 子窗口，内容画在上方大画布上
+static HWND FpMkScroll(HWND parent, HINSTANCE hi, int x, int y, int w, int h) {
+    return ::CreateWindowW(L"STATIC", L"", WS_CHILD | WS_VISIBLE | WS_VSCROLL | WS_CLIPCHILDREN,
+        x, y, w, h, parent, (HMENU)(INT_PTR)F_TAB, hi, NULL);
 }
-// fp_ui.cpp — part 4/4：5 页控件排布 + 回填/收集 + 保存 + 模态循环
-static void FpBuildPages(FpWnd* w, HWND panels[5], HINSTANCE hi) {
-    // ---- 页0 基础：浏览器/内核/目录 + 系统/UA + Cookie + 备注 ----
-    HWND p = panels[0];
+// 滚动 helper：按网页 fp-row 行高累加，内容总高 kFpContentH
+static void FpScrollTo(FpWnd* w, int y) {
+    RECT rc{};
+    ::GetClientRect(w->hScroll, &rc);
+    int visH = rc.bottom - rc.top;
+    int maxY = kFpContentH - visH;
+    if (maxY < 0) maxY = 0;
+    if (y < 0) y = 0;
+    if (y > maxY) y = maxY;
+    int dy = w->scrollY - y;
+    w->scrollY = y;
+    ::ScrollWindowEx(w->hScroll, 0, dy, NULL, NULL, NULL, NULL, SW_SCROLLCHILDREN | SW_INVALIDATE);
+    SCROLLINFO si{};
+    si.cbSize = sizeof(si);
+    si.fMask = SIF_POS;
+    si.nPos = y;
+    ::SetScrollInfo(w->hScroll, SB_VERT, &si, TRUE);
+}
+static void FpScrollInit(FpWnd* w) {
+    RECT rc{};
+    ::GetClientRect(w->hScroll, &rc);
+    int visH = rc.bottom - rc.top;
+    SCROLLINFO si{};
+    si.cbSize = sizeof(si);
+    si.fMask = SIF_RANGE | SIF_PAGE | SIF_POS;
+    si.nMin = 0;
+    si.nMax = kFpContentH;
+    si.nPage = visH;
+    si.nPos = 0;
+    ::SetScrollInfo(w->hScroll, SB_VERT, &si, TRUE);
+    w->scrollY = 0;
+}
+// fp_ui.cpp — 单页控件排布（对齐 web-ui/index.html fp-row 顺序，无 Tab）
+// 行高：A(浏览器/内核/目录 64)+B(系统/UA 64)+C(代理 96)+D(Cookie 132/备注 32)
+// +WebRTC(36)+时区(64)+地理(120)+语言(96)+界面语言(36)+分辨率(96)+字体(80)
+// +噪音(96)+WebGL(108)+WebGPU(64)+CPU(36)+RAM(36)+设备名(36)+MAC(36)
+// +DNT(36)+端口(64)+加速(36)+TLS(64)+启动参数(120) ≈ 2050
+static void FpBuildPages(FpWnd* w, HWND p, HINSTANCE hi) {
+    (void)hi;
+    // ---- A. 浏览器 / 内核 / 目录（y 8..72）----
     FpMkLabel(p, w, F_BROWSER, L"浏览器", 12, 12, 80);
     FpMkCombo(p, w, F_BROWSER, 100, 10, 200);
     FpComboAdd(w->ctl[F_BROWSER - F_BASE], L"sun - SunBrowser");
@@ -595,10 +632,9 @@ static void FpBuildPages(FpWnd* w, HWND panels[5], HINSTANCE hi) {
     FpMkBtn(p, w, F_MERGECOOKIE, L"合并Cookie", 100, 250, 110);
     FpMkBtn(p, w, F_IMPORT, L"从目录导入指纹", 220, 250, 140);
     FpMkLabel(p, w, F_REMARK, L"备注", 12, 290, 80);
-    FpMkEdit(p, w, F_REMARK, 100, 288, 570);
-    // ---- 页1 网络指纹：代理 + WebRTC + 时区 + 地理 + 语言 ----
-    p = panels[1];
-    FpMkLabel(p, w, F_PTYPE, L"代理类型", 12, 12, 80);
+    FpMkEdit(p, w, F_REMARK, 100, 288, 640);
+    // ---- C. 代理（y 330..426，h=96；网页 C 行两行输入+状态）----
+    FpMkLabel(p, w, F_PTYPE, L"代理", 12, 336, 80);
     FpMkCombo(p, w, F_PTYPE, 100, 10, 120);
     FpComboAdd(w->ctl[F_PTYPE - F_BASE], L"socks5");
     FpComboAdd(w->ctl[F_PTYPE - F_BASE], L"http");
@@ -907,7 +943,6 @@ static void FpCollect(FpWnd* w) {
 // fp_ui.cpp — part 6/6：模态窗口过程 + 保存 + 导入
 static LRESULT CALLBACK FpWndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
     FpWnd* w = (FpWnd*)::GetWindowLongPtrW(h, GWLP_USERDATA);
-    static HWND sPanels[5];
     if (msg == WM_CREATE) {
         CREATESTRUCTW* cs = (CREATESTRUCTW*)lp;
         w = (FpWnd*)cs->lpCreateParams;
@@ -915,21 +950,17 @@ static LRESULT CALLBACK FpWndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
         w->hDlg = h;
         HINSTANCE hi = cs->hInstance;
         ::InitCommonControls();
-        w->hTab = ::CreateWindowW(WC_TABCONTROLW, L"", WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS,
-            8, 8, 760, 500, h, (HMENU)(INT_PTR)F_TAB, hi, NULL);
-        TCITEMW ti{};
-        ti.mask = TCIF_TEXT;
-        for (int i = 0; i < 5; i++) {
-            ti.pszText = (LPWSTR)kTabNames[i];
-            ::SendMessageW(w->hTab, TCM_INSERTITEMW, i, (LPARAM)&ti);
-            sPanels[i] = FpMkPanel(w->hTab, hi);
-        }
-        FpBuildPages(w, sPanels, hi);
-        // 底部按钮
-        FpMkBtn(h, w, F_RANDOM, L"一键随机", 8, 516, 100);
-        FpMkBtn(h, w, F_OK, L"保存", 560, 516, 100);
-        FpMkBtn(h, w, F_CANCEL, L"取消", 668, 516, 100);
-        w->hStatus = ::CreateWindowW(L"STATIC", L"", WS_CHILD | WS_VISIBLE, 120, 520, 430, 20, h, (HMENU)(INT_PTR)F_STATUS, hi, NULL);
+        // 单页滚动容器（窗口 860x640：滚动区 8,8,844x548；底部按钮行 y=564；状态条同行）
+        w->hScroll = FpMkScroll(h, hi, 8, 8, 844, 548);
+        HWND hPage = ::CreateWindowW(L"STATIC", L"", WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN,
+            0, 0, kFpContentW, kFpContentH, w->hScroll, NULL, hi, NULL);
+        FpBuildPages(w, hPage, hi);
+        FpScrollInit(w);
+        // 底部按钮（y=564，高 30，互不重叠：随机 8..108；保存 636..736；取消 744..844）
+        FpMkBtn(h, w, F_RANDOM, L"一键随机", 8, 564, 100);
+        FpMkBtn(h, w, F_OK, L"保存", 636, 564, 100);
+        FpMkBtn(h, w, F_CANCEL, L"取消", 744, 564, 100);
+        w->hStatus = ::CreateWindowW(L"STATIC", L"", WS_CHILD | WS_VISIBLE, 120, 568, 500, 22, h, (HMENU)(INT_PTR)F_STATUS, hi, NULL);
         // 初值：ui 侧车 -> static/dynamic 回填 -> 默认
         std::wstring dd = w->cfg.dataDir + L"\\" + w->profile;
         std::string ui;
@@ -1024,18 +1055,54 @@ static LRESULT CALLBACK FpWndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
         }
         FpFill(w);
         ::SetWindowTextW(w->hStatus, L"已载入，可编辑后保存");
-        for (int i = 1; i < 5; i++) ::ShowWindow(sPanels[i], SW_HIDE);
+        FpScrollTo(w, 0);
         return 0;
     }
     if (!w) return ::DefWindowProcW(h, msg, wp, lp);
     switch (msg) {
-    case WM_NOTIFY: {
-        NMHDR* nm = (NMHDR*)lp;
-        if (nm->idFrom == F_TAB && nm->code == TCN_SELCHANGE) {
-            int sel = (int)::SendMessageW(w->hTab, TCM_GETCURSEL, 0, 0);
-            for (int i = 0; i < 5; i++) ::ShowWindow(sPanels[i], i == sel ? SW_SHOW : SW_HIDE);
+    case WM_VSCROLL: {
+        // 单页滚动（行 32px / 页为可见高；与 kFpContentH 联动）
+        int cmd = LOWORD(wp);
+        RECT rc{};
+        ::GetClientRect(w->hScroll, &rc);
+        int visH = rc.bottom - rc.top;
+        int y = w->scrollY, maxY = kFpContentH - visH;
+        if (maxY < 0) maxY = 0;
+        if (cmd == SB_LINEUP) y -= 32;
+        else if (cmd == SB_LINEDOWN) y += 32;
+        else if (cmd == SB_PAGEUP) y -= visH;
+        else if (cmd == SB_PAGEDOWN) y += visH;
+        else if (cmd == SB_THUMBTRACK || cmd == SB_THUMBPOSITION) {
+            SCROLLINFO si{};
+            si.cbSize = sizeof(si);
+            si.fMask = SIF_TRACKPOS;
+            ::GetScrollInfo(w->hScroll, SB_VERT, &si);
+            y = si.nTrackPos;
         }
+        FpScrollTo(w, y);
         return 0;
+    }
+    case WM_MOUSEWHEEL: {
+        short dz = (short)HIWORD(wp);
+        FpScrollTo(w, w->scrollY - (dz > 0 ? 48 : -48));
+        return 0;
+    }
+    case WM_CTLCOLORSTATIC: {
+        // 内容页/标签浅灰蓝底（对齐 --bg），输入框保持白底
+        HDC dc = (HDC)wp;
+        HWND ctl = (HWND)lp;
+        wchar_t cls[32]{};
+        ::GetClassNameW(ctl, cls, 32);
+        if (::wcscmp(cls, L"Edit") == 0 || ::wcscmp(cls, L"ComboBox") == 0) {
+            ::SetBkColor(dc, kUiPanel);
+            ::SetTextColor(dc, kUiText);
+            return (LRESULT)::GetStockObject(WHITE_BRUSH);
+        }
+        ::SetBkColor(dc, kUiBg);
+        ::SetTextColor(dc, kUiText);
+        static HBRUSH sBg = NULL;
+        if (!sBg) sBg = ::CreateSolidBrush(kUiBg);
+        return (LRESULT)sBg;
     }
     case WM_COMMAND: {
         int id = LOWORD(wp);
@@ -1350,13 +1417,13 @@ bool FpUiShowModal(HWND hParent, const Config& cfg, const std::wstring& profileN
     wc.lpfnWndProc = FpWndProc;
     wc.hInstance = (HINSTANCE)::GetWindowLongPtrW(hParent, GWLP_HINSTANCE);
     wc.lpszClassName = cls;
-    wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
+    wc.hbrBackground = ::CreateSolidBrush(kUiBg); // 浅灰蓝底（对齐 --bg）
     wc.hCursor = ::LoadCursor(NULL, IDC_ARROW);
     ::RegisterClassW(&wc);
     std::wstring title = L"指纹配置 - " + profileName;
     HWND h = ::CreateWindowW(cls, title.c_str(),
-        WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
-        CW_USEDEFAULT, CW_USEDEFAULT, 792, 600,
+        WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_CLIPCHILDREN,
+        CW_USEDEFAULT, CW_USEDEFAULT, kFpWinW, kFpWinH,
         hParent, NULL, wc.hInstance, &w);
     if (!h) return false;
     ::ShowWindow(h, SW_SHOW);

@@ -217,6 +217,62 @@ jobs:
             if ($fpc -notmatch $s) { throw "alignment comment '$s' missing in fp_ui.cpp" }
             Write-Host "align comment ok: $s"
           }
+          # 2e. 主窗口几何（760x660，LISTVIEW 三列，批量行/日志行/新建列互不重叠）
+          $mcpp = Get-Content launcher\cpp\main.cpp -Raw
+          foreach ($s in @("760, 660", "WC_LISTVIEWW", "LVS_REPORT", "LVS_EX_CHECKBOXES",
+                           "LVS_EX_FULLROWSELECT", "LVN_ITEMCHANGED", "NM_CUSTOMDRAW",
+                           "kUiBg", "kUiPanel", "kUiSuccess", "kUiMuted",
+                           "LVM_INSERTITEMW", "LVM_SETITEMTEXTW", "LVM_DELETEALLITEMS",
+                           "LVM_GETNEXTITEM", "LVNI_SELECTED", "LVM_SETITEMSTATE",
+                           "LVIS_SELECTED", "LVIS_STATEIMAGEMASK")) {
+            if ($mcpp -notmatch [regex]::Escape($s)) { throw "main-window symbol '$s' missing in main.cpp" }
+            Write-Host "mainwin ok: $s"
+          }
+          # 批量行 y=384 高 30（底 414）vs 日志说明 y=416：无重叠；三批量按钮 88 宽 + ClearLog 100 宽全在 760 内
+          foreach ($s in @("292, 384, 88", "396, 384, 88", "500, 384, 88", "606, 384, 100",
+                           "12, 416, 694", "12, 440, 694", "12, 598, 694")) {
+            if ($mcpp -notmatch [regex]::Escape($s)) { throw "main-window rect '$s' missing in main.cpp" }
+            Write-Host "mainrect ok: $s"
+          }
+          # 右列纵向无重叠：启动78/关闭116/刷新154/指纹192/新建236/输入260/新建按钮292（各高30/26，间隔≥8）
+          foreach ($s in @("494, 78, 100", "494, 116, 100", "494, 154, 100", "494, 192, 100",
+                           "494, 260, 212", "494, 292, 100")) {
+            if ($mcpp -notmatch [regex]::Escape($s)) { throw "right-col rect '$s' missing in main.cpp" }
+            Write-Host "rightcol ok: $s"
+          }
+          # 旧 LISTBOX 残留不得出现（LB_ADDSTRING/LB_GETTEXT/LB_RESETCONTENT/LB_GETCURSEL/LBS_NOTIFY）
+          foreach ($s in @("LB_ADDSTRING", "LB_GETTEXT", "LB_RESETCONTENT", "LB_GETCURSEL", "LBS_NOTIFY")) {
+            if ($mcpp -match [regex]::Escape($s)) { throw "legacy LISTBOX '$s' still in main.cpp" }
+            Write-Host "nolb ok: $s"
+          }
+          # 2f. 指纹单页（860x640 滚动，无 Tab；数据层符号保留）
+          foreach ($s in @("kFpWinW = 860", "kFpWinH = 640", "kFpContentW = 828", "kFpContentH = 2050",
+                           "FpMkScroll", "FpScrollTo", "FpScrollInit", "WS_VSCROLL",
+                           "SW_SCROLLCHILDREN", "SB_THUMBTRACK", "WM_MOUSEWHEEL")) {
+            if ($fpc -notmatch [regex]::Escape($s)) { throw "single-page symbol '$s' missing in fp_ui.cpp" }
+            Write-Host "singlepage ok: $s"
+          }
+          # Tab 残留不得出现（WC_TABCONTROLW/TCM_INSERTITEMW/TCN_SELCHANGE/kTabNames/FpMkPanel/sPanels/hTab）
+          foreach ($s in @("WC_TABCONTROLW", "TCM_INSERTITEMW", "TCN_SELCHANGE", "kTabNames", "FpMkPanel")) {
+            if ($fpc -match [regex]::Escape($s)) { throw "legacy Tab '$s' still in fp_ui.cpp" }
+            Write-Host "notab ok: $s"
+          }
+          if ($fpc -match "sPanels\[") { throw "legacy sPanels still in fp_ui.cpp" }
+          if ($fpc -match "w->hTab") { throw "legacy hTab still in fp_ui.cpp" }
+          Write-Host "notab state ok"
+          # 底部按钮行 y=564：随机 8..108 / 保存 636..736 / 取消 744..844，互不重叠且在 860 内
+          foreach ($s in @("8, 564, 100", "636, 564, 100", "744, 564, 100", "120, 568, 500")) {
+            if ($fpc -notmatch [regex]::Escape($s)) { throw "bottom-row rect '$s' missing in fp_ui.cpp" }
+            Write-Host "bottomrow ok: $s"
+          }
+          # 单页 24 行顺序锚点（与 web-ui fp-row 顺序一致：A/B/C/D + 1..19）
+          foreach ($s in @("---- A.", "---- C.", "---- 1. WebRTC", "---- 6. 分辨率",
+                           "---- 9. WebGL", "---- 10. WebGPU", "---- 11. CPU",
+                           "---- 13. 设备名称", "---- 15. Do Not Track",
+                           "---- 17. 硬件加速", "---- 19. 启动参数")) {
+            if ($fpc -notmatch [regex]::Escape($s)) { throw "section anchor '$s' missing in fp_ui.cpp" }
+            Write-Host "section ok: $s"
+          }
           # 3. C++ 离线 HTTP 路由齐备：
           #    A 组离线自有（web-ui/api.js 契约）：profiles/start/stop/fp/proxy/check + serveFile；
           #    B 组 asar 兼容（main.min.js 本地 Koa 路由离线版，见 main.cpp 注释）：

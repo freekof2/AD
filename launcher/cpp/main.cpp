@@ -65,28 +65,28 @@ static void RefreshLogView() {
 
 static void RefreshList() {
     std::lock_guard<std::mutex> lk(g.mu);
-    // 记住刷新前的选中项：定时器每 2 秒 LB_RESETCONTENT 会清空选择，
-    // 这就是“要点很快才能点启动”的根因。刷新后按名字恢复选中。
+    // LISTVIEW：记住刷新前的选中项（定时器重填会清空选择，刷新后按名字恢复选中）。
     std::wstring keep;
     {
-        int cur = (int)::SendMessageW(g.hList, LB_GETCURSEL, 0, 0);
+        int cur = (int)::SendMessageW(g.hList, LVM_GETNEXTITEM, (WPARAM)-1, (LPARAM)LVNI_SELECTED);
         if (cur >= 0) {
             wchar_t tmp[512]{};
-            if (::SendMessageW(g.hList, LB_GETTEXT, cur, (LPARAM)tmp) != LB_ERR) {
+            LVITEMW li{};
+            li.mask = LVIF_TEXT;
+            li.iItem = cur;
+            li.iSubItem = 0;
+            li.pszText = tmp;
+            li.cchTextMax = 512;
+            if (::SendMessageW(g.hList, LVM_GETITEMTEXTW, (WPARAM)cur, (LPARAM)&li))
                 keep = tmp;
-                size_t p = keep.find(L"  [");
-                if (p != std::wstring::npos) keep = keep.substr(0, p);
-                // 去勾选前缀 "[x]/[ ] "
-                if (keep.size() > 4 && keep[0] == L'[' && keep[2] == L']' && keep[3] == L' ')
-                    keep = keep.substr(4);
-            }
         }
     }
     auto profiles = ScanProfiles(g.cfg, g.procs, g.ports);
-    ::SendMessageW(g.hList, LB_RESETCONTENT, 0, 0);
+    ::SendMessageW(g.hList, LVM_DELETEALLITEMS, 0, 0);
     int restore = -1;
     // 运行计数（对齐 web-ui qWait/qRun/qOpen：等待=停止数，运行=运行数）
     int nOpen = 0, nClosed = 0;
+    int row = 0;
     for (auto& p : profiles) {
         // 搜索过滤（对齐 web-ui globalSearch：按目录名子串，不区分大小写）
         if (!g.searchFilter.empty()) {
@@ -96,19 +96,46 @@ static void RefreshList() {
             if (n.find(f) == std::wstring::npos) continue;
         }
         if (p.running) nOpen++; else nClosed++;
-        std::wstring item = L"[";
+        LVITEMW li{};
+        li.mask = LVIF_TEXT;
+        li.iItem = row;
+        li.iSubItem = 0;
+        li.pszText = (LPWSTR)p.name.c_str();
+        int idx = (int)::SendMessageW(g.hList, LVM_INSERTITEMW, 0, (LPARAM)&li);
+        std::wstring st = p.running ? (L"运行中 pid=" + std::to_wstring(p.pid)) : L"已停止";
+        LVITEMW li1{};
+        li1.mask = LVIF_TEXT;
+        li1.iItem = idx;
+        li1.iSubItem = 1;
+        li1.pszText = (LPWSTR)st.c_str();
+        ::SendMessageW(g.hList, LVM_SETITEMTEXTW, (WPARAM)idx, (LPARAM)&li1);
+        std::wstring port = p.port ? std::to_wstring(p.port) : L"-";
+        LVITEMW li2{};
+        li2.mask = LVIF_TEXT;
+        li2.iItem = idx;
+        li2.iSubItem = 2;
+        li2.pszText = (LPWSTR)port.c_str();
+        ::SendMessageW(g.hList, LVM_SETITEMTEXTW, (WPARAM)idx, (LPARAM)&li2);
+        // 复选框镜像 g.checked（批量操作用；LVS_EX_CHECKBOXES 状态图：2=勾选，1=未勾选）
         auto ck = g.checked.find(p.name);
-        item += (ck != g.checked.end() && ck->second) ? L"x] " : L" ] ";
-        item += p.name;
-        if (p.running) item += L"  [运行 pid=" + std::to_wstring(p.pid) +
-            L" port=" + std::to_wstring(p.port) + L"]";
-        else if (p.port) item += L"  [停止 port=" + std::to_wstring(p.port) + L"]";
-        else item += L"  [停止]";
-        int idx = (int)::SendMessageW(g.hList, LB_ADDSTRING, 0, (LPARAM)item.c_str());
+        LVITEMW liS{};
+        liS.mask = LVIF_STATE;
+        liS.iItem = idx;
+        liS.stateMask = LVIS_STATEIMAGEMASK;
+        liS.state = INDEXTOSTATEIMAGEMASK((ck != g.checked.end() && ck->second) ? 2 : 1);
+        ::SendMessageW(g.hList, LVM_SETITEMSTATE, (WPARAM)idx, (LPARAM)&liS);
+        // 运行中行着 success 色由 CustomDraw 负责，此处只记 restore
         if (!keep.empty() && p.name == keep) restore = idx;
-        (void)idx;
+        row++;
     }
-    if (restore >= 0) ::SendMessageW(g.hList, LB_SETCURSEL, restore, 0);
+    if (restore >= 0) {
+        LVITEMW li{};
+        li.mask = LVIF_STATE;
+        li.iItem = restore;
+        li.stateMask = LVIS_SELECTED | LVIS_FOCUSED;
+        li.state = LVIS_SELECTED | LVIS_FOCUSED;
+        ::SendMessageW(g.hList, LVM_SETITEMSTATE, (WPARAM)restore, (LPARAM)&li);
+    }
     // 状态栏尾部追加队列计数（对齐 web-ui queue-card）
     if (g.hStatus) {
         wchar_t cur[512]{};
@@ -123,7 +150,20 @@ static void RefreshList() {
     }
 }
 
-// 从列表行文本反解 profile 名（去 "[x]/[ ] " 前缀，截 "  [" 后缀）
+// 从 LISTVIEW 当前选中行取 profile 名（第 0 列文本即目录名，无需反解）
+static std::wstring ListNameOfRow(int idx) {
+    wchar_t tmp[512]{};
+    LVITEMW li{};
+    li.mask = LVIF_TEXT;
+    li.iItem = idx;
+    li.iSubItem = 0;
+    li.pszText = tmp;
+    li.cchTextMax = 512;
+    if (!::SendMessageW(g.hList, LVM_GETITEMTEXTW, (WPARAM)idx, (LPARAM)&li)) return L"";
+    return tmp;
+}
+
+// 从列表行文本反解 profile 名（旧 LISTBOX 兼容保留；LISTVIEW 下直接用 ListNameOfRow）
 static std::wstring ListNameOf(const std::wstring& item) {
     std::wstring s = item;
     if (s.size() > 4 && s[0] == L'[' && s[2] == L']' && s[3] == L' ')
@@ -260,14 +300,11 @@ static int AllocPortLocked(const std::wstring& name) {
 }
 
 static std::wstring SelectedProfile() {
-    int idx = (int)::SendMessageW(g.hList, LB_GETCURSEL, 0, 0);
+    int idx = (int)::SendMessageW(g.hList, LVM_GETNEXTITEM, (WPARAM)-1, (LPARAM)LVNI_SELECTED);
     if (idx < 0) return L"";
-    wchar_t tmp[512]{};
-    if (::SendMessageW(g.hList, LB_GETTEXT, idx, (LPARAM)tmp) == LB_ERR) return L"";
-    // 注意：列表行带 "[x]/[ ] " 前缀与 "  [运行/停止...]" 后缀，直接反解，
-    // 不再按 ScanProfiles 索引（搜索过滤后索引会错位）。
+    // LISTVIEW 第 0 列文本即目录名（搜索过滤后索引不错位，直接读行文本）
     std::lock_guard<std::mutex> lk(g.mu);
-    return ListNameOf(tmp);
+    return ListNameOfRow(idx);
 }
 
 // 指定 profile 启动（单启 OnStart 与批量共用；调用方需持有 g.mu）
@@ -400,37 +437,57 @@ static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
                 x, y, w, 26, h, (HMENU)(INT_PTR)id, hi, NULL);
         };
         ::CreateWindowW(L"STATIC", L"数据目录:", WS_CHILD | WS_VISIBLE, 12, 12, 70, 22, h, NULL, hi, NULL);
-        g.hDataDir = mkEdit(IDC_DATADIR, 86, 10, 480);
-        ::CreateWindowW(L"STATIC", L"浏览器目录:", WS_CHILD | WS_VISIBLE, 12, 42, 70, 22, h, NULL, hi, NULL);
-        g.hBrowserDir = mkEdit(IDC_BROWSERDIR, 86, 40, 480);
-        mkBtn(IDC_SAVEDIR, L"保存目录", 576, 10, 100);
-        mkBtn(IDC_OPENDIR, L"打开日志目录", 576, 42, 100);
-        g.hList = ::CreateWindowW(L"LISTBOX", NULL,
-            WS_CHILD | WS_VISIBLE | WS_BORDER | WS_VSCROLL | LBS_NOTIFY,
-            12, 76, 420, 300, h, (HMENU)(INT_PTR)IDC_LIST, hi, NULL);
-        mkBtn(IDC_START, L"启动", 444, 76, 100);
-        mkBtn(IDC_STOP, L"关闭", 444, 114, 100);
-        mkBtn(IDC_REFRESH, L"刷新", 444, 152, 100);
-        mkBtn(IDC_FPCONFIG, L"指纹配置", 444, 190, 100);
-        ::CreateWindowW(L"STATIC", L"搜索:", WS_CHILD | WS_VISIBLE, 12, 384, 40, 22, h, NULL, hi, NULL);
-        g.hSearch = ::CreateWindowW(L"EDIT", L"", WS_CHILD | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL,
-            56, 382, 240, 24, h, (HMENU)(INT_PTR)IDC_SEARCH, hi, NULL);
-        mkBtn(IDC_BSTART, L"批量启动", 306, 380, 84);
-        mkBtn(IDC_BSTOP, L"批量停止", 394, 380, 84);
-        mkBtn(IDC_BDEL, L"批量删除", 482, 380, 84);
-        ::CreateWindowW(L"STATIC", L"DEBUG 日志（debug.log 尾部，启动命令行/退出码都在里面；双击列表行=勾选/取消，多选后用批量按钮）:",
-            WS_CHILD | WS_VISIBLE, 12, 408, 560, 22, h, NULL, hi, NULL);
-        ::CreateWindowW(L"STATIC", L"新建 profile:", WS_CHILD | WS_VISIBLE, 444, 200, 100, 22, h, NULL, hi, NULL);
+        g.hDataDir = mkEdit(IDC_DATADIR, 96, 12, 500);
+        ::CreateWindowW(L"STATIC", L"浏览器目录:", WS_CHILD | WS_VISIBLE, 12, 44, 80, 22, h, NULL, hi, NULL);
+        g.hBrowserDir = mkEdit(IDC_BROWSERDIR, 96, 42, 500);
+        mkBtn(IDC_SAVEDIR, L"保存目录", 606, 10, 100);
+        mkBtn(IDC_OPENDIR, L"打开日志目录", 606, 42, 100);
+        // 环境表：LISTVIEW 三列（环境目录/状态/端口）+ 复选框 + 整行选择（对齐 web-ui 9 列表格）
+        g.hList = ::CreateWindowW(WC_LISTVIEWW, NULL,
+            WS_CHILD | WS_VISIBLE | WS_BORDER | LVS_REPORT | LVS_SHOWSELALWAYS | LVS_SINGLESEL,
+            12, 78, 470, 300, h, (HMENU)(INT_PTR)IDC_LIST, hi, NULL);
+        {
+            DWORD ex = (DWORD)::SendMessageW(g.hList, LVM_GETEXTENDEDLISTVIEWSTYLE, 0, 0);
+            ex |= LVS_EX_FULLROWSELECT | LVS_EX_CHECKBOXES | LVS_EX_GRIDLINES;
+            ::SendMessageW(g.hList, LVM_SETEXTENDEDLISTVIEWSTYLE, 0, (LPARAM)ex);
+            LVCOLUMNW c0{};
+            c0.mask = LVCF_TEXT | LVCF_WIDTH;
+            c0.pszText = (LPWSTR)L"环境目录";
+            c0.cx = 220;
+            ::SendMessageW(g.hList, LVM_INSERTCOLUMNW, 0, (LPARAM)&c0);
+            LVCOLUMNW c1{};
+            c1.mask = LVCF_TEXT | LVCF_WIDTH;
+            c1.pszText = (LPWSTR)L"状态";
+            c1.cx = 150;
+            ::SendMessageW(g.hList, LVM_INSERTCOLUMNW, 1, (LPARAM)&c1);
+            LVCOLUMNW c2{};
+            c2.mask = LVCF_TEXT | LVCF_WIDTH;
+            c2.pszText = (LPWSTR)L"端口";
+            c2.cx = 96;
+            ::SendMessageW(g.hList, LVM_INSERTCOLUMNW, 2, (LPARAM)&c2);
+        }
+        mkBtn(IDC_START, L"启动", 494, 78, 100);
+        mkBtn(IDC_STOP, L"关闭", 494, 116, 100);
+        mkBtn(IDC_REFRESH, L"刷新", 494, 154, 100);
+        mkBtn(IDC_FPCONFIG, L"指纹配置", 494, 192, 100);
+        ::CreateWindowW(L"STATIC", L"新建环境:", WS_CHILD | WS_VISIBLE, 494, 236, 100, 22, h, NULL, hi, NULL);
         ::CreateWindowW(L"EDIT", L"", WS_CHILD | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL,
-            444, 224, 232, 26, h, (HMENU)(INT_PTR)IDC_NEWNAME, hi, NULL);
-        mkBtn(IDC_CREATE, L"新建", 444, 256, 100);
-        ::CreateWindowW(L"STATIC", L"DEBUG 日志（debug.log 尾部，启动命令行/退出码都在里面）:",
-            WS_CHILD | WS_VISIBLE, 12, 384, 500, 22, h, NULL, hi, NULL);
-        mkBtn(IDC_CLEARLOG, L"清空日志窗", 576, 380, 100);
+            494, 260, 212, 26, h, (HMENU)(INT_PTR)IDC_NEWNAME, hi, NULL);
+        mkBtn(IDC_CREATE, L"新建", 494, 292, 100);
+        // 搜索 + 批量行（y=386，互不重叠；窗口 760 宽，间隙 ≥16）
+        ::CreateWindowW(L"STATIC", L"搜索:", WS_CHILD | WS_VISIBLE, 12, 388, 40, 22, h, NULL, hi, NULL);
+        g.hSearch = ::CreateWindowW(L"EDIT", L"", WS_CHILD | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL,
+            56, 386, 220, 24, h, (HMENU)(INT_PTR)IDC_SEARCH, hi, NULL);
+        mkBtn(IDC_BSTART, L"批量启动", 292, 384, 88);
+        mkBtn(IDC_BSTOP, L"批量停止", 396, 384, 88);
+        mkBtn(IDC_BDEL, L"批量删除", 500, 384, 88);
+        mkBtn(IDC_CLEARLOG, L"清空日志窗", 606, 384, 100);
+        ::CreateWindowW(L"STATIC", L"DEBUG 日志（debug.log 尾部；单击复选框多选，双击行=选中，多选后用批量按钮）:",
+            WS_CHILD | WS_VISIBLE, 12, 416, 694, 22, h, NULL, hi, NULL);
         g.hLog = ::CreateWindowW(L"EDIT", L"",
             WS_CHILD | WS_VISIBLE | WS_BORDER | WS_VSCROLL | ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL,
-            12, 408, 664, 150, h, (HMENU)(INT_PTR)IDC_LOG, hi, NULL);
-        g.hStatus = ::CreateWindowW(L"STATIC", L"就绪", WS_CHILD | WS_VISIBLE, 12, 566, 664, 22, h, NULL, hi, NULL);
+            12, 440, 694, 150, h, (HMENU)(INT_PTR)IDC_LOG, hi, NULL);
+        g.hStatus = ::CreateWindowW(L"STATIC", L"就绪", WS_CHILD | WS_VISIBLE, 12, 598, 694, 22, h, NULL, hi, NULL);
         ::SetWindowTextW(g.hDataDir, g.cfg.dataDir.c_str());
         ::SetWindowTextW(g.hBrowserDir, g.cfg.sunBrowserDir.c_str());
         ::SetTimer(h, TIMER_POLL, 2000, NULL);
@@ -440,6 +497,7 @@ static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_COMMAND: {
         int id = LOWORD(wp);
         int code = HIWORD(wp);
+        (void)code; // code 仅 IDC_SEARCH / IDC_LIST 分支使用，其余分支忽略
         if (id == IDC_START) { OnStart(); RefreshList(); RefreshLogView(); }
         else if (id == IDC_STOP) { OnStop(); RefreshList(); RefreshLogView(); }
         else if (id == IDC_REFRESH) { RefreshList(); RefreshLogView(); SetStatus(L"已刷新"); }
@@ -470,14 +528,13 @@ static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
             RefreshList();
         }
         else if (id == IDC_LIST && code == LBN_DBLCLK) {
-            // 双击=勾选/取消（对齐 web-ui 表格 checkbox）
-            int idx = (int)::SendMessageW(g.hList, LB_GETCURSEL, 0, 0);
+            // 旧 LISTBOX 双击分支保留占位；LISTVIEW 下单击复选框即勾选（LVN_ITEMCHANGED），双击行=选中。
+            int idx = (int)::SendMessageW(g.hList, LVM_GETNEXTITEM, (WPARAM)-1, (LPARAM)LVNI_SELECTED);
             if (idx >= 0) {
-                wchar_t tmp[512]{};
-                if (::SendMessageW(g.hList, LB_GETTEXT, idx, (LPARAM)tmp) != LB_ERR) {
-                    std::wstring nm = ListNameOf(tmp);
+                std::wstring nm = ListNameOfRow(idx);
+                if (!nm.empty()) {
                     std::lock_guard<std::mutex> lk(g.mu);
-                    g.checked[nm] = !g.checked[nm];
+                    g.checked[nm] = true;
                 }
                 RefreshList();
             }
@@ -515,7 +572,65 @@ static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_TIMER:
         RefreshList(); RefreshLogView();
         return 0;
+    case WM_NOTIFY: {
+        NMHDR* nm = (NMHDR*)lp;
+        if (nm && nm->idFrom == IDC_LIST) {
+            if (nm->code == LVN_ITEMCHANGED) {
+                // 单击复选框=勾选/取消（对齐 web-ui 表格 checkbox；g.checked 为批量操作镜像）
+                NMLISTVIEW* lv = (NMLISTVIEW*)lp;
+                if ((lv->uChanged & LVIF_STATE) &&
+                    ((lv->uOldState ^ lv->uNewState) & LVIS_STATEIMAGEMASK)) {
+                    UINT check = ((lv->uNewState & LVIS_STATEIMAGEMASK) >> 12);
+                    std::wstring nm2 = ListNameOfRow(lv->iItem);
+                    if (!nm2.empty()) {
+                        std::lock_guard<std::mutex> lk(g.mu);
+                        g.checked[nm2] = (check == 2);
+                    }
+                }
+            } else if (nm->code == NM_CUSTOMDRAW) {
+                // 状态列着色：运行中绿(kUiSuccess)、已停止灰(kUiMuted)（对齐 web-ui pill）
+                NMLVCUSTOMDRAW* cd = (NMLVCUSTOMDRAW*)lp;
+                if (cd->nmcd.dwDrawStage == CDDS_PREPAINT)
+                    return CDRF_NOTIFYITEMDRAW;
+                if (cd->nmcd.dwDrawStage == CDDS_ITEMPREPAINT) {
+                    wchar_t st[64]{};
+                    LVITEMW li{};
+                    li.mask = LVIF_TEXT;
+                    li.iItem = (int)cd->nmcd.dwItemSpec;
+                    li.iSubItem = 1;
+                    li.pszText = st;
+                    li.cchTextMax = 64;
+                    ::SendMessageW(g.hList, LVM_GETITEMTEXTW, (WPARAM)li.iItem, (LPARAM)&li);
+                    if (wcsstr(st, L"运行中")) cd->clrText = kUiSuccess;
+                    else cd->clrText = kUiMuted;
+                    return CDRF_DODEFAULT;
+                }
+            }
+        }
+        return 0;
+    }
+    case WM_CTLCOLORSTATIC:
+    case WM_CTLCOLOREDIT:
+    case WM_CTLCOLORLISTBOX: {
+        // 浅灰蓝底 + 白输入框（对齐 app.css --bg/--panel；只读 STATIC 透底用底色刷）
+        HDC dc = (HDC)wp;
+        HWND ctl = (HWND)lp;
+        wchar_t cls[32]{};
+        ::GetClassNameW(ctl, cls, 32);
+        if (::wcscmp(cls, L"Edit") == 0 || ::wcscmp(cls, L"SysListView32") == 0) {
+            ::SetBkColor(dc, kUiPanel);
+            ::SetTextColor(dc, kUiText);
+            if (!g.hWhiteBrush) g.hWhiteBrush = ::CreateSolidBrush(kUiPanel);
+            return (LRESULT)g.hWhiteBrush;
+        }
+        ::SetBkColor(dc, kUiBg);
+        ::SetTextColor(dc, kUiText);
+        if (!g.hBgBrush) g.hBgBrush = ::CreateSolidBrush(kUiBg);
+        return (LRESULT)g.hBgBrush;
+    }
     case WM_DESTROY:
+        if (g.hBgBrush) { ::DeleteObject(g.hBgBrush); g.hBgBrush = NULL; }
+        if (g.hWhiteBrush) { ::DeleteObject(g.hWhiteBrush); g.hWhiteBrush = NULL; }
         ::PostQuitMessage(0);
         return 0;
     }
@@ -536,13 +651,13 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE, LPWSTR, int show) {
     wc.lpfnWndProc = WndProc;
     wc.hInstance = hi;
     wc.lpszClassName = cls;
-    wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
+    wc.hbrBackground = ::CreateSolidBrush(kUiBg); // 浅灰蓝底（对齐 --bg），WM_CTLCOLOR* 透底同色
     wc.hCursor = ::LoadCursor(NULL, IDC_ARROW);
     ::RegisterClassW(&wc);
 
     g.hMain = ::CreateWindowW(cls, L"SunLauncher（SunBrowser 启动器）",
-        WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
-        CW_USEDEFAULT, CW_USEDEFAULT, 704, 630,
+        WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_CLIPCHILDREN,
+        CW_USEDEFAULT, CW_USEDEFAULT, 760, 660,
         NULL, NULL, hi, NULL);
     ::ShowWindow(g.hMain, show);
     ::UpdateWindow(g.hMain);

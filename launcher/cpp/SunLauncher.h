@@ -125,6 +125,16 @@ std::vector<ProfileInfo> ScanProfiles(const Config& cfg,
 bool LaunchSunBrowser(const std::wstring& exe, const std::wstring& workDir,
     const std::wstring& cmdline, HANDLE* outProcess, DWORD* outPid, DWORD* outErr);
 
+// ---------- 配色（对齐 web-ui/css/app.css :root + 参考图浅灰蓝底/白卡片/主蓝） ----------
+static const COLORREF kUiBg      = RGB(245, 247, 250); // --bg #f5f7fa
+static const COLORREF kUiPanel   = RGB(255, 255, 255); // --panel #ffffff
+static const COLORREF kUiBorder  = RGB(226, 232, 240); // --border #e2e8f0
+static const COLORREF kUiPrimary = RGB(45, 92, 246);   // --primary #2d5cf6
+static const COLORREF kUiSuccess = RGB(16, 185, 129);  // --success #10b981
+static const COLORREF kUiMuted   = RGB(148, 163, 184); // stopped gray #94a3b8
+static const COLORREF kUiDanger  = RGB(239, 68, 68);   // --danger #ef4444
+static const COLORREF kUiText    = RGB(26, 32, 44);    // --text-main #1a202c
+
 // ---------- 全局状态 ----------
 struct AppState {
     Config cfg;
@@ -134,5 +144,7 @@ struct AppState {
     HWND hMain = NULL, hList = NULL, hDataDir = NULL, hBrowserDir = NULL, hLog = NULL, hStatus = NULL;
     HWND hSearch = NULL;   // 环境搜索框（对齐 web-ui globalSearch）
     std::wstring searchFilter; // 搜索关键字（刷新列表时过滤）
-    std::map<std::wstring, bool> checked; // 多选勾选态（对齐 web-ui 表格 checkbox，批量操作用）
+    std::map<std::wstring, bool> checked; // 多选勾选态（LISTVIEW 复选框镜像，批量操作用）
+    HBRUSH hBgBrush = NULL;    // 主窗口底色画刷（kUiBg）
+    HBRUSH hWhiteBrush = NULL; // 输入框/列表底色画刷（kUiPanel）
 };
