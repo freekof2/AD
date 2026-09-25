@@ -36,6 +36,7 @@ static void SetStatus(const std::wstring& s) {
 // 从 debug.log 尾部刷新日志窗（避免跨线程写控件）
 static void RefreshLogView() {
     if (!g.hLog || !::IsWindow(g.hLog)) return;
+    LOG(L"probe logview-enter");
     std::wstring path = DebugLog::Instance().Path();
     if (path.empty()) return;
     HANDLE h = ::CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
@@ -62,6 +63,7 @@ static void RefreshLogView() {
     ::SetWindowTextW(g.hLog, w.c_str());
     ::SendMessageW(g.hLog, EM_SETSEL, -1, -1);
     ::SendMessageW(g.hLog, EM_SCROLLCARET, 0, 0);
+    LOG(L"probe logview-done");
 }
 
 static void RefreshList() {
@@ -84,7 +86,9 @@ static void RefreshList() {
         }
     }
     auto profiles = ScanProfiles(g.cfg, g.procs, g.ports);
+    LOG(std::wstring(L"probe refresh scan-done n=") + std::to_wstring(profiles.size()));
     ::SendMessageW(g.hList, LVM_DELETEALLITEMS, 0, 0);
+    LOG(L"probe refresh clear-done");
     int restore = -1;
     // 运行计数（对齐 web-ui qWait/qRun/qOpen：等待=停止数，运行=运行数）
     int nOpen = 0, nClosed = 0;
@@ -138,6 +142,7 @@ static void RefreshList() {
         li.state = LVIS_SELECTED | LVIS_FOCUSED;
         ::SendMessageW(g.hList, LVM_SETITEMSTATE, (WPARAM)restore, (LPARAM)&li);
     }
+    LOG(L"probe refresh rows-done");
     // 状态栏尾部追加队列计数（对齐 web-ui queue-card）
     if (g.hStatus) {
         wchar_t cur[512]{};
@@ -150,6 +155,7 @@ static void RefreshList() {
              L" 运行" + std::to_wstring(nOpen);
         ::SetWindowTextW(g.hStatus, s.c_str());
     }
+    LOG(L"probe refresh status-done");
 }
 
 // 从 LISTVIEW 当前选中行取 profile 名（第 0 列文本即目录名，无需反解）
@@ -498,6 +504,7 @@ static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
         ::SetWindowTextW(g.hBrowserDir, g.cfg.sunBrowserDir.c_str());
         ::SetTimer(h, TIMER_POLL, 2000, NULL);
         LOG(L"probe wmcreate timer-ok");
+        LOG(L"probe wmcreate refresh-pre");
         RefreshList(); RefreshLogView();
         LOG(L"probe wmcreate refresh-done");
         return 0;
