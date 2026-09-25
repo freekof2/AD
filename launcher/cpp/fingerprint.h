@@ -68,6 +68,22 @@ bool FpSaveUiExtra(const std::wstring& profileDir, const std::string& jsonText);
 std::wstring FpBuildCmdline(const std::wstring& profileDir, int port,
     const std::string& extraSunParamsJson);
 
+// ---------- 启动诊断（只写 debug.log，不做任何网络 IO） ----------
+// FpDiagDumpLaunch：把一次启动的全部现场逐行写入 debug.log（调用方直接 LOG 整块文本）：
+//   [diag] exe/workDir/profileDir/port/pid 三件套文件名+长度+md5(raw)+解码头 64 字符/
+//   sunBrowserParams 明文全文/ext 首尾各 64 字符+长度/UserId 来源、
+//   --user-data-dir/--extended-parameters/--remote-debugging-port 三键逐项展开、
+//   环境变量 AUTH/ELECTRON_RUN_AS_NODE 有无（官方 filterEnv 会删）、
+//   失败建议（3 秒退出且零 [browser] 输出 -> 手工复现命令）。
+// 注意：三件套解码只取头 64 字符，避免指纹全文落盘。
+std::string FpDiagDumpLaunch(const std::wstring& exe, const std::wstring& workDir,
+    const std::wstring& profileDir, int port,
+    const std::string& extraSunParamsJson,
+    const std::wstring& cmdline, DWORD pid);
+// FpDiagEnvAuth：检查当前进程环境 AUTH / ELECTRON_RUN_AS_NODE 是否存在。
+// 存在且非空 = 官方 filterEnv 会删除但我们透传，返回 true（仅诊断，不删除）。
+bool FpDiagEnvAuth(std::string& detailOut);
+
 // ---------- 进程树关闭 ----------
 // 先找 --user-data-dir 指向该 profile 的 SunBrowser 进程（Toolhelp 快照比对命令行），
 // 找不到再退回结束 launcher 自己拉起的句柄。返回实际结束的 pid 列表。

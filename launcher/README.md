@@ -22,7 +22,30 @@ profile，一键**指纹注入启动**/关闭。只读写本地缓存目录，**
   `ui_fingerprint.json` 明文侧车。
 
 点启动后无窗口时看 `debug.log`（exe 同目录）：完整命令行、
-3 秒存活检查的退出码、浏览器子进程输出（`[browser]` 前缀）全在里面。
+轮询式存活检查的退出码、浏览器子进程输出（`[browser]` 前缀）全在里面。
+
+## DEBUG 日志判读（`[diag]` 块）
+
+每次点启动都会写一段 `[diag] ===== launch diag begin/end =====`，含：
+
+- `exe/workDir/profileDir/fbccId/port/pid`：确认 exe 与 profile 是否指对；
+- `sc/dc/cf file=… len=… md5=… head=…`：三件套现场。
+  `MISSING`=文件缺失（`UserId` 已回退 hash）；`DECODE_FAIL`=损坏或换表不对；
+  `head=` 只取解码头 64 字符；
+- `sp.UserId/src`：`static`=读自缓存，`fallback`=三件套缺失回退；
+- `ext.len/head/tail` + `ext.decode=OK/FAIL`：注入体是否合法；
+- `arg.ud/rdp/ext.present`：三键逐项展开；
+- `env.AUTH_ELECTRON`：`HIT`=官方 `filterEnv` 会删但我方透传；
+- `hint/manual`：失败建议 + 可直接复制到 cmd 手工跑的完整命令。
+
+配套行：
+
+- `diag poll t=500..3000ms ALIVE/EXIT`：6 次轮询，每次存活态或退出码；
+- `[browser-first]`：子进程第一行输出（有输出先看它）；
+- `[browser-eof] lines=/bytes=/gle=`：子进程输出汇总。
+  零行零字节 + `EXIT code=4294967295` + 残留 0 + `DevToolsActivePort` 缺失
+  = GUI 静默早退：复制 `[diag]manual` 行到 cmd 手工跑，看弹窗/退出码；
+- `diag forensics`：残留进程数 / `DevToolsActivePort` / `LOCK` 现场。
 
 ## 目录约定
 

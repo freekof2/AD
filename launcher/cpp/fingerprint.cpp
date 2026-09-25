@@ -435,6 +435,168 @@ std::wstring FpBuildCmdline(const std::wstring& profileDir, int port,
     return cmd;
 }
 
+// ================= 启动诊断（只写 debug.log，不做任何网络 IO） =================
+// 缩写说明：diag=诊断块；ud=--user-data-dir；ext=--extended-parameters；
+// rdp=--remote-debugging-port；sc=StaticConfig；dc=DynamicConfig；cf=CookiesFile。
+bool FpDiagEnvAuth(std::string& detailOut) {
+    bool hit = false;
+    detailOut.clear();
+    // GetEnvironmentVariableA：查当前进程环境，不触碰系统其它位置。
+    char v[32768];
+    DWORD n = ::GetEnvironmentVariableA("AUTH", v, sizeof(v));
+    if (n > 0 && n < sizeof(v)) { hit = true; detailOut += "AUTH(len=" + std::to_string(n) + ") "; }
+    n = ::GetEnvironmentVariableA("ELECTRON_RUN_AS_NODE", v, sizeof(v));
+    if (n > 0 && n < sizeof(v)) { hit = true; detailOut += "ELECTRON_RUN_AS_NODE(len=" + std::to_string(n) + ") "; }
+    if (!hit) detailOut = "none";
+    return hit;
+}
+
+// 取三件套文件现场：文件名 + 长度 + md5(原文) + 换表解码头（最多 64 字符，截断标 ...）。
+// rc: 0=读+解码都成功；1=文件缺失；2=读失败/空；3=解码失败（表错/损坏）。
+static std::string DiagFileLine(const std::wstring& profileDir,
+    const std::string& fileName, const char* tag, int& rcOut) {
+    std::wstring path = profileDir + L"\\" + W(fileName);
+    DWORD attr = ::GetFileAttributesW(path.c_str());
+    std::string line = std::string(tag) + " file=" + fileName;
+    if (attr == INVALID_FILE_ATTRIBUTES) {
+        rcOut = 1;
+        return line + " MISSING";
+    }
+    std::string raw;
+    if (!FpReadTextFile(path, raw) || raw.empty()) {
+        rcOut = 2;
+        return line + " READ_FAIL len=0";
+    }
+    std::string head = FpDecode(raw);
+    line += " len=" + std::to_string(raw.size()) + " md5=" + FpMd5Hex(raw);
+    if (head.empty()) {
+        rcOut = 3;
+        std::string rh = raw.substr(0, raw.size() > 32 ? 32 : raw.size());
+        return line + " DECODE_FAIL rawHead=" + rh;
+    }
+    rcOut = 0;
+    std::string h = head.substr(0, head.size() > 64 ? 64 : head.size());
+    // 去掉换行，避免诊断块断行。
+    for (char& c : h) { if (c == '\r' || c == '\n' || c == '\t') c = ' '; }
+    line += " head=" + h;
+    if (head.size() > 64) line += "...";
+    return line;
+}
+
+// 从 cmdline 里按 key= 取值（值到下一个空格或结尾；引号保留原样）。
+static std::string DiagArgOf(const std::string& cmd, const char* key) {
+    size_t p = cmd.find(key);
+    if (p == std::string::npos) return "(missing)";
+    size_t s = p + strlen(key);
+    size_t e = s;
+    if (e < cmd.size() && cmd[e] == '"') {
+        e++;
+        size_t q = cmd.find('"', e);
+        e = (q == std::string::npos) ? cmd.size() : q + 1;
+    } else {
+        size_t q = cmd.find(' ', e);
+        e = (q == std::string::npos) ? cmd.size() : q;
+    }
+    std::string v = cmd.substr(s, e - s);
+    if (v.size() > 160) v = v.substr(0, 64) + "...[" + std::to_string(cmd.substr(s, e - s).size()) + " chars]..." + cmd.substr(e - 32 > s ? e - 32 : s, 32);
+    return v;
+}
+
+std::string FpDiagDumpLaunch(const std::wstring& exe, const std::wstring& workDir,
+    const std::wstring& profileDir, int port,
+    const std::string& extraSunParamsJson,
+    const std::wstring& cmdline, DWORD pid) {
+    std::string profileName = N(profileDir.substr(profileDir.find_last_of(L"\\/") + 1));
+    std::string fbcc = FpFbccIdOf(profileDir.substr(profileDir.find_last_of(L"\\/") + 1));
+    std::ostringstream o;
+    o << "[diag] ===== launch diag begin =====\n";
+    o << "[diag] exe=" << N(exe) << "\n";
+    o << "[diag] workDir=" << N(workDir) << "\n";
+    o << "[diag] profileDir=" << N(profileDir) << "\n";
+    o << "[diag] profileName=" << profileName << " fbccId=" << fbcc << " port=" << port
+      << " pid=" << (unsigned long)pid << "\n";
+    // 三件套现场
+    int rcS = -1, rcD = -1, rcC = -1;
+    o << "[diag] " << DiagFileLine(profileDir, FpStaticName(fbcc), "sc", rcS)
+      << " expect=md5(fbcc+\"_static\")\n";
+    o << "[diag] " << DiagFileLine(profileDir, FpDynamicName(fbcc), "dc", rcD)
+      << " expect=md5(fbcc+\"_webrtc\")\n";
+    o << "[diag] " << DiagFileLine(profileDir, FpCookiesName(fbcc), "cf", rcC)
+      << " expect=md5(fbcc+\"_cookies\")\n";
+    // sunBrowserParams 明文重建（与 FpBuildCmdline 同逻辑，只为展示，不替代 ext 真值）
+    std::string staticJson, dynamicJson;
+    FpLoadStaticJson(profileDir, staticJson);
+    FpLoadDynamicJson(profileDir, dynamicJson);
+    std::string userId = FpJsonGet(staticJson, "UserId");
+    std::string userIdSrc = "static";
+    if (userId.empty()) {
+        unsigned h = 0;
+        for (char c : fbcc) h = h * 131 + (unsigned char)c;
+        userId = std::to_string(h % 900000 + 100000);
+        userIdSrc = "fallback(hash fbcc)";
+    }
+    std::string cmdN = N(cmdline);
+    // ext 真值：从 cmdline 里抠 --extended-parameters= 之后到空格的值
+    std::string extVal;
+    {
+        const char* k = "--extended-parameters=";
+        size_t p = cmdN.find(k);
+        if (p != std::string::npos) {
+            size_t s = p + strlen(k);
+            size_t e = cmdN.find(' ', s);
+            extVal = cmdN.substr(s, e == std::string::npos ? e : e - s);
+        }
+    }
+    o << "[diag] sp.UserId=" << userId << " src=" << userIdSrc
+      << " staticLoaded=" << (staticJson.empty() ? "no" : "yes")
+      << " dynamicLoaded=" << (dynamicJson.empty() ? "no" : "yes")
+      << " uiExtraLen=" << extraSunParamsJson.size() << "\n";
+    o << "[diag] ext.len=" << extVal.size();
+    if (!extVal.empty()) {
+        o << " head=" << extVal.substr(0, extVal.size() > 64 ? 64 : extVal.size());
+        if (extVal.size() > 128)
+            o << " tail=" << extVal.substr(extVal.size() - 64);
+        else if (extVal.size() > 64)
+            o << "...";
+    }
+    // ext 解码校验：能解出 {"UserId": 即注入体合法
+    if (!extVal.empty()) {
+        std::string dec = FpDecode(extVal);
+        if (dec.size() > 10 && dec[0] == '{' && dec.find("\"UserId\"") != std::string::npos) {
+            std::string dh = dec.substr(0, dec.size() > 96 ? 96 : dec.size());
+            for (char& c : dh) { if (c == '\r' || c == '\n' || c == '\t') c = ' '; }
+            o << "\n[diag] ext.decode=OK head=" << dh << (dec.size() > 96 ? "..." : "");
+        } else {
+            o << "\n[diag] ext.decode=FAIL(!!换表/编码异常，浏览器会拒绝指纹)";
+        }
+    } else {
+        o << "\n[diag] ext.decode=SKIP(empty)";
+    }
+    o << "\n";
+    // 三键逐项展开
+    o << "[diag] arg.ud=" << DiagArgOf(cmdN, "--user-data-dir=") << "\n";
+    o << "[diag] arg.rdp=" << DiagArgOf(cmdN, "--remote-debugging-port=") << "\n";
+    o << "[diag] arg.ext.present=" << (extVal.empty() ? "no" : "yes") << "\n";
+    // 环境变量
+    std::string envDetail;
+    bool envHit = FpDiagEnvAuth(envDetail);
+    o << "[diag] env.AUTH_ELECTRON=" << (envHit ? ("HIT " + envDetail + "(官方filterEnv会删，我方透传)") : "none") << "\n";
+    // 失败建议
+    if (rcS == 1 || rcD == 1) {
+        o << "[diag] hint: 三件套缺失(sc/dc MISSING) -> UserId已回退hash，浏览器可能因StaticConfig路径无效秒退；"
+             "先用指纹配置生成三件套再启动。\n";
+    }
+    if (rcS == 3 || rcD == 3) {
+        o << "[diag] hint: 三件套DECODE_FAIL -> 文件损坏或换表不对，浏览器拒绝指纹；"
+             "从AdsPower官方重导该环境三件套覆盖。\n";
+    }
+    o << "[diag] hint: 若3秒退出且零[browser]输出 -> GUI子系统无控制台可写，"
+         "复制[diag]manual行到cmd手工跑，看弹窗/退出码。\n";
+    o << "[diag] manual=" << cmdN << "\n";
+    o << "[diag] ===== launch diag end =====";
+    return o.str();
+}
+
 // ================= 进程树关闭 =================
 // 枚举全部进程，比对命令行中的 --user-data-dir"<profileDir>"（大小写不敏感），
 // 命中则 TerminateProcess。Toolhelp 读不到命令行时退回 false，由调用方用 launcher 句柄兜底。

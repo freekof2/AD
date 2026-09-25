@@ -5,6 +5,7 @@
 #include "SunLauncher.h"
 #include "fingerprint.h"
 #include "fp_ui.h"
+#include <tlhelp32.h> // diag-04 失败现场取证：CreateToolhelp32Snapshot 枚举残留进程
 
 static AppState g;
 
@@ -394,17 +395,67 @@ static bool StartOneLocked(const std::wstring& name) {
 
     HANDLE hProc = NULL; DWORD pid = 0, err = 0;
     LOG(L"---- 启动 " + name + L" ----");
+    // diag-01: 启动前环境变量现场（AUTH/ELECTRON_RUN_AS_NODE 有无，官方会删、我方透传）
+    {
+        std::string envDetail;
+        bool hit = FpDiagEnvAuth(envDetail);
+        LOG(L"diag env AUTH/ELECTRON_RUN_AS_NODE=" + W(envDetail) + (hit ? L" (HIT)" : L" (none)"));
+    }
     if (!LaunchSunBrowser(exe, g.cfg.sunBrowserDir, args, &hProc, &pid, &err)) {
         std::wstring m = L"CreateProcess 失败 err=" + std::to_wstring(err) + L"，见 debug.log";
         LOG(m); SetStatus(m); return false;
     }
-    ::Sleep(3000);
+    // diag-02: 诊断块（exe/三件套/sp/ext/三键/env/hint/manual，一次启动全部现场）
+    LOG(W(FpDiagDumpLaunch(exe, g.cfg.sunBrowserDir, dataDir, port, uiExtra, args, pid)));
+    // diag-03: 轮询式存活检查（每 500ms 采样一次，共 6 次；记录每次退出码 + 存活态）
     DWORD code = 0;
-    if (::GetExitCodeProcess(hProc, &code) && code != STILL_ACTIVE) {
+    bool exitedEarly = false;
+    for (int i = 0; i < 6; i++) {
+        ::Sleep(500);
+        DWORD c = 0;
+        if (::GetExitCodeProcess(hProc, &c) && c != STILL_ACTIVE) {
+            code = c;
+            exitedEarly = true;
+            LOG(L"diag poll t=" + std::to_wstring((i + 1) * 500) + L"ms pid=" +
+                std::to_wstring(pid) + L" EXIT code=" + std::to_wstring(c) +
+                L" (signed=" + std::to_wstring((LONG)c) + L")");
+            break;
+        }
+        LOG(L"diag poll t=" + std::to_wstring((i + 1) * 500) + L"ms pid=" +
+            std::to_wstring(pid) + L" ALIVE");
+    }
+    if (exitedEarly) {
         LONG scode = (LONG)code;
         std::wstring m = L"SunBrowser 3 秒内退出 exit=" + std::to_wstring(code) +
-            L" (signed=" + std::to_wstring(scode) + L")，[browser] 输出与完整命令见 debug.log";
+            L" (signed=" + std::to_wstring(scode) + L")，[browser]/[diag] 输出与完整命令见 debug.log";
         LOG(m + L" pid=" + std::to_wstring(pid));
+        // diag-04: 失败现场取证（残留进程/DevToolsActivePort/LOCK/子进程输出计数）
+        {
+            HANDLE snap = ::CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+            if (snap != INVALID_HANDLE_VALUE) {
+                PROCESSENTRY32W pe{};
+                pe.dwSize = sizeof(pe);
+                int nSun = 0;
+                if (::Process32FirstW(snap, &pe)) {
+                    do {
+                        std::wstring xn = pe.szExeFile;
+                        for (auto& ch : xn) ch = towlower(ch);
+                        if (xn == L"sunbrowser.exe" || xn == L"chrome.exe") nSun++;
+                    } while (::Process32NextW(snap, &pe));
+                }
+                ::CloseHandle(snap);
+                LOG(L"diag forensics残留 SunBrowser/chrome 进程数=" + std::to_wstring(nSun));
+            }
+            std::wstring dtap = dataDir + L"\\DevToolsActivePort";
+            DWORD adt = ::GetFileAttributesW(dtap.c_str());
+            LOG(L"diag forensics DevToolsActivePort=" +
+                std::wstring(adt == INVALID_FILE_ATTRIBUTES ? L"缺失（监听未起或已清）" : L"存在（ws 可能已起，看端口连通性）"));
+            DWORD alk = ::GetFileAttributesW((dataDir + L"\\LOCK").c_str());
+            LOG(L"diag forensics LOCK=" +
+                std::wstring(alk == INVALID_FILE_ATTRIBUTES ? L"缺失" : L"存在（异常残留会锁目录）"));
+            LOG(L"diag forensics若上方零[browser]行+残留0+DevTools缺失=GUI静默早退；"
+                L"复制[diag]manual行到cmd手工跑，看弹窗/退出码。");
+        }
         ::CloseHandle(hProc);
         SetStatus(m);
         return false;

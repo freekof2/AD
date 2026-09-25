@@ -190,26 +190,45 @@ bool LaunchSunBrowser(const std::wstring& exe, const std::wstring& workDir,
     ::SetHandleInformation(hRead, HANDLE_FLAG_INHERIT, 0);
 
     // 日志线程：把子进程输出逐行写入 debug.log
+    // diag：统计行数/字节数/首行（GUI 子系统无控制台时零输出本身就是证据），
+    // 结束时写 [browser-eof] 汇总行，便于与轮询退出码对齐。
     HANDLE hReadCopy = hRead;
     std::thread([hReadCopy]() {
         char buf[4096];
         DWORD got = 0;
         std::string pend;
+        unsigned long nLines = 0, nBytes = 0;
+        bool firstLogged = false;
         for (;;) {
             BOOL ok = ::ReadFile(hReadCopy, buf, sizeof(buf) - 1, &got, NULL);
             if (!ok || got == 0) break;
             buf[got] = 0;
+            nBytes += got;
             pend += buf;
             size_t p = 0, q = 0;
             while ((q = pend.find('\n', p)) != std::string::npos) {
                 std::string line = pend.substr(p, q - p);
                 while (!line.empty() && (line.back() == '\r')) line.pop_back();
+                nLines++;
+                if (!firstLogged) {
+                    LOG(L"[browser-first] " + W(line));
+                    firstLogged = true;
+                }
                 LOG(L"[browser] " + W(line));
                 p = q + 1;
             }
             pend = pend.substr(p);
         }
-        if (!pend.empty()) LOG(L"[browser] " + W(pend));
+        if (!pend.empty()) {
+            nLines++;
+            if (!firstLogged) LOG(L"[browser-first] " + W(pend));
+            LOG(L"[browser] " + W(pend));
+        }
+        DWORD gle = ::GetLastError();
+        LOG(L"[browser-eof] lines=" + std::to_wstring(nLines) +
+            L" bytes=" + std::to_wstring(nBytes) +
+            L" gle=" + std::to_wstring(gle) +
+            L"（零行零字节+gle=109/管道结束=GUI静默早退典型；有行先看[browser-first]）");
         ::CloseHandle(hReadCopy);
     }).detach();
 
