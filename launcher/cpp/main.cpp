@@ -384,12 +384,13 @@ static bool StartOneLocked(const std::wstring& name) {
     ::CreateDirectoryW(dataDir.c_str(), NULL);
     ::CreateDirectoryW((dataDir + L"\\Default").c_str(), NULL);
     // 同一 user-data-dir 已有 SunBrowser 在跑时，Chromium 会把新进程当“唤起旧窗口”的
-    // 信使（旧窗口前置 + 新进程秒退），在任务管理器里留下一串标题为 exe 路径的信使窗口。
-    // 启动前先清场：结束同目录残留进程，保证一次启动只留一个浏览器主进程。
+    // 信使（旧窗口前置 + 新进程秒退），并留下一串标题为 exe 路径的信使窗口。
+    // 精确清场：只结束命令行指向本 profile 的残留进程（FpKillProfileTree 精确匹配），
+    // 其它 profile 的进程不动（多开互不干扰）。批量启动时逐个清场，不跨 profile 全杀。
     {
         std::vector<DWORD> stale = FpKillProfileTree(dataDir);
         if (!stale.empty()) {
-            LOG(L"diag 启动前清场：结束同目录残留 " + std::to_wstring(stale.size()) + L" 个进程");
+            LOG(L"diag 启动前清场(仅本profile) " + name + L"：结束 " + std::to_wstring(stale.size()) + L" 个残留进程");
             ::Sleep(800);
         }
     }

@@ -169,6 +169,13 @@ jobs:
             if ($fpcProxy -notmatch [regex]::Escape($s)) { throw "missing proxy-fill symbol '$s' in fp_ui.cpp" }
             Write-Host "proxyfill ok: $s"
           }
+          # 2a6. 精确树杀：多开互不干扰（根因：旧树杀全杀同名 SunBrowser，
+          #     起第二个 profile 时把第一个的浏览器杀掉，一个能开网址一个不能）
+          foreach ($s in @("ProcCmdlineHasDir", "NtQueryInformationProcess", "启动前清场(仅本profile)")) {
+            $hit = ($fpCpp -match [regex]::Escape($s)) -or ((Get-Content launcher\cpp\main.cpp -Raw) -match [regex]::Escape($s))
+            if (-not $hit) { throw "missing treekill symbol '$s'" }
+            Write-Host "treekill ok: $s"
+          }
           # 2b. 原生指纹窗口模块（web-ui 1:1 纯原生重写，字段与 collectFp/applyUiExtra 对齐）
           $fph = Get-Content launcher\cpp\fp_ui.h -Raw
           foreach ($s in @("FpFormData", "proxyPass", "mediaDevices", "webglMeta", "webgpu",

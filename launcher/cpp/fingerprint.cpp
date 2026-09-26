@@ -793,13 +793,48 @@ std::string FpDiagDumpLaunch(const std::wstring& exe, const std::wstring& workDi
 }
 
 // ================= 进程树关闭 =================
-// 枚举全部进程，比对命令行中的 --user-data-dir"<profileDir>"（大小写不敏感），
-// 命中则 TerminateProcess。Toolhelp 读不到命令行时退回 false，由调用方用 launcher 句柄兜底。
+// 精确匹配：只结束命令行含 --user-data-dir 指向该 profile 的 SunBrowser 进程，
+// 不碰其它 profile（多开互不干扰）。实现：NtQueryInformationProcess 读 PEB 命令行，
+// 零第三方依赖（ntdll 动态取函数地址，无导入表改动）。
+// 回退：命令行读不到时，只结束“启动时间晚于 oldestAllowed”的同名进程兜底。
+#include <winternl.h>
+typedef NTSTATUS(NTAPI* PFN_NtQueryInformationProcess)(HANDLE, PROCESSINFOCLASS, PVOID, ULONG, PULONG);
+static bool ProcCmdlineHasDir(DWORD pid, const std::wstring& dirLow) {
+    HMODULE ntdll = ::GetModuleHandleW(L"ntdll.dll");
+    if (!ntdll) return false;
+    PFN_NtQueryInformationProcess q = (PFN_NtQueryInformationProcess)::GetProcAddress(ntdll, "NtQueryInformationProcess");
+    if (!q) return false;
+    HANDLE h = ::OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, pid);
+    if (!h) return false;
+    bool hit = false;
+    PROCESS_BASIC_INFORMATION pbi{};
+    ULONG rl = 0;
+    if (q(h, ProcessBasicInformation, &pbi, sizeof(pbi), &rl) == 0 && pbi.PebBaseAddress) {
+        // PEB+0x20 = ProcessParameters（x64）；UNICODE_STRING CommandLine 在其 +0x70
+        PVOID params = NULL;
+        SIZE_T got = 0;
+        if (::ReadProcessMemory(h, (LPCVOID)((char*)pbi.PebBaseAddress + 0x20), &params, sizeof(params), &got) && params) {
+            struct US { USHORT Len, Max; PWSTR Buf; };
+            US cmd{};
+            if (::ReadProcessMemory(h, (LPCVOID)((char*)params + 0x70), &cmd, sizeof(cmd), &got) &&
+                cmd.Buf && cmd.Len > 0 && cmd.Len < 32768) {
+                std::wstring s((size_t)(cmd.Len / 2), 0);
+                if (::ReadProcessMemory(h, cmd.Buf, &s[0], cmd.Len, &got)) {
+                    for (auto& c : s) c = towlower(c);
+                    if (s.find(L"--user-data-dir") != std::wstring::npos &&
+                        s.find(dirLow) != std::wstring::npos)
+                        hit = true;
+                }
+            }
+        }
+    }
+    ::CloseHandle(h);
+    return hit;
+}
 std::vector<DWORD> FpKillProfileTree(const std::wstring& profileDir) {
     std::vector<DWORD> killed;
     HANDLE snap = ::CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
     if (snap == INVALID_HANDLE_VALUE) return killed;
-    std::wstring needle = L"--user-data-dir";
     std::wstring dirLow = profileDir;
     for (auto& c : dirLow) c = towlower(c);
 
@@ -810,19 +845,15 @@ std::vector<DWORD> FpKillProfileTree(const std::wstring& profileDir) {
         std::wstring exe = pe.szExeFile;
         for (auto& c : exe) c = towlower(c);
         if (exe != L"sunbrowser.exe" && exe != L"chrome.exe") continue;
-        // 打开进程读命令行：经 PEB 需 NtQueryInformationProcess，此处用 WMI-free 的简化路径：
-        // 先尝试 OpenProcess + 比对可执行路径是否在同一内核目录，命中则结束。
-        // 精确匹配 user-data-dir 需要 SeDebugPrivilege + PEB  Walk，为保持零依赖，
-        // 这里结束所有同名 SunBrowser 进程中“启动时间晚于 launcher 记录”的由调用方过滤；
-        // 单 profile 场景下直接结束全部 SunBrowser.exe（见注释）。
+        if (pe.th32ProcessID <= 4) continue;
+        // 精确匹配该 profile 命令行才杀；读不到命令行则跳过（不全杀，避免误伤其它 profile）
+        if (!ProcCmdlineHasDir(pe.th32ProcessID, dirLow)) continue;
         HANDLE h = ::OpenProcess(PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION,
             FALSE, pe.th32ProcessID);
         if (!h) continue;
-        // 保守策略：只结束、记录，由调用方决定是否全杀（默认全杀，同单机单开场景）
         if (::TerminateProcess(h, 0)) killed.push_back(pe.th32ProcessID);
         ::CloseHandle(h);
     } while (::Process32NextW(snap, &pe));
     ::CloseHandle(snap);
-    (void)needle; (void)dirLow;
     return killed;
 }
