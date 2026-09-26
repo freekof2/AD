@@ -163,6 +163,12 @@ jobs:
             if ($fpcProxy -notmatch [regex]::Escape($s)) { throw "missing proxy-save symbol '$s' in fp_ui.cpp" }
             Write-Host "proxysave ok: $s"
           }
+          # 2a5. 代理回填：ui 存档优先，static 仅后备（根因：static 旧值无条件覆盖 ui 新值，
+          #     改了 SOCKS5 下次打开看不到，表现为“没有保存”）
+          foreach ($s in @("uiHasProxy", "指纹载入 代理=ui存档", "指纹载入 代理=static后备")) {
+            if ($fpcProxy -notmatch [regex]::Escape($s)) { throw "missing proxy-fill symbol '$s' in fp_ui.cpp" }
+            Write-Host "proxyfill ok: $s"
+          }
           # 2b. 原生指纹窗口模块（web-ui 1:1 纯原生重写，字段与 collectFp/applyUiExtra 对齐）
           $fph = Get-Content launcher\cpp\fp_ui.h -Raw
           foreach ($s in @("FpFormData", "proxyPass", "mediaDevices", "webglMeta", "webgpu",

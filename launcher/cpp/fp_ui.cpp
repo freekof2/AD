@@ -1066,13 +1066,38 @@ static LRESULT CALLBACK FpWndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
                 }
                 v = FpJsonGet(sj, "DeviceName"); if (!v.empty()) { w->form.devName = WJ(v); }
                 v = FpJsonGet(sj, "MacAddress"); if (!v.empty()) { w->form.mac = WJ(v); }
-                // ProxyChain 对象粗取 host/port/scheme（与 web-ui applyImportResult 一致）
-                std::string pc = FpJsonGet(sj, "ProxyChain");
-                if (!pc.empty()) {
-                    std::string hh = FpJsonGet(pc, "host"), pp = FpJsonGet(pc, "port"), ss = FpJsonGet(pc, "scheme");
-                    if (hh.size() >= 2 && hh.front() == '"') w->form.proxyHost = WJ(hh);
-                    if (pp.size() >= 2 && pp.front() == '"') w->form.proxyPort = WJ(pp); else w->form.proxyPort = W(pp);
-                    if (ss.size() >= 2 && ss.front() == '"') w->form.proxyType = WJ(ss);
+                // ProxyChain 回填（ui 优先：ui 存档是用户最后一次保存的值；static 只在
+                // ui 缺代理字段时作为后备）。根因：旧逻辑 static 回填无条件覆盖 ui，
+                // 用户改了 SOCKS5 点保存后，static 还没写新值时 static 为空/旧值，
+                // 下次打开 static 旧值覆盖 ui 新值，表现为“修改了没保存、看不到修改后内容”。
+                {
+                    std::string hh = FpJsonGet(ui, "proxyHost"), pp = FpJsonGet(ui, "proxyPort"),
+                                  ss = FpJsonGet(ui, "proxyType"), uu = FpJsonGet(ui, "proxyUser"),
+                                  pw = FpJsonGet(ui, "proxyPass");
+                    auto unq = [](const std::string& v) -> std::wstring {
+                        if (v.size() >= 2 && v.front() == '"' && v.back() == '"')
+                            return WJ(v);
+                        return W(v);
+                    };
+                    bool uiHasProxy = (!hh.empty() && hh != "\"\"") || (!pp.empty() && pp != "\"\"");
+                    if (uiHasProxy) {
+                        if (!ss.empty() && ss != "\"\"") w->form.proxyType = unq(ss);
+                        if (!hh.empty() && hh != "\"\"") w->form.proxyHost = unq(hh);
+                        if (!pp.empty() && pp != "\"\"") w->form.proxyPort = unq(pp);
+                        if (!uu.empty() && uu != "\"\"") w->form.proxyUser = unq(uu);
+                        if (!pw.empty() && pw != "\"\"") w->form.proxyPass = unq(pw);
+                        LOG(L"指纹载入 代理=ui存档 " + w->profile);
+                    } else {
+                        std::string pc = FpJsonGet(sj, "ProxyChain");
+                        if (!pc.empty() && pc != "[]") {
+                            std::string h2 = FpJsonGet(pc, "host"), p2 = FpJsonGet(pc, "port"),
+                                          s2 = FpJsonGet(pc, "scheme");
+                            if (h2.size() >= 2 && h2.front() == '"') w->form.proxyHost = WJ(h2);
+                            if (p2.size() >= 2 && p2.front() == '"') w->form.proxyPort = WJ(p2); else if (!p2.empty()) w->form.proxyPort = W(p2);
+                            if (s2.size() >= 2 && s2.front() == '"') w->form.proxyType = WJ(s2);
+                            LOG(L"指纹载入 代理=static后备 " + w->profile);
+                        }
+                    }
                 }
             }
             if (FpLoadDynamicJson(dd, dj) && !dj.empty()) {
