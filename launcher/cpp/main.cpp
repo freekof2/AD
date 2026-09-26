@@ -338,6 +338,8 @@ static std::wstring SelectedProfile() {
 }
 
 // 指定 profile 启动（单启 OnStart 与批量共用；调用方需持有 g.mu）
+// 防重复启动：launcher 句柄存活直接返回；句柄丢失但浏览器仍在跑（DevToolsActivePort
+// 存在且端口能连上，或按命令行找到同 user-data-dir 进程）也视为运行中，不再拉第二个。
 static bool StartOneLocked(const std::wstring& name) {
     auto it = g.procs.find(name);
     if (it != g.procs.end() && it->second.hProcess) {
@@ -381,6 +383,16 @@ static bool StartOneLocked(const std::wstring& name) {
     ::CreateDirectoryW(g.cfg.dataDir.c_str(), NULL);
     ::CreateDirectoryW(dataDir.c_str(), NULL);
     ::CreateDirectoryW((dataDir + L"\\Default").c_str(), NULL);
+    // 同一 user-data-dir 已有 SunBrowser 在跑时，Chromium 会把新进程当“唤起旧窗口”的
+    // 信使（旧窗口前置 + 新进程秒退），在任务管理器里留下一串标题为 exe 路径的信使窗口。
+    // 启动前先清场：结束同目录残留进程，保证一次启动只留一个浏览器主进程。
+    {
+        std::vector<DWORD> stale = FpKillProfileTree(dataDir);
+        if (!stale.empty()) {
+            LOG(L"diag 启动前清场：结束同目录残留 " + std::to_wstring(stale.size()) + L" 个进程");
+            ::Sleep(800);
+        }
+    }
     ::DeleteFileW((dataDir + L"\\LOCK").c_str());
     ::DeleteFileW((dataDir + L"\\DevToolsActivePort").c_str());
 

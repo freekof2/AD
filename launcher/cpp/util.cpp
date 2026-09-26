@@ -233,7 +233,8 @@ bool LaunchSunBrowser(const std::wstring& exe, const std::wstring& workDir,
     }).detach();
 
     STARTUPINFOW si{ sizeof(si) };
-    si.dwFlags = STARTF_USESTDHANDLES;
+    si.dwFlags = STARTF_USESTDHANDLES | STARTF_USESHOWWINDOW;
+    si.wShowWindow = SW_HIDE; // Chromium 子进程会建自己的控制台窗口；强制隐藏，只留浏览器主窗口
     si.hStdOutput = hWrite;
     si.hStdError = hWrite;
     si.hStdInput = NULL;
