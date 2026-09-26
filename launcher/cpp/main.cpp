@@ -389,6 +389,8 @@ static bool StartOneLocked(const std::wstring& name) {
         std::wstring m = L"无可用调试端口（" + std::to_wstring(g.cfg.portBase) + L" 起 1000 个全占）";
         LOG(m); SetStatus(m); return false;
     }
+    LOG(L"diag port记账=" + std::to_wstring(port) +
+        L"（仅记ports.json备查；实际传 --remote-debugging-port=0 由浏览器随机，见官方buildLaunchOpt）");
     std::string uiExtra;
     FpLoadUiExtra(dataDir, uiExtra);
     std::wstring args = FpBuildCmdline(dataDir, port, uiExtra);

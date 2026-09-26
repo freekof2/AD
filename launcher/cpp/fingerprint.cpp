@@ -454,16 +454,21 @@ std::wstring FpBuildCmdline(const std::wstring& profileDir, int port,
     (void)profileName; (void)dynamicJson;
 
     std::string ext = FpEncode(sp);
-    // 官方 setSandbox（IS_SUNFLOWER_BROWSER=true）：browserVersion>=20251127 且
-    // kernelSandboxMode 为空时，puppeteer args 追加 --no-sandbox --disable-setuid-sandbox，
-    // 否则 Chromium 沙箱在部分机器上直接早退。离线默认等价行为：跟随官方追加。
-    // 官方 setSunflowerBrowserHeader 另有 --disable-background-mode（仅非 BASE64 模式），
-    // ext 模式不加，保持与 diag ext.decode=OK 的注入体一致。
+    // 官方启动开关（main.min.js 实测原文）：
+    //  - buildLaunchOpt：p=["--protected-disable-safe-open","--remote-debugging-port=0"]，
+    //    即官方用 --remote-debugging-port=0（随机端口）+ --protected-disable-safe-open；
+    //  - setSandbox（IS_SUNFLOWER_BROWSER=true）：browserVersion>=20251127 且
+    //    kernelSandboxMode 为空时追加 --no-sandbox --disable-setuid-sandbox；
+    //  - setSunflowerBrowserHeader 另有 --disable-background-mode（仅非 BASE64 模式），
+    //    ext 模式不加，保持与 diag ext.decode=OK 的注入体一致。
+    // 离线等价行为：固定端口改随机 0（消端口占用竞态）+ 补 safe-open/sandbox 两组。
     std::wstring cmd = L"--user-data-dir=\"" + profileDir +
-        L"\" --profile-directory=Default --remote-debugging-port=" + std::to_wstring(port) +
+        L"\" --profile-directory=Default --remote-debugging-port=0"
         L" --no-first-run --no-default-browser-check --no-sandbox --disable-setuid-sandbox"
+        L" --protected-disable-safe-open"
         L" --extended-parameters=" + W(ext) +
         L" --enable-logging=stderr --v=0 about:blank";
+    (void)port; // 端口改由浏览器随机分配（官方 --remote-debugging-port=0），port 仅记 ports.json 备查
     return cmd;
 }
 
@@ -618,7 +623,10 @@ std::string FpDiagDumpLaunch(const std::wstring& exe, const std::wstring& workDi
     o << "\n";
     // 三键逐项展开
     o << "[diag] arg.ud=" << DiagArgOf(cmdN, "--user-data-dir=") << "\n";
-    o << "[diag] arg.rdp=" << DiagArgOf(cmdN, "--remote-debugging-port=") << "\n";
+    o << "[diag] arg.rdp=" << DiagArgOf(cmdN, "--remote-debugging-port=")
+      << "（官方=0随机；若此处非0即偏离官方buildLaunchOpt）\n";
+    o << "[diag] arg.safeopen=" << (cmdN.find("--protected-disable-safe-open") == std::string::npos ? "MISSING(偏离官方)" : "present") << "\n";
+    o << "[diag] arg.nosandbox=" << (cmdN.find("--no-sandbox") == std::string::npos ? "MISSING" : "present") << "\n";
     o << "[diag] arg.ext.present=" << (extVal.empty() ? "no" : "yes") << "\n";
     // 环境变量
     std::string envDetail;
