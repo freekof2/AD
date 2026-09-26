@@ -142,6 +142,15 @@ jobs:
           $fpjs2 = Get-Content web-ui\js\fp.js -Raw
           if ($fpjs2 -match "writeIfChanged\(cookiesName\(fbcc\), fpEncode\(payload\.cookies\)\)") { throw "web-ui cookies must be plaintext, not fpEncode" }
           Write-Host "web-ui cookies plaintext ok"
+          # 2a3. 指纹保存链路：EDIT 上限放宽 + JSON 全转义 + 保存结果日志
+          #     （根因：cookie 16KB+ 被 EDIT 默认 30K 截断 / JEsc 未转义 \n\r\t 导致存档断裂）
+          $fpcSave = Get-Content launcher\cpp\fp_ui.cpp -Raw
+          foreach ($s in @("EM_SETLIMITTEXT", "指纹保存 ui ", "指纹保存 cookies ")) {
+            if ($fpcSave -notmatch [regex]::Escape($s)) { throw "missing save-link symbol '$s' in fp_ui.cpp" }
+            Write-Host "fpsave ok: $s"
+          }
+          if ($fpcSave -notmatch '\\u00') { throw "JEsc must escape control chars (\u00XX)" }
+          Write-Host "fpsave JEsc full-escape ok"
           # 2b. 原生指纹窗口模块（web-ui 1:1 纯原生重写，字段与 collectFp/applyUiExtra 对齐）
           $fph = Get-Content launcher\cpp\fp_ui.h -Raw
           foreach ($s in @("FpFormData", "proxyPass", "mediaDevices", "webglMeta", "webgpu",

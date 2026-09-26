@@ -4,16 +4,52 @@
 #include <ctime>
 
 static std::string JEsc(const std::wstring& w) {
+    // JSON 字符串全转义：" \ / \b \f \n \r \t + \u00XX 控制字符。
+    // 根因：旧版只转义 " \，cookie（16KB，含 \n\r\t 等）直写进 ui 存档导致 JSON 断裂，
+    // 下次 FpFormFromUiJson 读回错位，表现为“修改指纹配置无法保存”（实际是存档已坏）。
     std::string s = N(w), o;
-    for (char c : s) { if (c == '"' || c == '\\') o += '\\'; o += c; }
+    static const char* hex = "0123456789abcdef";
+    for (unsigned char c : s) {
+        if (c == '"') o += "\\\"";
+        else if (c == '\\') o += "\\\\";
+        else if (c == '\b') o += "\\b";
+        else if (c == '\f') o += "\\f";
+        else if (c == '\n') o += "\\n";
+        else if (c == '\r') o += "\\r";
+        else if (c == '\t') o += "\\t";
+        else if (c < 0x20) { o += "\\u00"; o += hex[c >> 4]; o += hex[c & 15]; }
+        else o += (char)c;
+    }
     return o;
 }
 static std::wstring WJ(const std::string& raw) {
-    // FpJsonGet 返回含引号的原始片段，去引号转回 wstring
+    // FpJsonGet 返回含引号的原始片段，去引号转回 wstring。
+    // 与 JEsc 对应：支持 \" \\ \/ \b \f \n \r \t \uXXXX 全转义。
     if (raw.size() >= 2 && raw.front() == '"' && raw.back() == '"') {
         std::string s = raw.substr(1, raw.size() - 2), o;
         for (size_t i = 0; i < s.size(); i++) {
-            if (s[i] == '\\' && i + 1 < s.size()) { o += s[i + 1]; i++; }
+            if (s[i] == '\\' && i + 1 < s.size()) {
+                char n = s[i + 1];
+                if (n == 'b') { o += '\b'; i++; }
+                else if (n == 'f') { o += '\f'; i++; }
+                else if (n == 'n') { o += '\n'; i++; }
+                else if (n == 'r') { o += '\r'; i++; }
+                else if (n == 't') { o += '\t'; i++; }
+                else if (n == 'u' && i + 5 < s.size()) {
+                    // \u00XX（JEsc 只产出 ASCII 控制字符范围）
+                    auto hv = [](char h) -> int {
+                        if (h >= '0' && h <= '9') return h - '0';
+                        if (h >= 'a' && h <= 'f') return h - 'a' + 10;
+                        if (h >= 'A' && h <= 'F') return h - 'A' + 10;
+                        return -1;
+                    };
+                    int h1 = hv(s[i + 2]), h2 = hv(s[i + 3]), h3 = hv(s[i + 4]), h4 = hv(s[i + 5]);
+                    if (h1 >= 0 && h2 >= 0 && h3 >= 0 && h4 >= 0 && h1 == 0 && h2 == 0) {
+                        o += (char)((h3 << 4) | h4);
+                        i += 5;
+                    } else { o += n; i++; }
+                } else { o += n; i++; }
+            }
             else o += s[i];
         }
         return W(o);
@@ -523,6 +559,9 @@ static void FpMkLabel(HWND p, FpWnd* w, int id, const wchar_t* t, int x, int y, 
 }
 static void FpMkEdit(HWND p, FpWnd* w, int id, int x, int y, int ww, int hh = 24) {
     w->ctl[id - F_BASE] = FpMk(p, L"EDIT", L"", WS_BORDER | ES_AUTOHSCROLL, x, y, ww, hh, id, (HINSTANCE)::GetWindowLongPtrW(p, GWLP_HINSTANCE));
+    // EDIT 默认文本上限 30000 字符；cookie（16KB+）等大字段会被静默截断，
+    // 截断的 JSON 下次读回即错位，表现为“无法保存”。统一放宽到 1MB。
+    ::SendMessageW(w->ctl[id - F_BASE], EM_SETLIMITTEXT, 1048576, 0);
 }
 static void FpMkBtn(HWND p, FpWnd* w, int id, const wchar_t* t, int x, int y, int ww, int hh = 28) {
     w->ctl[id - F_BASE] = FpMk(p, L"BUTTON", t, BS_PUSHBUTTON, x, y, ww, hh, id, (HINSTANCE)::GetWindowLongPtrW(p, GWLP_HINSTANCE));
@@ -1390,14 +1429,30 @@ static LRESULT CALLBACK FpWndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
                 ui = FpJsonSet(ui, "tlsSwitch", (w->form.disableTls == L"open") ? "\"1\"" : "\"0\"");
                 if (w->form.disableTls == L"open") ui = FpJsonSet(ui, "tls", "\"" + N(w->form.tlsBlacklist) + "\"");
                 bool oku = FpSaveUiExtra(dd, ui);
+                // 保存结果进 debug.log（fp_ui.h 已含 SunLauncher.h，LOG/W 可直接用）：
+                // 写盘失败（权限/路径）不再静默吞掉；cookie 长度同步记一笔。
+                {
+                    std::string ck = N(w->form.cookie);
+                    LOG(L"指纹保存 ui " + std::wstring(oku ? L"OK" : L"FAIL") +
+                        L" uiLen=" + std::to_wstring(ui.size()) +
+                        L" cookieLen=" + std::to_wstring(ck.size()) + L" " + w->profile);
+                    ::SetWindowTextW(w->hStatus, (oku ? L"已保存（ui 存档 + cookies）" : L"保存失败：ui 存档写盘失败，看目录权限"));
+                }
                 (void)oku;
             }
             // 2. cookies 清洗后写三件套（CLIENT_HOST 剥离、BROWSER_ID 校正逻辑已在载入时处理，此处直接写）
+            // 保存结果同样进 debug.log：cookies 写盘失败不再静默。
             bool okc = true;
             if (!w->form.cookie.empty()) {
                 std::string ck = N(w->form.cookie);
                 // 非 JSON 则跳过 cookies 写盘（与 web-ui 一致）
-                if (!ck.empty() && ck.front() == '[') okc = FpSaveCookiesJson(dd, ck);
+                if (!ck.empty() && ck.front() == '[') {
+                    okc = FpSaveCookiesJson(dd, ck);
+                    LOG(L"指纹保存 cookies " + std::wstring(okc ? L"OK" : L"FAIL") +
+                        L" len=" + std::to_wstring(ck.size()) + L" " + w->profile);
+                } else {
+                    LOG(L"指纹保存 cookies SKIP（非JSON数组，不写盘） " + w->profile);
+                }
             }
             // 3. fingerprint_config 供参考：如 static 缺失则按表单建最小 static（含保护键回填见 fp/save）
             (void)okc;
