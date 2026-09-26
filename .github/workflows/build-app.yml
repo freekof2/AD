@@ -120,12 +120,28 @@ jobs:
           # 2. C++ 指纹模块必备符号（换表/三件套/注入/树杀/侧车）
           $cpp = Get-Content launcher\cpp\fingerprint.cpp -Raw
           foreach ($s in @("FpEncode", "FpDecode", "FpMd5Hex", "FpBuildCmdline", "FpKillProfileTree",
-                           "FpStaticName", "FpDynamicName", "FpCookiesName",
+                           "FpStaticName", "FpDynamicName", "FpCookiesName", "FpCmdTooLong",
+                           "kExtraAllow", "debugConsole",
                            "hTy1bfRJz4nLPcBCO7WtmNIaGvVeul5Zo8kq32UxrYw_-0gsjp96SDFXQiEMKdHA",
                            "ui_fingerprint.json")) {
             if ($cpp -notmatch [regex]::Escape($s)) { throw "missing symbol '$s' in fingerprint.cpp" }
             Write-Host "symbol ok: $s"
           }
+          # 2a. ext 防膨胀：白名单外大字段（cookie/raw cookie 全文）不得并入 ext；
+          #     ext 超 24000 即超限（CreateProcess 上限 32767，err=206 根因）。
+          #     白名单 kExtraAllow 必须存在且包含官方小标量键；ui 大字段不得出现在白名单。
+          foreach ($s in @("DisableContainer", "HardwareConcurrency", "GeolocationSetting")) {
+            if ($cpp -notmatch [regex]::Escape($s)) { throw "ext allowlist key '$s' missing in fingerprint.cpp" }
+            Write-Host "allowlist ok: $s"
+          }
+          foreach ($s in @('"cookie"', '"language"', '"webglConfig"', '"screenResolution"')) {
+            if ($cpp -match ('kExtraAllow[^;]*' + [regex]::Escape($s))) { throw "ui big field $s must not be in kExtraAllow" }
+          }
+          Write-Host "allowlist excludes ui big fields ok"
+          # 2a2. web-ui cookies 与 C++ 一致：明文直写（官方 setCookie 即 writeFile 明文）
+          $fpjs2 = Get-Content web-ui\js\fp.js -Raw
+          if ($fpjs2 -match "writeIfChanged\(cookiesName\(fbcc\), fpEncode\(payload\.cookies\)\)") { throw "web-ui cookies must be plaintext, not fpEncode" }
+          Write-Host "web-ui cookies plaintext ok"
           # 2b. 原生指纹窗口模块（web-ui 1:1 纯原生重写，字段与 collectFp/applyUiExtra 对齐）
           $fph = Get-Content launcher\cpp\fp_ui.h -Raw
           foreach ($s in @("FpFormData", "proxyPass", "mediaDevices", "webglMeta", "webgpu",

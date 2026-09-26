@@ -406,6 +406,20 @@ static bool StartOneLocked(const std::wstring& name) {
     std::string uiExtra;
     FpLoadUiExtra(dataDir, uiExtra);
     std::wstring args = FpBuildCmdline(dataDir, port, uiExtra);
+    // 命令行超限守卫：CreateProcess 上限 32767（err=206）。超限直接拒绝启动，
+    // 记 ext.len 供判读（根因多为 uiExtra 大字段并入 ext，修 FpBuildCmdline 白名单）。
+    {
+        size_t extLen = 0;
+        if (FpCmdTooLong(args, extLen)) {
+            std::wstring m = L"拒绝启动：命令行超限（ext.len=" + std::to_wstring(extLen) +
+                L"，上限约24000）。uiExtra 大字段不应进 ext，见 FpBuildCmdline 白名单；" +
+                L"先删该 profile 的 ui_fingerprint.json 重试，ext 应回落到 ~468。";
+            LOG(m);
+            LOG(W(FpDiagDumpLaunch(exe, g.cfg.sunBrowserDir, dataDir, port, uiExtra, args, 0)));
+            SetStatus(m);
+            return false;
+        }
+    }
 
     HANDLE hProc = NULL; DWORD pid = 0, err = 0;
     LOG(L"---- 启动 " + name + L" ----");

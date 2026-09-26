@@ -415,13 +415,27 @@ std::wstring FpBuildCmdline(const std::wstring& profileDir, int port,
     // 运行时噪声种子：官方 canvasId?canvasId:fbccId；离线无 canvasId，直接用 fbccId
     sp += ",\"CanvasMark\":\"" + JsonEscapeStr(fbcc) +
           "\",\"WebGLMark\":\"" + JsonEscapeStr(fbcc) + "\"";
-    // extra 白名单合并：只允许官方 static 之外的、且非保护键的顶层键进入
+    // extra 白名单合并：只允许官方 static 之外的、且非保护键的顶层键进入。
+    // 白名单（与官方 sunBrowserParams 顶层键对齐，非 ui 存档全量字段）：
+    // 仅 mergedExtra 显式允许的键可进 ext；ui_fingerprint.json 的 cookie/ua/lang/
+    // webglConfig 等大字段一律不进 ext（ext 只传三文件路径指针，不内联指纹内容）。
+    // 背景：err=206（命令行超 32767）根因即全量 uiExtra（cookie 16KB 等）被并入 ext；
+    // k1c6pr18 保存后 ext 达 39KB 直接 CreateProcess 失败，k1gyly5t 未保存故 ext=468 正常。
     static const char* kProtected[] = { "UserId","StaticConfig","DynamicConfig","CookiesFile",
         "CanvasMark","WebGLMark","AudioFp","ClientRectFp","TimeZone","Geoposition",
         "WebRTCAddress","DisableWebRTC","ProxyChain","DeviceName","MacAddress",
         "MediaDevices","TTSEngines","Langs","AcceptLang", NULL };
+    static const char* kExtraAllow[] = {
+        // 官方 sunBrowserParams 常用小标量（与 main.min.js set* 系列写入键对齐）
+        "DisableContainer","LoadExtensionErrorBox","ForceProcessExit","StartTime",
+        "Platform","Vendor","ScreenSize","HardwareConcurrency","DeviceMemory",
+        "EnableDoNotTrack","FlashPluginSetting","FlashPluginPath","MaxTouchPoints",
+        "NewMobileMode","MobileModeFixedResolution","DisabledFonts","AllowScanPorts",
+        "GeolocationSetting","ProxyUser","ProxyPassword","WebRTCLocalAddress",
+        "WebRTCStun","WebRTCTurn","ClientRectFp","AudioFp","TimeZone","Geoposition",
+        "WebRTCAddress","DisableWebRTC", NULL };
     if (!extraSunParamsJson.empty()) {
-        // 粗解析顶层 key: value，逐个过白名单后 FpJsonSet 并入
+        // 粗解析顶层 key: value，白名单命中且非保护键才 FpJsonSet 并入
         size_t q = SkipWs(extraSunParamsJson, 0);
         if (q < extraSunParamsJson.size() && extraSunParamsJson[q] == '{') {
             size_t r = q + 1;
@@ -441,7 +455,14 @@ std::wstring FpBuildCmdline(const std::wstring& profileDir, int port,
                 for (int i = 0; kProtected[i]; i++) {
                     if (k == kProtected[i]) { prot = true; break; }
                 }
-                if (!prot && !v.empty()) {
+                bool allowed = false;
+                if (!prot) {
+                    for (int i = 0; kExtraAllow[i]; i++) {
+                        if (k == kExtraAllow[i]) { allowed = true; break; }
+                    }
+                }
+                // 白名单外键直接丢弃（cookie/ua/language/webglConfig/uiLang 等大字段止于 ui 存档）
+                if (allowed && !v.empty() && v.size() <= 512) {
                     std::string merged = FpJsonSet(sp + "}", k, v);
                     if (!merged.empty()) sp = merged.substr(0, merged.size() - 1);
                 }
@@ -477,6 +498,23 @@ std::wstring FpBuildCmdline(const std::wstring& profileDir, int port,
     cmd += L" about:blank";
     (void)port; // 端口改由浏览器随机分配（官方 --remote-debugging-port=0），port 仅记 ports.json 备查
     return cmd;
+}
+
+// FpCmdTooLong：诊断用，ext/命令行是否超限（32767）。返回 true=超限，lenOut=ext 长度。
+bool FpCmdTooLong(const std::wstring& cmdline, size_t& lenOut) {
+    // 取 --extended-parameters= 值长度 + 固定开销估算
+    std::string cmd = N(cmdline);
+    const char* k = "--extended-parameters=";
+    size_t p = cmd.find(k);
+    size_t extLen = 0;
+    if (p != std::string::npos) {
+        size_t s = p + strlen(k);
+        size_t e = cmd.find(' ', s);
+        extLen = ((e == std::string::npos) ? cmd.size() : e) - s;
+    }
+    lenOut = extLen;
+    // 整行 32767 上限；ext 超 24000 即预警（exe 路径+三文件路径另占约 1KB）
+    return (cmd.size() > 30000) || (extLen > 24000);
 }
 
 // ================= 启动诊断（只写 debug.log，不做任何网络 IO） =================

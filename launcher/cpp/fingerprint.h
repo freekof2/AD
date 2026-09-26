@@ -69,6 +69,10 @@ bool FpSaveUiExtra(const std::wstring& profileDir, const std::string& jsonText);
 std::wstring FpBuildCmdline(const std::wstring& profileDir, int port,
     const std::string& extraSunParamsJson);
 
+// FpCmdTooLong：诊断用，ext/命令行是否超限（CreateProcess 上限 32767，超限即 err=206）。
+// 返回 true=超限，lenOut=ext 值长度。调用方在 CreateProcess 前检查，超限直接记日志拒绝启动。
+bool FpCmdTooLong(const std::wstring& cmdline, size_t& lenOut);
+
 // ---------- 启动诊断（只写 debug.log，不做任何网络 IO） ----------
 // FpDiagDumpLaunch：把一次启动的全部现场逐行写入 debug.log（调用方直接 LOG 整块文本）：
 //   [diag] exe/workDir/profileDir/port/pid 三件套文件名+长度+md5(raw)+解码头 64 字符/

@@ -96,7 +96,17 @@
     const dRaw = await tryRead(dynamicName(fbcc));
     if (dRaw) { try { out.dynamic = fpDecode(dRaw); out.notes.push("dynamic 已解码"); } catch (e) { out.notes.push("dynamic 解码失败"); } }
     const cRaw = await tryRead(cookiesName(fbcc));
-    if (cRaw) { try { out.cookies = fpDecode(cRaw); out.notes.push("cookies 已解码"); } catch (e) { out.notes.push("cookies 解码失败"); } }
+    // cookies 文件官方是明文 JSON（main.min.js setCookie 即 writeFile 明文）；
+    // 旧版曾按换表编码写过，读侧兼容双格式：能解则解，否则明文 JSON 原样返回。
+    if (cRaw) {
+      let done = false;
+      try { const dec = fpDecode(cRaw); if (dec) { out.cookies = dec; out.notes.push("cookies 已解码"); done = true; } } catch (e) { /* 非换表编码，走明文分支 */ }
+      if (!done) {
+        const t = cRaw.trim();
+        if (t[0] === "[" || t[0] === "{") { out.cookies = t; out.notes.push("cookies 明文已读取（官方格式）"); }
+        else out.notes.push("cookies 解码失败（既非换表编码也非明文JSON）");
+      }
+    }
     out.uiExtra = await tryRead("ui_fingerprint.json");
     if (out.uiExtra) out.notes.push("ui_fingerprint.json 已读取");
     // Preferences / Local State 辅助线索
@@ -125,7 +135,9 @@
     }
     if (payload.static) await writeIfChanged(staticName(fbcc), fpEncode(payload.static));
     if (payload.dynamic) await writeIfChanged(dynamicName(fbcc), fpEncode(payload.dynamic));
-    if (payload.cookies) await writeIfChanged(cookiesName(fbcc), fpEncode(payload.cookies));
+    // cookies 官方是明文直写（main.min.js setCookie：x(n,JSON.stringify(t))，无 encodeBase64）；
+    // 与 C++ FpSaveCookiesJson 一致，明文写盘（md5 比对一致跳过逻辑不变）。
+    if (payload.cookies) await writeIfChanged(cookiesName(fbcc), payload.cookies);
     if (payload.uiExtra) await writeFile(handle, "ui_fingerprint.json", payload.uiExtra);
     if (payload.uiExtra) notes.push("ui_fingerprint.json 已写入");
     return notes;
