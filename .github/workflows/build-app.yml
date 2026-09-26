@@ -182,6 +182,13 @@ jobs:
             if (-not $hit) { throw "missing treekill symbol '$s'" }
             Write-Host "treekill ok: $s"
           }
+          # 2a7. 新建命名规范 + Network 自愈提示（根因：非法名目录三件套错位；
+          #     k1c6pr18 的 Network 缓存坏导致单 profile 刷 Network service crashed）
+          $mc2 = Get-Content launcher\cpp\main.cpp -Raw
+          foreach ($s in @("新建 profile 名补 _local 后缀", "已存在 ", "diag Network目录存在")) {
+            if ($mc2 -notmatch [regex]::Escape($s)) { throw "missing create-link symbol '$s' in main.cpp" }
+            Write-Host "createlink ok: $s"
+          }
           # 2b. 原生指纹窗口模块（web-ui 1:1 纯原生重写，字段与 collectFp/applyUiExtra 对齐）
           $fph = Get-Content launcher\cpp\fp_ui.h -Raw
           foreach ($s in @("FpFormData", "proxyPass", "mediaDevices", "webglMeta", "webgpu",

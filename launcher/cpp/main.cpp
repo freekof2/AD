@@ -396,6 +396,15 @@ static bool StartOneLocked(const std::wstring& name) {
     }
     ::DeleteFileW((dataDir + L"\\LOCK").c_str());
     ::DeleteFileW((dataDir + L"\\DevToolsActivePort").c_str());
+    // Network 坏目录自愈：该 profile 若连续出现 Network service crashed 刷屏，
+    // 多为 Default/Network 缓存损坏。本次只记提示，不自动删（删了重建，需用户确认）：
+    // 若本次启动后 [browser] 仍刷屏，手动删 <profile>\Default\Network 后重试
+    // （不碰三件套指纹，登录态 cookies 文件保留）。
+    {
+        DWORD nattr = ::GetFileAttributesW((dataDir + L"\\Default\\Network").c_str());
+        if (nattr != INVALID_FILE_ATTRIBUTES)
+            LOG(L"diag Network目录存在 " + name + L"（若本次仍刷 Network service crashed，删 Default\\Network 后重试）");
+    }
 
     int port = AllocPortLocked(name);
     if (port == 0) {
@@ -658,9 +667,28 @@ static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
             std::wstring name = GetEdit(::GetDlgItem(h, IDC_NEWNAME));
             // 去首尾空格
             name.erase(0, name.find_first_not_of(L" \t"));
-            name.erase(name.find_last_not_of(L" \t") + 1);
-            if (name.empty() || name.find_first_of(L"\\/ :*?\"<>|") != std::wstring::npos) {
-                SetStatus(L"非法 profile 名"); break;
+            if (!name.empty())
+                name.erase(name.find_last_not_of(L" \t") + 1);
+            // 新建环境命名规范（与官方 fbccId_inviteCode 对齐）：
+            // 仅允许 [A-Za-z0-9_-] 且必须含下划线（fbccId 下划线前段是全部噪声种子，
+            // FpFbccIdOf 取 _ 前段；无下划线时三件套文件名错位，static 读不到）。
+            // 中文名自动生成 env<base36>_local（与 OnBatchDel/旧逻辑一致，remark 留原名见 ui）。
+            bool legal = !name.empty() &&
+                name.find_first_not_of(L"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-") == std::wstring::npos &&
+                name.find(L'_') != std::wstring::npos;
+            if (!legal) {
+                std::wstring remark = name;
+                if (name.empty() || name.find_first_of(L"\\/ :*?\"<>|") != std::wstring::npos) {
+                    SetStatus(L"非法 profile 名（仅允许字母数字_-(须含_)，中文自动生成目录名）");
+                    break;
+                }
+                // 合法字符但无下划线：自动加 _local 后缀，保证 fbcc 种子可取
+                name += L"_local";
+                LOG(L"新建 profile 名补 _local 后缀：remark=" + remark + L" dir=" + name);
+            }
+            // 已存在直接提示，不重复建
+            if (::GetFileAttributesW((g.cfg.dataDir + L"\\" + name).c_str()) != INVALID_FILE_ATTRIBUTES) {
+                SetStatus(L"已存在 " + name); break;
             }
             ::CreateDirectoryW(g.cfg.dataDir.c_str(), NULL);
             ::CreateDirectoryW((g.cfg.dataDir + L"\\" + name).c_str(), NULL);
