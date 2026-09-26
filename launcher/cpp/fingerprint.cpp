@@ -565,6 +565,12 @@ std::wstring FpBuildCmdline(const std::wstring& profileDir, int port,
         L" --protected-disable-safe-open";
     if (!proxyArg.empty())
         cmd += L" " + W(proxyArg); // 代理开关（官方 setProxy 非 CANVAS 分支；密码不记 diag）
+    // 官方 setProxy 同步追加（main.min.js 实测原文）：代理直连云端域名不过代理，
+    // C=["https://download.adspower.net","start.adspower.net","sys.adspower.net"]
+    // (+ignoreAgentConfig/+*.fbcdn.net)。离线固定三项即可；缺了它会导致 localhost/
+    // DevTools 走代理回环失败（127.0.0.1:1200 类本地代理最敏感）。
+    if (!proxyArg.empty())
+        cmd += L" --proxy-bypass-list=https://download.adspower.net;start.adspower.net;sys.adspower.net";
     cmd += L" --extended-parameters=" + W(ext);
     if (wantConsole)
         cmd += L" --enable-logging=stderr --v=0";
@@ -763,6 +769,8 @@ std::string FpDiagDumpLaunch(const std::wstring& exe, const std::wstring& workDi
         }
         o << "[diag] proxy.static=" << pcHead << "\n";
         o << "[diag] proxy.arg=" << pa << "\n";
+        // bypass 现场：缺了它，localhost/DevTools 会被迫走代理（127 类本地代理最敏感）
+        o << "[diag] proxy.bypass=" << DiagArgOf(cmdN, "--proxy-bypass-list=") << "\n";
     }
     o << "[diag] arg.ext.present=" << (extVal.empty() ? "no" : "yes") << "\n";
     // 环境变量

@@ -154,7 +154,7 @@ jobs:
           # 2a4. 代理链路：表单代理必须落地（static.ProxyChain + 命令行 --proxy-server + diag 现场）
           #     （根因：proxy 只进 ui 存档，static 无 ProxyChain、命令行无开关，改了不生效）
           $fpCpp = Get-Content launcher\cpp\fingerprint.cpp -Raw
-          foreach ($s in @("--proxy-server=", "proxy.static=", "proxy.arg=")) {
+          foreach ($s in @("--proxy-server=", "proxy.static=", "proxy.arg=", "--proxy-bypass-list=", "proxy.bypass=")) {
             if ($fpCpp -notmatch [regex]::Escape($s)) { throw "missing proxy-link symbol '$s' in fingerprint.cpp" }
             Write-Host "proxy ok: $s"
           }
