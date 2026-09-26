@@ -462,12 +462,19 @@ std::wstring FpBuildCmdline(const std::wstring& profileDir, int port,
     //  - setSunflowerBrowserHeader 另有 --disable-background-mode（仅非 BASE64 模式），
     //    ext 模式不加，保持与 diag ext.decode=OK 的注入体一致。
     // 离线等价行为：固定端口改随机 0（消端口占用竞态）+ 补 safe-open/sandbox 两组。
+    // 注意：--enable-logging=stderr 是子进程控制台窗口的直接来源（stderr 建 console
+    // 输出，主进程 SW_HIDE 压不住孙进程自建窗口）。官方 main.min.js 全文无此开关，
+    // puppeteer 默认也不带。离线诊断需要时才加：uiExtra 含 "debugConsole":true 则保留，
+    // 否则默认去掉，只留一个浏览器主窗口。
+    bool wantConsole = (extraSunParamsJson.find("\"debugConsole\"") != std::string::npos);
     std::wstring cmd = L"--user-data-dir=\"" + profileDir +
         L"\" --profile-directory=Default --remote-debugging-port=0"
         L" --no-first-run --no-default-browser-check --no-sandbox --disable-setuid-sandbox"
         L" --protected-disable-safe-open"
-        L" --extended-parameters=" + W(ext) +
-        L" --enable-logging=stderr --v=0 about:blank";
+        L" --extended-parameters=" + W(ext);
+    if (wantConsole)
+        cmd += L" --enable-logging=stderr --v=0";
+    cmd += L" about:blank";
     (void)port; // 端口改由浏览器随机分配（官方 --remote-debugging-port=0），port 仅记 ports.json 备查
     return cmd;
 }
