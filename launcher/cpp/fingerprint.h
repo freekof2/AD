@@ -50,7 +50,8 @@ std::string FpJsonGet(const std::string& json, const std::string& key);
 // key 不存在则追加到尾部对象。返回新 JSON，失败返回 ""。
 std::string FpJsonSet(const std::string& json, const std::string& key, const std::string& valueRaw);
 
-// CookiesFile 写：cookies 数组 JSON 文本 -> 换表编码 -> 写 md5(fbccId+"_cookies") 文件
+// CookiesFile 读/写（明文 JSON 数组，官方 setCookie 即 writeFile 明文；读兼容旧换表编码）。
+// 写前做 md5(内容)比对，一致则跳过。
 bool FpSaveCookiesJson(const std::wstring& profileDir, const std::string& jsonText);
 
 // ---------- UI 侧车 ui_fingerprint.json（明文 JSON，非换表编码） ----------

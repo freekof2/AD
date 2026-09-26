@@ -199,8 +199,24 @@ bool FpLoadDynamicJson(const std::wstring& profileDir, std::string& jsonOut) {
     return LoadAndDecode(profileDir, FpDynamicName(FpFbccIdOf(name)), jsonOut);
 }
 bool FpLoadCookiesJson(const std::wstring& profileDir, std::string& jsonOut) {
+    // 官方 main.min.js setCookie 写 cookies 文件是 writeFile 明文（x(n,JSON.stringify(t))）；
+    // 实测 k1c6pr18 的 cookies 文件即明文 JSON 数组。读侧兼容双格式：
+    // 换表编码能解出 JSON 则返回解码结果，否则原文是 JSON 即按明文返回。
     std::wstring name = profileDir.substr(profileDir.find_last_of(L"\\/") + 1);
-    return LoadAndDecode(profileDir, FpCookiesName(FpFbccIdOf(name)), jsonOut);
+    std::wstring path = profileDir + L"\\" + W(FpCookiesName(FpFbccIdOf(name)));
+    std::string raw;
+    if (!FpReadTextFile(path, raw) || raw.empty()) { jsonOut.clear(); return false; }
+    std::string dec = FpDecode(raw);
+    if (!dec.empty()) { jsonOut = dec; return true; }
+    size_t nz = raw.find_first_not_of(" \t\r\n\xEF\xBB\xBF");
+    if (nz != std::string::npos && (raw[nz] == '[' || raw[nz] == '{')) {
+        jsonOut = raw.substr(nz);
+        size_t tail = jsonOut.find_last_not_of(" \t\r\n");
+        if (tail != std::string::npos) jsonOut.resize(tail + 1);
+        return !jsonOut.empty();
+    }
+    jsonOut.clear();
+    return false;
 }
 // 写前比对 md5(文件原文) vs md5(新编码)，一致跳过（官方 FinalizeTask 逻辑）
 static bool SaveEncoded(const std::wstring& profileDir, const std::string& fileName, const std::string& jsonText) {
@@ -222,8 +238,16 @@ bool FpSaveDynamicJson(const std::wstring& profileDir, const std::string& jsonTe
     return SaveEncoded(profileDir, FpDynamicName(FpFbccIdOf(name)), jsonText);
 }
 bool FpSaveCookiesJson(const std::wstring& profileDir, const std::string& jsonText) {
+    // 官方 main.min.js setCookie：x(n,JSON.stringify(t)) 即 writeFile 明文，无 encodeBase64。
+    // 写前比对 md5(原文)，一致跳过。读侧 FpLoadCookiesJson 兼容双格式。
     std::wstring name = profileDir.substr(profileDir.find_last_of(L"\\/") + 1);
-    return SaveEncoded(profileDir, FpCookiesName(FpFbccIdOf(name)), jsonText);
+    std::string fileName = FpCookiesName(FpFbccIdOf(name));
+    std::wstring path = profileDir + L"\\" + W(fileName);
+    std::string old;
+    if (FpReadTextFile(path, old) && !old.empty()) {
+        if (FpMd5Hex(old) == FpMd5Hex(jsonText)) return true;  // 内容一致，跳过写盘
+    }
+    return FpWriteTextFile(path, jsonText);
 }
 // ui_fingerprint.json：明文存放，不做换表编码，方便 UI 直接读写
 bool FpLoadUiExtra(const std::wstring& profileDir, std::string& jsonOut) {
@@ -380,6 +404,9 @@ std::wstring FpBuildCmdline(const std::wstring& profileDir, int port,
     DWORD attr = ::GetFileAttributesW(wCookies.c_str());
 
     // 最小 sunBrowserParams：身份 + 三文件指针 + 确定性噪声种子（= fbccId，与官方回退一致）
+    // 官方 setSunflowerBrowserHeader：IS_SUNFLOWER_BROWSER_BASE64 非 true 时另传
+    //   --UserId=<browserHead> 明文开关；离线默认走 ext 内 UserId，不单独加该开关
+    //   （browserHead 即 static.UserId，ext 内已含，见 diag ext.decode）。
     std::string sp = "{\"UserId\":" + userId +
         ",\"StaticConfig\":\"" + JsonEscapeStr(N(wStatic)) +
         "\",\"DynamicConfig\":\"" + JsonEscapeStr(N(wDynamic)) + "\"";
@@ -427,9 +454,14 @@ std::wstring FpBuildCmdline(const std::wstring& profileDir, int port,
     (void)profileName; (void)dynamicJson;
 
     std::string ext = FpEncode(sp);
+    // 官方 setSandbox（IS_SUNFLOWER_BROWSER=true）：browserVersion>=20251127 且
+    // kernelSandboxMode 为空时，puppeteer args 追加 --no-sandbox --disable-setuid-sandbox，
+    // 否则 Chromium 沙箱在部分机器上直接早退。离线默认等价行为：跟随官方追加。
+    // 官方 setSunflowerBrowserHeader 另有 --disable-background-mode（仅非 BASE64 模式），
+    // ext 模式不加，保持与 diag ext.decode=OK 的注入体一致。
     std::wstring cmd = L"--user-data-dir=\"" + profileDir +
         L"\" --profile-directory=Default --remote-debugging-port=" + std::to_wstring(port) +
-        L" --no-first-run --no-default-browser-check"
+        L" --no-first-run --no-default-browser-check --no-sandbox --disable-setuid-sandbox"
         L" --extended-parameters=" + W(ext) +
         L" --enable-logging=stderr --v=0 about:blank";
     return cmd;
@@ -452,7 +484,8 @@ bool FpDiagEnvAuth(std::string& detailOut) {
 }
 
 // 取三件套文件现场：文件名 + 长度 + md5(原文) + 换表解码头（最多 64 字符，截断标 ...）。
-// rc: 0=读+解码都成功；1=文件缺失；2=读失败/空；3=解码失败（表错/损坏）。
+// rc: 0=读+解码都成功；1=文件缺失；2=读失败/空；3=解码失败（表错/损坏）；
+//     4=明文 JSON（cookies 文件官方就是明文，见 main.min.js setCookie：x(n,JSON.stringify(t))）。
 static std::string DiagFileLine(const std::wstring& profileDir,
     const std::string& fileName, const char* tag, int& rcOut) {
     std::wstring path = profileDir + L"\\" + W(fileName);
@@ -467,8 +500,18 @@ static std::string DiagFileLine(const std::wstring& profileDir,
         rcOut = 2;
         return line + " READ_FAIL len=0";
     }
-    std::string head = FpDecode(raw);
     line += " len=" + std::to_string(raw.size()) + " md5=" + FpMd5Hex(raw);
+    // 明文 JSON 直存（cookies 官方行为）：[{/{" 开头即明文，不是 DECODE_FAIL。
+    size_t nz = raw.find_first_not_of(" \t\r\n\xEF\xBB\xBF");
+    if (nz != std::string::npos && (raw[nz] == '[' || raw[nz] == '{')) {
+        rcOut = 4;
+        std::string h = raw.substr(nz, raw.size() - nz > 64 ? 64 : raw.size() - nz);
+        for (char& c : h) { if (c == '\r' || c == '\n' || c == '\t') c = ' '; }
+        line += " PLAINTEXT(head)=" + h;
+        if (raw.size() - nz > 64) line += "...";
+        return line;
+    }
+    std::string head = FpDecode(raw);
     if (head.empty()) {
         rcOut = 3;
         std::string rh = raw.substr(0, raw.size() > 32 ? 32 : raw.size());
@@ -587,8 +630,15 @@ std::string FpDiagDumpLaunch(const std::wstring& exe, const std::wstring& workDi
              "先用指纹配置生成三件套再启动。\n";
     }
     if (rcS == 3 || rcD == 3) {
-        o << "[diag] hint: 三件套DECODE_FAIL -> 文件损坏或换表不对，浏览器拒绝指纹；"
+        o << "[diag] hint: static/dynamic DECODE_FAIL -> 文件损坏或换表不对，浏览器拒绝指纹；"
              "从AdsPower官方重导该环境三件套覆盖。\n";
+    }
+    if (rcC == 4) {
+        o << "[diag] hint: cookies=PLAINTEXT(明文JSON) -> 与官方 setCookie 一致，正常，"
+             "ext 里只传 CookiesFile 路径，不内联内容。\n";
+    } else if (rcC == 3) {
+        o << "[diag] hint: cookies DECODE_FAIL -> 既非换表编码也非明文JSON，文件损坏；"
+             "删掉该 cookies 文件后重试（启动会跳过 CookiesFile）。\n";
     }
     o << "[diag] hint: 若3秒退出且零[browser]输出 -> GUI子系统无控制台可写，"
          "复制[diag]manual行到cmd手工跑，看弹窗/退出码。\n";
