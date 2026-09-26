@@ -1032,73 +1032,154 @@ static LRESULT CALLBACK FpWndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
         bool hasUi = FpLoadUiExtra(dd, ui) && !ui.empty();
         if (hasUi) FpFormFromUiJson(ui, w->form);
         else FpFormDefaults(w->form, w->profile);
-        // static 回填（与 web-ui applyImportResult 同字段：Langs/Platform/CPU/RAM/设备/MAC/代理）
+        // static 回填（与 web-ui applyImportResult 同字段）。
+        // 优先级：ui 存档优先（用户最后一次保存的值），static 仅补 ui 缺失的键。
+        // 以缓存为准的保护键（ProxyChain/DeviceName/MacAddress 等）在 ui 缺失时才用 static 值，
+        // 且 ui 已有值时不覆盖——否则“保存后重进看不到修改内容”。
         {
             std::string sj, dj, cj;
+            // 取 ui 已有值快照（判空用，避免 static 空值覆盖 ui 实值）
+            std::string uiLangs = FpJsonGet(ui, "language");
+            // ui 存档 language 可能是数组 ["en-US","en"] 或字符串，任一非空即视为有值
+            bool uiHasLangs = (!uiLangs.empty() && uiLangs != "\"\"" && uiLangs != "[]");
+            bool uiHasProxyHost = false, uiHasProxyPort = false;
+            {
+                std::string hh0 = FpJsonGet(ui, "proxyHost"), pp0 = FpJsonGet(ui, "proxyPort");
+                uiHasProxyHost = (!hh0.empty() && hh0 != "\"\"");
+                uiHasProxyPort = (!pp0.empty() && pp0 != "\"\"");
+            }
             if (FpLoadStaticJson(dd, sj) && !sj.empty()) {
                 std::string v;
-                v = FpJsonGet(sj, "Langs");
-                if (!v.empty() && v.front() == '"') {
-                    // Langs 可能是 "en-US,en" 字符串 -> langList
-                    w->form.langList = WJ(v);
-                    w->form.langMode = L"custom";
+                if (!uiHasLangs) {
+                    v = FpJsonGet(sj, "Langs");
+                    if (!v.empty() && v.front() == '"') {
+                        // Langs 可能是 "en-US,en" 字符串 -> langList
+                        w->form.langList = WJ(v);
+                        w->form.langMode = L"custom";
+                    }
                 }
-                // Platform -> os 反推（Win32->win；Darwin/mac->mac；Linux->linux）
-                v = FpJsonGet(sj, "Platform");
-                if (!v.empty() && v.front() == '"') {
-                    std::string pl = N(WJ(v));
-                    for (auto& c : pl) c = tolower(c);
-                    if (pl.find("mac") != std::string::npos || pl.find("darwin") != std::string::npos) w->form.os = L"mac";
-                    else if (pl.find("linux") != std::string::npos) w->form.os = L"linux";
-                    else if (pl.find("android") != std::string::npos) w->form.os = L"android";
-                    else if (pl.find("iphone") != std::string::npos || pl.find("ios") != std::string::npos) w->form.os = L"ios";
-                    else w->form.os = L"win";
+                // Platform -> os 反推（仅 ui 无 os 时；ui 存档 os 为准）
+                {
+                    std::string uiOs = FpJsonGet(ui, "os");
+                    if (uiOs.empty() || uiOs == "\"\"") {
+                        v = FpJsonGet(sj, "Platform");
+                        if (!v.empty() && v.front() == '"') {
+                            std::string pl = N(WJ(v));
+                            for (auto& c : pl) c = tolower(c);
+                            if (pl.find("mac") != std::string::npos || pl.find("darwin") != std::string::npos) w->form.os = L"mac";
+                            else if (pl.find("linux") != std::string::npos) w->form.os = L"linux";
+                            else if (pl.find("android") != std::string::npos) w->form.os = L"android";
+                            else if (pl.find("iphone") != std::string::npos || pl.find("ios") != std::string::npos) w->form.os = L"ios";
+                            else w->form.os = L"win";
+                        }
+                    }
                 }
-                v = FpJsonGet(sj, "HardwareConcurrency");
-                if (!v.empty()) {
-                    w->form.cpu = W(v);
-                    w->form.cpuMode = (v == "default" || v == "\"default\"") ? L"real" : L"custom";
+                // CPU/RAM/设备/MAC：仅 ui 对应键缺失时用 static 补
+                {
+                    std::string uiCpu = FpJsonGet(ui, "hardwareConcurrency");
+                    if (uiCpu.empty() || uiCpu == "\"\"") {
+                        v = FpJsonGet(sj, "HardwareConcurrency");
+                        if (!v.empty()) {
+                            w->form.cpu = W(v);
+                            w->form.cpuMode = (v == "default" || v == "\"default\"") ? L"real" : L"custom";
+                        }
+                    }
+                    std::string uiRam = FpJsonGet(ui, "deviceMemory");
+                    if (uiRam.empty() || uiRam == "\"\"") {
+                        v = FpJsonGet(sj, "DeviceMemory");
+                        if (!v.empty()) {
+                            w->form.ram = W(v);
+                            w->form.ramMode = (v == "default" || v == "\"default\"") ? L"real" : L"custom";
+                        }
+                    }
+                    std::string uiDev = FpJsonGet(ui, "devName");
+                    if (uiDev.empty() || uiDev == "\"\"") {
+                        v = FpJsonGet(sj, "DeviceName"); if (!v.empty()) { w->form.devName = WJ(v); }
+                    }
+                    std::string uiMac = FpJsonGet(ui, "mac");
+                    if (uiMac.empty() || uiMac == "\"\"") {
+                        v = FpJsonGet(sj, "MacAddress"); if (!v.empty()) { w->form.mac = WJ(v); }
+                    }
+                    // MediaDevices：仅 ui 缺失时补（ui 存档 mediaDevices 为准）
+                    std::string uiMd = FpJsonGet(ui, "mediaDevices");
+                    if ((uiMd.empty() || uiMd == "\"\"") ) {
+                        v = FpJsonGet(sj, "MediaDevices");
+                        if (!v.empty() && v.front() == '"') w->form.mediaDevices = WJ(v);
+                    }
+                    // TTSEngines -> speechSwitch：仅 ui 缺失时
+                    std::string uiSp = FpJsonGet(ui, "speechSwitch");
+                    if (uiSp.empty() || uiSp == "\"\"") {
+                        v = FpJsonGet(sj, "TTSEngines");
+                        if (!v.empty()) w->form.swSpeech = (v.find('1') != std::string::npos);
+                    }
+                    // 时区/地理 static 后备：仅 ui 对应键缺失时（timezone/timezoneMode/geoMode/lat/lng/accuracy）
+                    std::string uiTz = FpJsonGet(ui, "timezone");
+                    if (uiTz.empty() || uiTz == "\"\"") {
+                        v = FpJsonGet(sj, "TimeZone");
+                        if (!v.empty() && v.front() == '"') {
+                            std::string t = N(WJ(v));
+                            for (auto& c : t) if (c == '_') c = ' ';
+                            w->form.timezone = W(t);
+                            w->form.timezoneMode = L"custom";
+                        }
+                    }
+                    // AudioFp/ClientRectFp -> 开关：仅 ui 缺失时
+                    std::string uiAu = FpJsonGet(ui, "audio");
+                    if (uiAu.empty() || uiAu == "\"\"") {
+                        v = FpJsonGet(sj, "AudioFp");
+                        if (!v.empty()) w->form.swAudio = (v != "0" && v != "\"0\"");
+                    }
+                    std::string uiCr = FpJsonGet(ui, "clientRects");
+                    if (uiCr.empty() || uiCr == "\"\"") {
+                        v = FpJsonGet(sj, "ClientRectFp");
+                        if (!v.empty()) w->form.swClientRects = (v != "0" && v != "\"0\"");
+                    }
+                    // CanvasMark/WebGLMark -> 开关+种子显示：仅 ui 缺失时（ui canvas/webglImage 为准）
+                    std::string uiCv = FpJsonGet(ui, "canvas");
+                    if (uiCv.empty() || uiCv == "\"\"") {
+                        v = FpJsonGet(sj, "CanvasMark");
+                        if (!v.empty()) w->form.swCanvas = true;
+                    }
+                    std::string uiWg = FpJsonGet(ui, "webglImage");
+                    if (uiWg.empty() || uiWg == "\"\"") {
+                        v = FpJsonGet(sj, "WebGLMark");
+                        if (!v.empty()) w->form.swWebglImg = true;
+                    }
+                    // WebRTC/代理 static 后备（ui 缺失时）
+                    std::string uiWr = FpJsonGet(ui, "webrtc");
+                    if (uiWr.empty() || uiWr == "\"\"") {
+                        v = FpJsonGet(sj, "WebRTCAddress");
+                        std::string dw = FpJsonGet(sj, "DisableWebRTC");
+                        if (dw == "true" || dw == "\"true\"") w->form.webrtc = L"disabled";
+                    }
                 }
-                v = FpJsonGet(sj, "DeviceMemory");
-                if (!v.empty()) {
-                    w->form.ram = W(v);
-                    w->form.ramMode = (v == "default" || v == "\"default\"") ? L"real" : L"custom";
-                }
-                v = FpJsonGet(sj, "DeviceName"); if (!v.empty()) { w->form.devName = WJ(v); }
-                v = FpJsonGet(sj, "MacAddress"); if (!v.empty()) { w->form.mac = WJ(v); }
                 // ProxyChain 回填（ui 优先：ui 存档是用户最后一次保存的值；static 只在
                 // ui 缺代理字段时作为后备）。根因：旧逻辑 static 回填无条件覆盖 ui，
                 // 用户改了 SOCKS5 点保存后，static 还没写新值时 static 为空/旧值，
                 // 下次打开 static 旧值覆盖 ui 新值，表现为“修改了没保存、看不到修改后内容”。
-                {
-                    std::string hh = FpJsonGet(ui, "proxyHost"), pp = FpJsonGet(ui, "proxyPort"),
-                                  ss = FpJsonGet(ui, "proxyType"), uu = FpJsonGet(ui, "proxyUser"),
-                                  pw = FpJsonGet(ui, "proxyPass");
-                    auto unq = [](const std::string& v) -> std::wstring {
-                        if (v.size() >= 2 && v.front() == '"' && v.back() == '"')
-                            return WJ(v);
-                        return W(v);
-                    };
-                    bool uiHasProxy = (!hh.empty() && hh != "\"\"") || (!pp.empty() && pp != "\"\"");
-                    if (uiHasProxy) {
-                        if (!ss.empty() && ss != "\"\"") w->form.proxyType = unq(ss);
-                        if (!hh.empty() && hh != "\"\"") w->form.proxyHost = unq(hh);
-                        if (!pp.empty() && pp != "\"\"") w->form.proxyPort = unq(pp);
-                        if (!uu.empty() && uu != "\"\"") w->form.proxyUser = unq(uu);
-                        if (!pw.empty() && pw != "\"\"") w->form.proxyPass = unq(pw);
-                        LOG(L"指纹载入 代理=ui存档 " + w->profile);
-                    } else {
-                        std::string pc = FpJsonGet(sj, "ProxyChain");
-                        if (!pc.empty() && pc != "[]") {
-                            std::string h2 = FpJsonGet(pc, "host"), p2 = FpJsonGet(pc, "port"),
-                                          s2 = FpJsonGet(pc, "scheme");
-                            if (h2.size() >= 2 && h2.front() == '"') w->form.proxyHost = WJ(h2);
-                            if (p2.size() >= 2 && p2.front() == '"') w->form.proxyPort = WJ(p2); else if (!p2.empty()) w->form.proxyPort = W(p2);
-                            if (s2.size() >= 2 && s2.front() == '"') w->form.proxyType = WJ(s2);
-                            LOG(L"指纹载入 代理=static后备 " + w->profile);
+                if (!uiHasProxyHost || !uiHasProxyPort) {
+                    std::string pc = FpJsonGet(sj, "ProxyChain");
+                    if (!pc.empty() && pc != "[]") {
+                        std::string h2 = FpJsonGet(pc, "host"), p2 = FpJsonGet(pc, "port"),
+                                      s2 = FpJsonGet(pc, "scheme");
+                        if (!uiHasProxyHost && h2.size() >= 2 && h2.front() == '"') w->form.proxyHost = WJ(h2);
+                        if (!uiHasProxyPort) {
+                            if (p2.size() >= 2 && p2.front() == '"') w->form.proxyPort = WJ(p2);
+                            else if (!p2.empty()) w->form.proxyPort = W(p2);
                         }
+                        std::string uiPt = FpJsonGet(ui, "proxyType");
+                        if ((uiPt.empty() || uiPt == "\"\"") && s2.size() >= 2 && s2.front() == '"') w->form.proxyType = WJ(s2);
+                        LOG(L"指纹载入 代理=static后备 " + w->profile);
                     }
+                } else {
+                    LOG(L"指纹载入 代理=ui存档 " + w->profile);
                 }
+            } else {
+                // static 缺失/读失败：代理来源仍记一笔，判读不断链
+                if (uiHasProxyHost || uiHasProxyPort)
+                    LOG(L"指纹载入 代理=ui存档(static缺失) " + w->profile);
+                else
+                    LOG(L"指纹载入 代理=无(static缺失且ui无代理) " + w->profile);
             }
             if (FpLoadDynamicJson(dd, dj) && !dj.empty()) {
                 std::string g = FpJsonGet(dj, "Geoposition");
