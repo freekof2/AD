@@ -331,7 +331,25 @@ std::string FpFormToFpConfig(const FpFormData& f) {
         arr += "]";
         o += ",\"fonts\":" + arr;
     }
-    o += ",\"ua\":\"" + JEsc(f.ua) + "\"}";
+    o += ",\"ua\":\"" + JEsc(f.ua) + "\"";
+    // 代理链（官方 static.ProxyChain 数组，与 main.min.js setProxy 写入格式一致）：
+    // [{scheme,host,port,account,password}]；proxyType 空/noProxy/缺 host-port 即 []（直连）。
+    // 保存链路（F_OK）原样写 static，protectFill 以缓存为准已有值时不覆盖空值，见下方。
+    {
+        std::string scheme = N(f.proxyType), host = N(f.proxyHost),
+                      port = N(f.proxyPort), user = N(f.proxyUser), pass = N(f.proxyPass);
+        if (!scheme.empty() && scheme != "noProxy" && scheme != "noproxy" &&
+            !host.empty() && !port.empty()) {
+            o += ",\"ProxyChain\":[{\"scheme\":\"" + JEsc(f.proxyType) +
+                 "\",\"host\":\"" + JEsc(f.proxyHost) +
+                 "\",\"port\":\"" + JEsc(f.proxyPort) +
+                 "\",\"account\":\"" + JEsc(f.proxyUser) +
+                 "\",\"password\":\"" + JEsc(f.proxyPass) + "\"}]";
+        } else {
+            o += ",\"ProxyChain\":[]";
+        }
+    }
+    o += "}";
     return o;
 }
 // fp_ui.cpp — part 2/4：控件 id 表 + 随机库 + 默认值
@@ -1454,7 +1472,36 @@ static LRESULT CALLBACK FpWndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
                     LOG(L"指纹保存 cookies SKIP（非JSON数组，不写盘） " + w->profile);
                 }
             }
-            // 3. fingerprint_config 供参考：如 static 缺失则按表单建最小 static（含保护键回填见 fp/save）
+            // 3. static 写回：FpFormToFpConfig 按表单组装（含 ProxyChain 数组），
+            // protectFill 语义：已有缓存的保护键以缓存为准，但 ProxyChain 为空数组时
+            // 允许表单新值覆盖（否则代理永远写不进去——本次 SOCKS5 不生效根因）。
+            {
+                std::string cfg = FpFormToFpConfig(w->form);
+                std::string curS;
+                FpLoadStaticJson(dd, curS);
+                // 保護鍵回填（与 main.cpp /api/fp/save protectFill 同表），但 ProxyChain 例外：
+                // 缓存 ProxyChain 为空/缺失时用表单新值；非空时以缓存为准。
+                static const char* prot[] = { "DeviceName","MacAddress",
+                    "MediaDevices","TTSEngines","Langs","AcceptLang","HardwareConcurrency",
+                    "DeviceMemory","Platform","UserId","CanvasMark","WebGLMark","AudioFp",
+                    "ClientRectFp", NULL };
+                for (int i = 0; prot[i]; i++) {
+                    std::string cv = FpJsonGet(curS, prot[i]);
+                    if (!cv.empty()) {
+                        std::string merged = FpJsonSet(cfg, prot[i], cv);
+                        if (!merged.empty()) cfg = merged;
+                    }
+                }
+                std::string curPc = FpJsonGet(curS, "ProxyChain");
+                std::string newPc = FpJsonGet(cfg, "ProxyChain");
+                if (!curPc.empty() && curPc != "[]" && newPc == "[]") {
+                    std::string merged = FpJsonSet(cfg, "ProxyChain", curPc);
+                    if (!merged.empty()) cfg = merged;
+                }
+                bool oks = FpSaveStaticJson(dd, cfg);
+                LOG(L"指纹保存 static " + std::wstring(oks ? L"OK" : L"FAIL") +
+                    L" len=" + std::to_wstring(cfg.size()) + L" " + w->profile);
+            }
             (void)okc;
             w->saved = true;
             ::SetWindowTextW(w->hStatus, L"已保存（ui 存档 + cookies）");

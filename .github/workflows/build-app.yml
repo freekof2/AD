@@ -151,6 +151,18 @@ jobs:
           }
           if ($fpcSave -notmatch '\\u00') { throw "JEsc must escape control chars (\u00XX)" }
           Write-Host "fpsave JEsc full-escape ok"
+          # 2a4. 代理链路：表单代理必须落地（static.ProxyChain + 命令行 --proxy-server + diag 现场）
+          #     （根因：proxy 只进 ui 存档，static 无 ProxyChain、命令行无开关，改了不生效）
+          $fpCpp = Get-Content launcher\cpp\fingerprint.cpp -Raw
+          foreach ($s in @("--proxy-server=", "proxy.static=", "proxy.arg=")) {
+            if ($fpCpp -notmatch [regex]::Escape($s)) { throw "missing proxy-link symbol '$s' in fingerprint.cpp" }
+            Write-Host "proxy ok: $s"
+          }
+          $fpcProxy = Get-Content launcher\cpp\fp_ui.cpp -Raw
+          foreach ($s in @('"ProxyChain"', "指纹保存 static ")) {
+            if ($fpcProxy -notmatch [regex]::Escape($s)) { throw "missing proxy-save symbol '$s' in fp_ui.cpp" }
+            Write-Host "proxysave ok: $s"
+          }
           # 2b. 原生指纹窗口模块（web-ui 1:1 纯原生重写，字段与 collectFp/applyUiExtra 对齐）
           $fph = Get-Content launcher\cpp\fp_ui.h -Raw
           foreach ($s in @("FpFormData", "proxyPass", "mediaDevices", "webglMeta", "webgpu",

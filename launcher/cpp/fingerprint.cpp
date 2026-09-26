@@ -407,6 +407,77 @@ std::wstring FpBuildCmdline(const std::wstring& profileDir, int port,
     // 官方 setSunflowerBrowserHeader：IS_SUNFLOWER_BROWSER_BASE64 非 true 时另传
     //   --UserId=<browserHead> 明文开关；离线默认走 ext 内 UserId，不单独加该开关
     //   （browserHead 即 static.UserId，ext 内已含，见 diag ext.decode）。
+    // 代理（官方 setProxy 语义，main.min.js 实测原文）：
+    //   非 CANVAS 模式 -> 命令行追加 --proxy-server=<scheme>://<host>:<port>
+    //   （socks5 且有账号时 user:pass@ 段按 C1/C2 换表解码；离线存明文，直拼）；
+    //   CANVAS 模式 -> ProxyUser/ProxyPassword 进 ext（本函数 kExtraAllow 已放行）。
+    //   static.ProxyChain 数组由保存链路写（FpFormToFpConfig 组装），此处不重复组装。
+    std::string proxyArg;
+    {
+        std::string scheme, host, portStr, user, pass;
+        if (!extraSunParamsJson.empty()) {
+            std::string v;
+            v = FpJsonGet(extraSunParamsJson, "proxyType");
+            if (v.size() >= 2 && v.front() == '"' && v.back() == '"')
+                scheme = v.substr(1, v.size() - 2);
+            v = FpJsonGet(extraSunParamsJson, "proxyHost");
+            if (v.size() >= 2 && v.front() == '"' && v.back() == '"')
+                scheme.empty(), host = v.substr(1, v.size() - 2);
+            else if (!v.empty() && v != "\"\"") host = v;
+            v = FpJsonGet(extraSunParamsJson, "proxyPort");
+            if (v.size() >= 2 && v.front() == '"' && v.back() == '"')
+                portStr = v.substr(1, v.size() - 2);
+            else if (!v.empty() && v != "\"\"") portStr = v;
+            v = FpJsonGet(extraSunParamsJson, "proxyUser");
+            if (v.size() >= 2 && v.front() == '"' && v.back() == '"')
+                user = v.substr(1, v.size() - 2);
+            v = FpJsonGet(extraSunParamsJson, "proxyPass");
+            if (v.size() >= 2 && v.front() == '"' && v.back() == '"')
+                pass = v.substr(1, v.size() - 2);
+        }
+        // 后备：uiExtra 为空但 static 有 ProxyChain（旧存档/官方同步目录）-> 取第一项
+        if ((scheme.empty() || host.empty() || portStr.empty()) && !staticJson.empty()) {
+            std::string pc = FpJsonGet(staticJson, "ProxyChain");
+            if (!pc.empty() && pc.front() == '[') {
+                size_t b = pc.find('{');
+                size_t e = pc.find('}');
+                if (b != std::string::npos && e != std::string::npos && e > b) {
+                    std::string o = pc.substr(b, e - b + 1);
+                    std::string v;
+                    if (scheme.empty()) {
+                        v = FpJsonGet(o, "scheme");
+                        if (v.size() >= 2 && v.front() == '"') scheme = v.substr(1, v.size() - 2);
+                    }
+                    if (host.empty()) {
+                        v = FpJsonGet(o, "host");
+                        if (v.size() >= 2 && v.front() == '"') host = v.substr(1, v.size() - 2);
+                    }
+                    if (portStr.empty()) {
+                        v = FpJsonGet(o, "port");
+                        if (v.size() >= 2 && v.front() == '"') portStr = v.substr(1, v.size() - 2);
+                        else if (!v.empty()) portStr = v;
+                    }
+                    if (user.empty()) {
+                        v = FpJsonGet(o, "account");
+                        if (v.size() >= 2 && v.front() == '"') user = v.substr(1, v.size() - 2);
+                    }
+                    if (pass.empty()) {
+                        v = FpJsonGet(o, "password");
+                        if (v.size() >= 2 && v.front() == '"') pass = v.substr(1, v.size() - 2);
+                    }
+                }
+            }
+        }
+        // noProxy/空host/空port -> 直连，不拼开关（与官方 m!==noProxy 分支一致）
+        if (!scheme.empty() && scheme != "noProxy" && scheme != "noproxy" &&
+            !host.empty() && !portStr.empty()) {
+            if (scheme == "socks5" && !user.empty()) {
+                proxyArg = "--proxy-server=" + scheme + "://" + user + ":" + pass + "@" + host + ":" + portStr;
+            } else {
+                proxyArg = "--proxy-server=" + scheme + "://" + host + ":" + portStr;
+            }
+        }
+    }
     std::string sp = "{\"UserId\":" + userId +
         ",\"StaticConfig\":\"" + JsonEscapeStr(N(wStatic)) +
         "\",\"DynamicConfig\":\"" + JsonEscapeStr(N(wDynamic)) + "\"";
@@ -491,8 +562,10 @@ std::wstring FpBuildCmdline(const std::wstring& profileDir, int port,
     std::wstring cmd = L"--user-data-dir=\"" + profileDir +
         L"\" --profile-directory=Default --remote-debugging-port=0"
         L" --no-first-run --no-default-browser-check --no-sandbox --disable-setuid-sandbox"
-        L" --protected-disable-safe-open"
-        L" --extended-parameters=" + W(ext);
+        L" --protected-disable-safe-open";
+    if (!proxyArg.empty())
+        cmd += L" " + W(proxyArg); // 代理开关（官方 setProxy 非 CANVAS 分支；密码不记 diag）
+    cmd += L" --extended-parameters=" + W(ext);
     if (wantConsole)
         cmd += L" --enable-logging=stderr --v=0";
     cmd += L" about:blank";
@@ -672,6 +745,25 @@ std::string FpDiagDumpLaunch(const std::wstring& exe, const std::wstring& workDi
       << "（官方=0随机；若此处非0即偏离官方buildLaunchOpt）\n";
     o << "[diag] arg.safeopen=" << (cmdN.find("--protected-disable-safe-open") == std::string::npos ? "MISSING(偏离官方)" : "present") << "\n";
     o << "[diag] arg.nosandbox=" << (cmdN.find("--no-sandbox") == std::string::npos ? "MISSING" : "present") << "\n";
+    // 代理现场：static.ProxyChain 第一项 + 命令行 --proxy-server 是否生效（密码打码）。
+    // 若 uiExtra 有代理但 proxyArg=missing，说明表单值没进 static（保存链路问题）；
+    // 若 proxyArg present 但浏览器仍直连，说明 static.ProxyChain 与命令行不一致或代理本身不通。
+    {
+        std::string pc = FpJsonGet(staticJson, "ProxyChain");
+        std::string pcHead = pc.empty() ? "(absent)" : pc.substr(0, pc.size() > 96 ? 96 : pc.size());
+        for (char& c : pcHead) { if (c == '\r' || c == '\n' || c == '\t') c = ' '; }
+        std::string pa = DiagArgOf(cmdN, "--proxy-server=");
+        if (pa != "(missing)") {
+            size_t at = pa.find('@');
+            if (at != std::string::npos) {
+                size_t sc = pa.find("://");
+                pa = pa.substr(0, (sc == std::string::npos ? 0 : sc + 3)) + "***@" +
+                     pa.substr(at + 1);
+            }
+        }
+        o << "[diag] proxy.static=" << pcHead << "\n";
+        o << "[diag] proxy.arg=" << pa << "\n";
+    }
     o << "[diag] arg.ext.present=" << (extVal.empty() ? "no" : "yes") << "\n";
     // 环境变量
     std::string envDetail;
