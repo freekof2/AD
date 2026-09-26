@@ -6,7 +6,8 @@ name: Build SunLauncher App
 # 约束：
 #   - 只在 windows-latest 上 MSVC 编译 + node --check + 离线契约校验 + 打包；
 #   - 不在本地测试、不启动 SunBrowser、不连接 AdsPower 云端（无 token、无上报）；
-#   - 产物 offline-app.zip（SunLauncher.exe + web-ui/ + ports.json 模板 + README）。
+#   - 产物只压缩一次：upload-artifact 上传 offline-pkg/*（下载即 zip，解压一次即用），
+#     工作流内不再手动 Compress-Archive，避免 zip 套 zip。
 # 后端接口来源（只读静态分析，样本未执行）：
 #   - F:\manus\AD\asar\asar-full\dist\static\lib\main.min.js（live 版 v2.8.8.7，
 #     8.7MB webpack Node 包）：本地 Koa 路由 De.get/De.post 共 162 条，
@@ -340,7 +341,7 @@ jobs:
             Write-Host "mock ok: $r"
           }
 
-      - name: Package offline-app.zip
+      - name: Prepare offline-pkg (single-pack source dir)
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
@@ -365,14 +366,14 @@ jobs:
           # 6. 以缓存为准：保护键（UserId/CanvasMark/WebGLMark/ProxyChain/TimeZone 等）在注入与写回时被缓存值覆盖
           # 7. 调试：点启动后无窗口，看 exe 同目录 debug.log（完整命令行 / 3 秒退出码 / [browser] 输出）
           "@ | Out-File (Join-Path $out "README.txt") -Encoding utf8
-          if (Test-Path offline-app.zip) { Remove-Item offline-app.zip -Force }
-          Compress-Archive -Path "$out\*" -DestinationPath offline-app.zip -Force
-          Get-Item offline-app.zip | Format-Table Name, Length
+          # 只准备目录，不在此手动 Compress-Archive：
+          # 压缩这件事只做一次，交给 upload-artifact（下载即 zip，解压一次即用）。
+          Get-ChildItem $out -Recurse | Format-Table FullName, Length
 
-      - name: Upload artifact
+      - name: Upload artifact (the only compression)
         uses: actions/upload-artifact@v4
         with:
           name: offline-app
-          path: offline-app.zip
+          path: offline-pkg/*
           retention-days: 30
           if-no-files-found: error
