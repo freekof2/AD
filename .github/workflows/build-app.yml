@@ -176,14 +176,20 @@ jobs:
             Write-Host "fillall ok: $s"
           }
           # 2a5c. per-profile 独立目录：指纹窗口顶端 A2 行（空=跟随全局），只存 sunlauncher.json
+          #     注意：$fpc 在下方 2d 节才赋值，此处用独立变量重读，避免空变量误报缺失
+          $fpcProf = Get-Content launcher\cpp\fp_ui.cpp -Raw
+          $mcppProf = Get-Content launcher\cpp\main.cpp -Raw
+          $fhProf = Get-Content launcher\cpp\fp_ui.h -Raw
+          $hProf = Get-Content launcher\cpp\SunLauncher.h -Raw
           foreach ($s in @("F_PDATADIR", "F_PBROWSERDIR", "profDataDir", "profBrowserDir",
                            "指纹保存 profiles目录", "EffDataDir", "EffBrowserDir", "diag 独立目录生效")) {
-            $hit = ($fpc -match [regex]::Escape($s)) -or ($mcpp -match [regex]::Escape($s)) -or ((Get-Content launcher\cpp\fp_ui.h -Raw) -match [regex]::Escape($s)) -or ((Get-Content launcher\cpp\SunLauncher.h -Raw) -match [regex]::Escape($s))
+            $hit = ($fpcProf -match [regex]::Escape($s)) -or ($mcppProf -match [regex]::Escape($s)) -or ($fhProf -match [regex]::Escape($s)) -or ($hProf -match [regex]::Escape($s))
             if (-not $hit) { throw "missing per-profile-dir symbol '$s'" }
             Write-Host "profdir ok: $s"
           }
           # 2a6. 精确树杀：多开互不干扰（根因：旧树杀全杀同名 SunBrowser，
           #     起第二个 profile 时把第一个的浏览器杀掉，一个能开网址一个不能）
+          #     注意：$fpCpp 在上方 2a4 节已赋值，此处直接复用（同文件作用域内）。
           foreach ($s in @("ProcCmdlineHasDir", "NtQueryInformationProcess", "启动前清场(仅本profile)")) {
             $hit = ($fpCpp -match [regex]::Escape($s)) -or ((Get-Content launcher\cpp\main.cpp -Raw) -match [regex]::Escape($s))
             if (-not $hit) { throw "missing treekill symbol '$s'" }
