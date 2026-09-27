@@ -80,15 +80,22 @@ static std::wstring Esc(const std::wstring& s) {
 }
 
 bool SaveConfig(const Config& c) {
-    std::wstring j = L"{\r\n  \"sun_browser_dir\": \"" + Esc(c.sunBrowserDir) +
-        L"\",\r\n  \"data_dir\": \"" + Esc(c.dataDir) +
-        L"\",\r\n  \"listen\": \"" + Esc(c.listen) +
-        L"\",\r\n  \"port_base\": " + std::to_wstring(c.portBase) + L"\r\n}\r\n";
-    std::wofstream f(ExeDir() + L"\\sunlauncher.json");
-    if (!f) return false;
-    f.imbue(std::locale(f.getloc(), new std::codecvt_utf8<wchar_t>));
-    f << j;
-    return true;
+    // wofstream+codecvt 在异常路径/坏 locale 下可能抛；调用方已 try/catch，
+    // 此处再加 nothrow 守卫：任何异常一律返回 false，不穿越持锁区（闪退根因之一）。
+    try {
+        std::wstring j = L"{\r\n  \"sun_browser_dir\": \"" + Esc(c.sunBrowserDir) +
+            L"\",\r\n  \"data_dir\": \"" + Esc(c.dataDir) +
+            L"\",\r\n  \"listen\": \"" + Esc(c.listen) +
+            L"\",\r\n  \"port_base\": " + std::to_wstring(c.portBase) + L"\r\n}\r\n";
+        std::wofstream f(ExeDir() + L"\\sunlauncher.json");
+        if (!f) return false;
+        f.imbue(std::locale(f.getloc(), new std::codecvt_utf8<wchar_t>));
+        f << j;
+        f.flush();
+        return (bool)f;
+    } catch (...) {
+        return false;
+    }
 }
 
 std::map<std::wstring, int> LoadPorts() {

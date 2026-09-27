@@ -189,6 +189,12 @@ jobs:
             if ($mc2 -notmatch [regex]::Escape($s)) { throw "missing create-link symbol '$s' in main.cpp" }
             Write-Host "createlink ok: $s"
           }
+          # 2a8. 保存目录防闪退（根因：SaveConfig 异常穿越持锁区 / 持锁调 RefreshList 重入）：
+          #     快照写盘放锁外 + try/catch + 首尾 diag 日志，崩溃可定位
+          foreach ($s in @("diag savedir begin", "diag savedir end")) {
+            if ($mc2 -notmatch [regex]::Escape($s)) { throw "missing savedir-diag symbol '$s' in main.cpp" }
+            Write-Host "savedir ok: $s"
+          }
           # 2b. 原生指纹窗口模块（web-ui 1:1 纯原生重写，字段与 collectFp/applyUiExtra 对齐）
           $fph = Get-Content launcher\cpp\fp_ui.h -Raw
           foreach ($s in @("FpFormData", "proxyPass", "mediaDevices", "webglMeta", "webgpu",

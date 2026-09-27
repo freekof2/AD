@@ -698,11 +698,36 @@ static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
             RefreshList(); SetStatus(L"已新建 " + name);
         }
         else if (id == IDC_SAVEDIR) {
-            std::lock_guard<std::mutex> lk(g.mu);
-            g.cfg.dataDir = GetEdit(g.hDataDir);
-            g.cfg.sunBrowserDir = GetEdit(g.hBrowserDir);
-            if (SaveConfig(g.cfg)) { LOG(L"目录已保存 data=" + g.cfg.dataDir + L" browser=" + g.cfg.sunBrowserDir); SetStatus(L"目录已保存"); }
-            else SetStatus(L"保存 sunlauncher.json 失败");
+            // 保存目录：不得持有 g.mu 调 RefreshList（锁内发 LVM 消息会经
+            // LVN_ITEMCHANGED/NM_CUSTOMDRAW 回调重入取锁，MSVC /GS 熔断即闪退，
+            // 表现为“点保存目录就退出”）。先无锁取编辑框文本、快照写盘，再无锁刷新。
+            // 另：SaveConfig 系 wofstream+codecvt（可能抛异常/熔断），异常转状态条，
+            // 写盘动作放锁外，避免异常穿越持锁区。
+            LOG(L"diag savedir begin");
+            std::wstring dd = GetEdit(g.hDataDir);
+            std::wstring bd = GetEdit(g.hBrowserDir);
+            Config snap;
+            {
+                std::lock_guard<std::mutex> lk(g.mu);
+                snap = g.cfg;
+            }
+            snap.dataDir = dd;
+            snap.sunBrowserDir = bd;
+            bool ok = false;
+            try { ok = SaveConfig(snap); }
+            catch (...) { ok = false; }
+            if (ok) {
+                {
+                    std::lock_guard<std::mutex> lk(g.mu);
+                    g.cfg = snap;
+                }
+                LOG(L"目录已保存 data=" + dd + L" browser=" + bd);
+                SetStatus(L"目录已保存");
+            } else {
+                LOG(L"diag savedir FAIL（写 sunlauncher.json 失败，看目录权限）");
+                SetStatus(L"保存 sunlauncher.json 失败");
+            }
+            LOG(L"diag savedir end ok=" + std::wstring(ok ? L"1" : L"0"));
             RefreshList();
         }
         else if (id == IDC_CLEARLOG) { ::SetWindowTextW(g.hLog, L""); }
