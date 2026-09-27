@@ -2,6 +2,7 @@
 // 零第三方依赖：Base64/MD5/JSON 均为自包含实现；仅 Win32 API + 标准库。
 // 不做任何网络 IO；只读写 <dataDir>/<profile>/ 下的文件并拼启动命令行。
 #include "fingerprint.h"
+#include "fp_webrtc.h"
 #include <tlhelp32.h>
 
 const wchar_t* FP_C1 = L"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -601,6 +602,29 @@ std::wstring FpBuildCmdline(const std::wstring& profileDir, int port,
     std::string sp = "{\"UserId\":" + userId +
         ",\"StaticConfig\":\"" + JsonEscapeStr(N(wStatic)) +
         "\",\"DynamicConfig\":\"" + JsonEscapeStr(N(wDynamic)) + "\"";
+    // 官方 WebRTCTask 同时写 sunBrowserParams.WebRTCAddress/DisableWebRTC 与 DynamicConfig。
+    // 仅更新三件套文件不够：SunBrowser 的 ICE 伪装读取 ext 顶层这两个 sunBrowserParams 键。
+    {
+        auto unquote = [](std::string v) {
+            if (v.size() >= 2 && v.front() == '"' && v.back() == '"')
+                return v.substr(1, v.size() - 2);
+            return v;
+        };
+        std::string mode = unquote(FpJsonGet(staticJson, "webrtc"));
+        std::string ipRaw = FpJsonGet(staticJson, "WebRTCAddress");
+        if (ipRaw.empty() || ipRaw == "\"\"") ipRaw = FpJsonGet(dynamicJson, "WebRTCAddress");
+        std::string ip = unquote(ipRaw);
+        if (mode.empty()) {
+            std::string disabled = FpJsonGet(staticJson, "DisableWebRTC");
+            if (disabled.empty()) disabled = FpJsonGet(dynamicJson, "DisableWebRTC");
+            if (disabled == "true" || disabled == "\"true\"") mode = "disabled";
+            else mode = ip.empty() ? "forward" : "proxy";
+        }
+        const FpWebRtcResolution rtc = FpResolveWebRtc(W(mode), W(ip));
+        const std::string rtcParams = FpBuildWebRtcSunParams(rtc);
+        if (rtcParams.size() >= 2)
+            sp += "," + rtcParams.substr(1, rtcParams.size() - 2);
+    }
     if (attr != INVALID_FILE_ATTRIBUTES)
         sp += ",\"CookiesFile\":\"" + JsonEscapeStr(N(wCookies)) + "\"";
     // 运行时噪声种子：官方 canvasId?canvasId:fbccId；离线无 canvasId，直接用 fbccId
@@ -872,6 +896,10 @@ std::string FpDiagDumpLaunch(const std::wstring& exe, const std::wstring& workDi
             std::string dh = dec.substr(0, dec.size() > 96 ? 96 : dec.size());
             for (char& c : dh) { if (c == '\r' || c == '\n' || c == '\t') c = ' '; }
             o << "\n[diag] ext.decode=OK head=" << dh << (dec.size() > 96 ? "..." : "");
+            std::string wrDisabled = FpJsonGet(dec, "DisableWebRTC");
+            std::string wrAddress = FpJsonGet(dec, "WebRTCAddress");
+            o << "\n[diag] ext.webrtc.disabled=" << (wrDisabled.empty() ? "(absent)" : wrDisabled)
+              << " address=" << (!wrAddress.empty() && wrAddress != "\"\"" ? "set" : "empty");
         } else {
             o << "\n[diag] ext.decode=FAIL(!!换表/编码异常，浏览器会拒绝指纹)";
         }

@@ -55,3 +55,19 @@ inline FpWebRtcResolution FpResolveWebRtc(const std::wstring& mode,
     // disabled 及未知值都采用安全默认值：禁用 WebRTC。
     return result;
 }
+
+inline std::string FpBuildWebRtcSunParams(const FpWebRtcResolution& rtc) {
+    std::string json = "{\"DisableWebRTC\":";
+    json += rtc.disableWebRtc ? "true" : "false";
+    if (!rtc.address.empty()) {
+        json += ",\"WebRTCAddress\":\"";
+        for (wchar_t c : rtc.address) {
+            if (c < 0x21 || c > 0x7e || c == L'"' || c == L'\\')
+                return "{\"DisableWebRTC\":true}";
+            json += static_cast<char>(c);
+        }
+        json += '"';
+    }
+    json += '}';
+    return json;
+}

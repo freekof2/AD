@@ -16,23 +16,30 @@ int main() {
     const FpWebRtcResolution forward = FpResolveWebRtc(L"forward", L"104.28.152.166");
     CHECK(!forward.disableWebRtc && !forward.disableUdp && forward.address.empty());
     CHECK(!forward.proxyIpMissing && forward.proxyIpIgnored);
+    CHECK(FpBuildWebRtcSunParams(forward) == "{\"DisableWebRTC\":false}");
 
     const FpWebRtcResolution disabled = FpResolveWebRtc(L"disabled", L"");
     CHECK(disabled.disableWebRtc && disabled.address.empty());
     CHECK(!disabled.proxyIpMissing);
+    CHECK(FpBuildWebRtcSunParams(disabled) == "{\"DisableWebRTC\":true}");
 
     const FpWebRtcResolution proxy4 = FpResolveWebRtc(L"proxy", L"203.0.113.8");
     CHECK(!proxy4.disableWebRtc && proxy4.address == L"203.0.113.8");
     CHECK(!proxy4.proxyIpMissing);
+    CHECK(FpBuildWebRtcSunParams(proxy4) ==
+        "{\"DisableWebRTC\":false,\"WebRTCAddress\":\"203.0.113.8\"}");
 
     const FpWebRtcResolution proxyTrimmed = FpResolveWebRtc(L"proxy", L" 203.0.113.8 \r\n");
     CHECK(!proxyTrimmed.disableWebRtc && proxyTrimmed.address == L"203.0.113.8");
 
     const FpWebRtcResolution proxy6 = FpResolveWebRtc(L"proxy", L"2001:db8::8");
     CHECK(!proxy6.disableWebRtc && proxy6.address == L"2001:db8::8");
+    CHECK(FpBuildWebRtcSunParams(proxy6) ==
+        "{\"DisableWebRTC\":false,\"WebRTCAddress\":\"2001:db8::8\"}");
 
     const FpWebRtcResolution missing = FpResolveWebRtc(L"proxy", L"  ");
     CHECK(missing.disableWebRtc && missing.address.empty() && missing.proxyIpMissing);
+    CHECK(FpBuildWebRtcSunParams(missing) == "{\"DisableWebRTC\":true}");
 
     const FpWebRtcResolution invalid = FpResolveWebRtc(L"proxy", L"192.0.2.999");
     CHECK(invalid.disableWebRtc && invalid.address.empty() && invalid.proxyIpMissing);

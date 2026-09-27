@@ -32,7 +32,8 @@ name: Build SunLauncher App
 #   - 以缓存为准：UserId/CanvasMark/WebGLMark/AudioFp/ClientRects/ProxyChain/DeviceName/
 #     MacAddress/MediaDevices/TTSEngines/Langs/TimeZone/Geoposition/WebRTCAddress/
 #     其余保护键以缓存为准；WebRTCAddress/DisableWebRTC 由 native WebRTC 模式解析器
-#     按 forward/proxy/disabled 明确同步写入 static + dynamic，Web UI API 保持保护键策略。
+#     按 forward/proxy/disabled 明确同步写入 sunBrowserParams ext + static + dynamic，
+#     Web UI API 保持保护键策略。
 # asar 兼容路由（main.cpp 另有 B 组实现，行为对齐 main.min.js）：
 #   POST /api/openBrowser /api/openBrowserV3 /api/checkOpen /api/checkProfileOpen
 #     /api/batcCloseBrowser /api/updateTabs /api/frontBrowser /api/log
@@ -291,7 +292,8 @@ jobs:
             if ($fpc2 -notmatch [regex]::Escape($s)) { throw "WebRTC persistence contract '$s' missing in fp_ui.cpp" }
           }
           $rtcFpCpp = Get-Content launcher\cpp\fingerprint.cpp -Raw
-          foreach ($s in @("webrtc.mode=", "webrtc-ip-handling-policy=disable_non_proxied_udp")) {
+          foreach ($s in @("webrtc.mode=", "FpBuildWebRtcSunParams", "sunBrowserParams.WebRTCAddress",
+                           "ext.webrtc.disabled=", "webrtc-ip-handling-policy=disable_non_proxied_udp")) {
             if ($rtcFpCpp -notmatch [regex]::Escape($s)) { throw "WebRTC launch/diagnostic contract '$s' missing" }
           }
           Write-Host "webrtc persistence contract ok"
