@@ -181,12 +181,25 @@ jobs:
           $mcppProf = Get-Content launcher\cpp\main.cpp -Raw
           $fhProf = Get-Content launcher\cpp\fp_ui.h -Raw
           $hProf = Get-Content launcher\cpp\SunLauncher.h -Raw
-          foreach ($s in @("F_PDATADIR", "F_PBROWSERDIR", "profDataDir", "profBrowserDir",
+          foreach ($s in @("F_PDATADIR", "F_PBROWSERDIR", "F_BROWSEDATA", "F_BROWSEBROWSER",
+                           "FpPageProc", "SetWindowSubclass", "SHBrowseForFolderW", "GetOpenFileNameW",
+                           "profDataDir", "profBrowserDir",
                            "指纹保存 profiles目录", "EffDataDir", "EffBrowserDir", "diag 独立目录生效")) {
             $hit = ($fpcProf -match [regex]::Escape($s)) -or ($mcppProf -match [regex]::Escape($s)) -or ($fhProf -match [regex]::Escape($s)) -or ($hProf -match [regex]::Escape($s))
             if (-not $hit) { throw "missing per-profile-dir symbol '$s'" }
             Write-Host "profdir ok: $s"
           }
+          # 2a5d. 语言三键对齐（k1h60tsv 实测：AcceptLang 缺失致浏览器中文显示错乱）：
+          #     fpConfig 必写 pageLanguageSwitch/pageLanguage/AcceptLang(getAccept 派生)；
+          #     /api/fp/save 对 Langs/AcceptLang 放行表单新值；打开/导入回填同表。
+          foreach ($s in @("pageLanguageSwitch", "AcceptLang", "buildAccept", "allowNew")) {
+            $hit = ($fpcProf -match [regex]::Escape($s)) -or ($mcppProf -match [regex]::Escape($s))
+            if (-not $hit) { throw "missing lang-align symbol '$s'" }
+            Write-Host "langalign ok: $s"
+          }
+          # 2a5e. F_IMPORT 全覆盖（与打开回填同表，导入同样对齐，不止语言代理）。
+          if ($fpcProf -notmatch "F_IMPORT 全覆盖") { throw "F_IMPORT full-cover comment missing" }
+          Write-Host "fimport-cover ok"
           # 2a6. 精确树杀：多开互不干扰（根因：旧树杀全杀同名 SunBrowser，
           #     起第二个 profile 时把第一个的浏览器杀掉，一个能开网址一个不能）
           #     注意：$fpCpp 在上方 2a4 节已赋值，此处直接复用（同文件作用域内）。

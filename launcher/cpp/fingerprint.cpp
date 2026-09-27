@@ -499,6 +499,7 @@ std::wstring FpBuildCmdline(const std::wstring& profileDir, int port,
     static const char* kExtraAllow[] = {
         // 官方 sunBrowserParams 常用小标量（与 main.min.js set* 系列写入键对齐）
         "DisableContainer","LoadExtensionErrorBox","ForceProcessExit","StartTime",
+        "DisableBackgroundMode",
         "Platform","Vendor","ScreenSize","HardwareConcurrency","DeviceMemory",
         "EnableDoNotTrack","FlashPluginSetting","FlashPluginPath","MaxTouchPoints",
         "NewMobileMode","MobileModeFixedResolution","DisabledFonts","AllowScanPorts",

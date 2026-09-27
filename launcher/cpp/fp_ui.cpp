@@ -271,13 +271,16 @@ std::string FpFormToFpConfig(const FpFormData& f) {
     };
     std::string sp = N(f.webrtc), tz = (f.timezoneMode == L"ip") ? "1" : "0";
     std::string o = "{\"webrtc\":\"" + sp + "\",\"automatic_timezone\":\"" + tz + "\"";
+    o += ",\"tzAuto\":\"" + tz + "\"";
     if (tz == "0") {
         std::string tzn = N(f.timezone);
         for (auto& c : tzn) if (c == ' ') c = '_';
         o += ",\"timezone\":\"" + tzn + "\"";
     } else o += ",\"timezone\":\"\"";
     std::string loc = N(f.geoMode);
-    o += ",\"location\":\"" + loc + "\",\"location_switch\":\"" + std::string(f.geoIp == L"ip" ? "1" : "0") + "\"";
+    std::string locSw = (f.geoIp == L"ip" ? "1" : "0");
+    o += ",\"location\":\"" + loc + "\",\"location_switch\":\"" + locSw + "\"";
+    o += ",\"locationSwitch\":\"" + locSw + "\"";
     if (f.geoIp != L"ip")
         o += ",\"latitude\":\"" + N(f.lat) + "\",\"longitude\":\"" + N(f.lng) + "\",\"accuracy\":\"" + N(f.accuracy) + "\"";
     else o += ",\"latitude\":\"\",\"longitude\":\"\",\"accuracy\":\"\"";
@@ -297,6 +300,7 @@ std::string FpFormToFpConfig(const FpFormData& f) {
     if (f.resMode == L"custom" && !f.resW.empty() && !f.resH.empty())
         res = N(f.resW) + "_" + N(f.resH);
     o += ",\"screen_resolution\":\"" + res + "\"";
+    o += ",\"screenResolution\":\"" + res + "\"";
     std::string cpu = (f.cpuMode == L"real") ? "default" : N(f.cpu);
     std::string ram = (f.ramMode == L"real") ? "default" : N(f.ram);
     o += ",\"hardware_concurrency\":\"" + cpu + "\",\"device_memory\":\"" + ram + "\"";
@@ -607,6 +611,21 @@ static const int kFpContentW = 828;   // 内容区宽（窗口 860 - 边距 2*16
 static const int kFpContentH = 1770;  // 内容总高（A2 新增 52 + 整体下移 48：1674+96=1770）
 
 // 单页窗口状态（滚动位置 + 内容容器；Tab 相关已删除，见 git 历史）
+// hPage 子类化：STATIC 父容器默认把 BUTTON 的 WM_COMMAND 吃掉（BN_CLICKED 不向上传），
+// 浏览按钮（F_BROWSEDATA/F_BROWSEBROWSER）及页内其它按钮靠它转发到 FpWndProc。
+// 根因：浏览按钮“没反应”即 hPage 吞消息；转发后按 id 原样投递给顶层 hDlg。
+static LRESULT CALLBACK FpPageProc(HWND hp, UINT msg, WPARAM wp, LPARAM lp,
+    UINT_PTR, DWORD_PTR dwRef) {
+    if (msg == WM_COMMAND || msg == WM_NOTIFY) {
+        HWND hTop = (HWND)dwRef;
+        if (hTop && ::IsWindow(hTop)) {
+            LRESULT r = ::SendMessageW(hTop, msg, wp, lp);
+            if (msg == WM_COMMAND) return 0;
+            return r;
+        }
+    }
+    return ::DefSubclassProc(hp, msg, wp, lp);
+}
 struct FpWnd {
     HWND hDlg = NULL, hScroll = NULL, hStatus = NULL;
     HWND ctl[F_END - F_BASE] = {};
@@ -1125,6 +1144,8 @@ static LRESULT CALLBACK FpWndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
         HWND hPage = ::CreateWindowW(L"STATIC", L"", WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN,
             0, 0, kFpContentW, kFpContentH, w->hScroll, NULL, hi, NULL);
         FpBuildPages(w, hPage, hi);
+        // hPage 子类化转发 WM_COMMAND/WM_NOTIFY 到顶层（浏览按钮没反应的根因修复）
+        ::SetWindowSubclass(hPage, FpPageProc, 1, (DWORD_PTR)h);
         FpScrollInit(w);
         // 底部按钮（y=564，高 30，互不重叠：随机 8..108；保存 636..736；取消 744..844）
         FpMkBtn(h, w, F_RANDOM, L"一键随机", 8, 564, 100);
@@ -1415,9 +1436,19 @@ static LRESULT CALLBACK FpWndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
         int code = HIWORD(wp);
         auto C = [&](int c) { return w->ctl[c - F_BASE]; };
         if (id == F_CANCEL) { ::DestroyWindow(h); return 0; }
-        // A2 浏览按钮：数据目录选父目录（SHGetFolder）；浏览器目录选 SunBrowser.exe
+        // A2 浏览按钮：数据目录选父目录（SHBrowseForFolder）；浏览器目录选 SunBrowser.exe
         // 文件（GetOpenFileName），自动取其父目录填入。选后 FpCollect 同步表单。
+        // 注意：这两个按钮在 hPage 容器内，经 FpPageProc 子类化转发到此（直接点没反应
+        // 即转发缺失，见 FpPageProc/SetWindowSubclass）。COM 按需初始化/反初始化。
         if (id == F_BROWSEDATA) {
+            bool needUninit = false;
+            HRESULT hrCo = ::CoInitializeEx(NULL, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+            if (SUCCEEDED(hrCo)) needUninit = true;
+            else if (hrCo != RPC_E_CHANGED_MODE) {
+                LOG(L"指纹浏览 COM初始化失败 hr=" + std::to_wstring((unsigned)hrCo) + L" " + w->profile);
+                ::SetWindowTextW(w->hStatus, L"浏览失败：COM 初始化失败");
+                return 0;
+            }
             wchar_t dir[MAX_PATH]{};
             BROWSEINFOW bi{};
             bi.hwndOwner = h;
@@ -1433,7 +1464,12 @@ static LRESULT CALLBACK FpWndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
                     LOG(L"指纹浏览 数据目录=" + std::wstring(dir) + L" " + w->profile);
                 }
                 ::CoTaskMemFree(pidl);
+            } else {
+                DWORD le = ::GetLastError();
+                LOG(L"指纹浏览 数据目录取消/失败 le=" + std::to_wstring(le) + L" " + w->profile);
+                ::SetWindowTextW(w->hStatus, L"未选择数据目录");
             }
+            if (needUninit) ::CoUninitialize();
             return 0;
         }
         if (id == F_BROWSEBROWSER) {
@@ -1445,7 +1481,7 @@ static LRESULT CALLBACK FpWndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
             ofn.nMaxFile = MAX_PATH;
             ofn.lpstrFilter = L"SunBrowser 程序\0SunBrowser.exe\0所有文件\0*.*\0";
             ofn.lpstrTitle = L"选择浏览器内核程序 SunBrowser.exe（自动取其父目录）";
-            ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST;
+            ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_EXPLORER;
             if (::GetOpenFileNameW(&ofn) && file[0]) {
                 std::wstring f = file, low = file;
                 for (auto& c : low) c = towlower(c);
@@ -1460,6 +1496,13 @@ static LRESULT CALLBACK FpWndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
                 FpCollect(w);
                 ::SetWindowTextW(w->hStatus, L"浏览器目录已选择（保存进独立目录）");
                 LOG(L"指纹浏览 浏览器目录=" + dir + L" file=" + f + L" " + w->profile);
+            } else {
+                DWORD extErr = ::CommDlgExtendedError();
+                LOG(L"指纹浏览 浏览器文件取消/失败 extErr=" + std::to_wstring(extErr) + L" " + w->profile);
+                if (extErr != 0)
+                    ::SetWindowTextW(w->hStatus, L"文件选择失败，换个目录重试");
+                else
+                    ::SetWindowTextW(w->hStatus, L"未选择浏览器文件");
             }
             return 0;
         }
@@ -1673,6 +1716,73 @@ static LRESULT CALLBACK FpWndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
                         if (!first.empty()) first.erase(first.find_last_not_of(L" \t") + 1);
                         w->form.pageLang = first.empty() ? L"en-US" : first;
                     } else if (w->form.uiLang == L"follow_lang") w->form.pageLang.clear();
+                }
+                // F_IMPORT 全覆盖（与打开回填同表）：os/CPU/RAM/设备/MAC/媒体/时区/地理/
+                // 噪音/WebRTC，ui 缺失才用 static/dynamic 补；ui 有值不覆盖。
+                {
+                    std::string uiOs = FpJsonGet(ui2, "os");
+                    if (uiOs.empty() || uiOs == "\"\"") {
+                        v = FpJsonGet(sj2, "Platform");
+                        if (!v.empty() && v.front() == '"') {
+                            std::string pl = N(WJ(v));
+                            for (auto& c : pl) c = tolower(c);
+                            if (pl.find("mac") != std::string::npos || pl.find("darwin") != std::string::npos) w->form.os = L"mac";
+                            else if (pl.find("linux") != std::string::npos) w->form.os = L"linux";
+                            else if (pl.find("android") != std::string::npos) w->form.os = L"android";
+                            else if (pl.find("iphone") != std::string::npos || pl.find("ios") != std::string::npos) w->form.os = L"ios";
+                            else w->form.os = L"win";
+                        }
+                    }
+                    std::string uiCpu = FpJsonGet(ui2, "hardwareConcurrency");
+                    if (uiCpu.empty() || uiCpu == "\"\"") {
+                        v = FpJsonGet(sj2, "HardwareConcurrency");
+                        if (!v.empty()) { w->form.cpu = W(v); w->form.cpuMode = (v == "default" || v == "\"default\"") ? L"real" : L"custom"; }
+                    }
+                    std::string uiRam = FpJsonGet(ui2, "deviceMemory");
+                    if (uiRam.empty() || uiRam == "\"\"") {
+                        v = FpJsonGet(sj2, "DeviceMemory");
+                        if (!v.empty()) { w->form.ram = W(v); w->form.ramMode = (v == "default" || v == "\"default\"") ? L"real" : L"custom"; }
+                    }
+                    std::string uiDev = FpJsonGet(ui2, "devName");
+                    if (uiDev.empty() || uiDev == "\"\"") { v = FpJsonGet(sj2, "DeviceName"); if (!v.empty()) w->form.devName = WJ(v); }
+                    std::string uiMac = FpJsonGet(ui2, "mac");
+                    if (uiMac.empty() || uiMac == "\"\"") { v = FpJsonGet(sj2, "MacAddress"); if (!v.empty()) w->form.mac = WJ(v); }
+                    std::string uiMd = FpJsonGet(ui2, "mediaDevices");
+                    if (uiMd.empty() || uiMd == "\"\"") { v = FpJsonGet(sj2, "MediaDevices"); if (!v.empty() && v.front() == '"') w->form.mediaDevices = WJ(v); }
+                    std::string uiTz = FpJsonGet(ui2, "timezone");
+                    if (uiTz.empty() || uiTz == "\"\"") {
+                        v = FpJsonGet(sj2, "TimeZone");
+                        if (!v.empty() && v.front() == '"') {
+                            std::string t = N(WJ(v)); for (auto& c : t) if (c == '_') c = ' ';
+                            w->form.timezone = W(t); w->form.timezoneMode = L"custom";
+                        }
+                    }
+                    std::string uiG = FpJsonGet(ui2, "lat");
+                    if ((uiG.empty() || uiG == "\"\"") && !dj2.empty()) {
+                        std::string g = FpJsonGet(dj2, "Geoposition");
+                        if (g.size() >= 2 && g.front() == '"') {
+                            std::string gs = N(WJ(g));
+                            size_t c1 = gs.find(','), c2 = gs.find(',', c1 + 1);
+                            if (c1 != std::string::npos) {
+                                w->form.lat = W(gs.substr(0, c1));
+                                w->form.lng = W(c1 + 1 < gs.size() ? gs.substr(c1 + 1, (c2 == std::string::npos ? c2 : c2 - c1 - 1)) : "");
+                                if (c2 != std::string::npos) w->form.accuracy = W(gs.substr(c2 + 1));
+                            }
+                        }
+                    }
+                    std::string uiAu = FpJsonGet(ui2, "audio");
+                    if (uiAu.empty() || uiAu == "\"\"") { v = FpJsonGet(sj2, "AudioFp"); if (!v.empty()) w->form.swAudio = (v != "0" && v != "\"0\""); }
+                    std::string uiCr = FpJsonGet(ui2, "clientRects");
+                    if (uiCr.empty() || uiCr == "\"\"") { v = FpJsonGet(sj2, "ClientRectFp"); if (!v.empty()) w->form.swClientRects = (v != "0" && v != "\"0\""); }
+                    std::string uiCv = FpJsonGet(ui2, "canvas");
+                    if (uiCv.empty() || uiCv == "\"\"") { v = FpJsonGet(sj2, "CanvasMark"); if (!v.empty()) w->form.swCanvas = true; }
+                    std::string uiWg = FpJsonGet(ui2, "webglImage");
+                    if (uiWg.empty() || uiWg == "\"\"") { v = FpJsonGet(sj2, "WebGLMark"); if (!v.empty()) w->form.swWebglImg = true; }
+                    std::string uiWr = FpJsonGet(ui2, "webrtc");
+                    if (uiWr.empty() || uiWr == "\"\"") {
+                        v = FpJsonGet(sj2, "WebRTCAddress"); std::string dw = FpJsonGet(sj2, "DisableWebRTC");
+                        if (dw == "true" || dw == "\"true\"") w->form.webrtc = L"disabled";
+                    }
                 }
                 std::string pc = FpJsonGet(sj2, "ProxyChain");
                 std::string uiH = FpJsonGet(ui2, "proxyHost"), uiP = FpJsonGet(ui2, "proxyPort");
@@ -1995,6 +2105,7 @@ static LRESULT CALLBACK FpWndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
         // 注意：指纹窗口是模态子窗口（FpUiShowModal 自有消息循环，靠 IsWindow 破环退出），
         // 此处绝不能 PostQuitMessage——否则 WM_QUIT 会漏进主线程消息队列，主窗口跟随退出。
         // “取消按钮变退出程序”的根因即此。保存/取消分支只 DestroyWindow 即可。
+        ::RemoveWindowSubclass(::GetDlgItem(h, F_TAB), FpPageProc, 1);
         return 0;
     }
     return ::DefWindowProcW(h, msg, wp, lp);
