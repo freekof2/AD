@@ -289,12 +289,36 @@ std::string FpFormToFpConfig(const FpFormData& f) {
     // 与 web-ui collectFp 一致：按逗号/分号/换行切分计数（单行 EDIT 无换行，但兼容粘贴值）
     { size_t p = 0; cnt = 0; while (p <= lang.size()) { size_t e = lang.find_first_of(",;\n", p); cnt++; if (e == std::string::npos) break; p = e + 1; } }
     o += ",\"language\":\"" + lang + "\",\"language_switch\":\"" + std::string(cnt <= 1 ? "1" : "0") + "\"";
+    // 兼容别名：官方 sunBrowserParams/历史 static 用 Langs（首字母大写），与 language 同值；
+    // 读取侧两者都认（ui 有 language 即用），保存侧双写，避免“改了语言不生效”。
+    o += ",\"Langs\":\"" + lang + "\"";
     o += ",\"AcceptLang\":\"" + buildAccept(lang) + "\"";
     // 语言三键对齐（main.min.js setLangs/setUILanguage 实测）：
     // ui 界面语言：follow_lang -> pageLanguageSwitch=1（跟随语言）；custom -> 0 + pageLanguage。
     // uiLang 存档键为 uiLang（follow_lang/custom），页面语言存档键为 pageLanguage。
     o += ",\"pageLanguageSwitch\":\"" + std::string(f.uiLang == L"custom" ? "0" : "1") + "\"";
-    if (f.uiLang == L"custom") o += ",\"pageLanguage\":\"" + N(f.pageLang) + "\"";
+    // 页面语言只存单tag（--lang 同源；"en-US,en"类多值取首项，避免浏览器回落中文）
+    if (f.uiLang == L"custom") {
+        std::string pg = N(f.pageLang);
+        size_t e = pg.find_first_of(",;\n \t\"'");
+        if (e != std::string::npos) pg = pg.substr(0, e);
+        size_t a = pg.find_first_not_of(" \t\"'");
+        if (a != std::string::npos) {
+            size_t b = pg.find_last_not_of(" \t\"'");
+            pg = pg.substr(a, b - a + 1);
+        } else pg.clear();
+        if (pg.empty()) {
+            // 为空则从语言列表首项派生，与回填一致
+            size_t c = lang.find_first_of(",;\n");
+            pg = (c == std::string::npos) ? lang : lang.substr(0, c);
+            size_t aa = pg.find_first_not_of(" \t\"'");
+            if (aa != std::string::npos) {
+                size_t bb = pg.find_last_not_of(" \t\"'");
+                pg = pg.substr(aa, bb - aa + 1);
+            } else pg = "en-US";
+        }
+        o += ",\"pageLanguage\":\"" + pg + "\"";
+    }
     else o += ",\"pageLanguage\":\"\"";
     std::string res = N(f.resolution);
     if (f.resMode == L"custom" && !f.resW.empty() && !f.resH.empty())
@@ -405,7 +429,7 @@ std::string FpFormToFpConfig(const FpFormData& f) {
 enum FpCtl {
     F_BASE = 2000,
     F_BROWSER, F_KERNEL, F_BDIR, F_OS, F_UAPRESET, F_UA, F_SHUFFLEUA,
-    F_PDATADIR, F_PBROWSERDIR, F_BROWSEDATA, F_BROWSEBROWSER, // A2 二合一目录+浏览按钮
+    F_PDATADIR, F_PBROWSERDIR, F_BROWSEDATA, F_BROWSEBROWSER, F_BROWSEFP, // A2 目录+浏览，指纹目录浏览同数据源
     F_PTYPE, F_PHOST, F_PPORT, F_PUSER, F_PPASS, F_PTEST, F_PSAVE, F_PSTATUS,
     F_COOKIE, F_MERGECOOKIE, F_REMARK,
     F_WEBRTC, F_TZM, F_TZ, F_GEOM, F_GEOIP, F_LAT, F_LNG, F_ACC,
@@ -735,11 +759,12 @@ static void FpBuildPages(FpWnd* w, HWND p, HINSTANCE hi) {
     FpComboAdd(w->ctl[F_KERNEL - F_BASE], L"chrome143 - Chrome 143 (SunBrowser 150)");
     FpComboAdd(w->ctl[F_KERNEL - F_BASE], L"chrome121 - Chrome 121 (SunBrowser 121)");
     FpComboAdd(w->ctl[F_KERNEL - F_BASE], L"firefox128 - Firefox 128 (FlowerBrowser)");
-    // F_BDIR 是历史遗留的“环境目录名”（= profile 名），只读展示，禁止编辑：
-    // 真正的数据目录 / 浏览器目录走下方 A2 行（F_PDATADIR / F_PBROWSERDIR）。
-    FpMkLabel(p, w, F_BDIR, L"环境目录名", 12, 46, 80);
-    FpMkEdit(p, w, F_BDIR, 100, 44, 570);
+    // F_BDIR 是指纹目录完整路径（= 数据父目录 + 环境名），只读展示，与数据目录同源：
+    // 数据目录改，联动刷新；浏览按钮选父目录，两行同步。真正落盘只用 A2 两行。
+    FpMkLabel(p, w, F_BDIR, L"指纹目录", 12, 46, 80);
+    FpMkEdit(p, w, F_BDIR, 100, 44, 500);
     ::SendMessageW(w->ctl[F_BDIR - F_BASE], EM_SETREADONLY, TRUE, 0);
+    FpMkBtn(p, w, F_BROWSEFP, L"浏览...", 606, 42, 64);
     // ---- A2. 本指纹独立目录（y 72..124；必填；二合一：指纹目录=数据父目录+环境名，
     // 浏览按钮选父目录；浏览器目录浏览按钮直接选 SunBrowser.exe，自动取其父目录）----
     FpMkLabel(p, w, F_PDATADIR, L"数据目录", 12, 76, 80);
@@ -957,12 +982,13 @@ static void FpFill(FpWnd* w) {
     };
     selByVal(F_BROWSER, f.browser.empty() ? L"sun" : f.browser);
     selByVal(F_KERNEL, f.kernelVer.empty() ? L"chrome143" : f.kernelVer);
-    FpSet(C(F_BDIR), f.browserDir);
+    // 指纹目录与数据目录同源显示：指纹目录 = 数据父目录 + 环境名（只读），数据目录改即联动。
     // A2 独立目录回填：必填（无全局兜底）。显示已保存的独立值；从未保存过则
     // 显示全局值作参考（带“（默认全局，可改）”后缀），保存时以前缀判断落盘。
     {
         std::wstring effD = EffDataDir(w->cfg, w->profile);
         std::wstring effB = EffBrowserDir(w->cfg, w->profile);
+        FpSet(C(F_BDIR), effD + L"\\" + w->profile);
         auto it = w->cfg.profiles.find(w->profile);
         bool hasD = (it != w->cfg.profiles.end() && !it->second.dataDir.empty());
         bool hasB = (it != w->cfg.profiles.end() && !it->second.sunBrowserDir.empty());
@@ -1010,17 +1036,36 @@ static void FpFill(FpWnd* w) {
     // uiLang 空 -> follow_lang（跟语言列表首项）；custom -> 页面语言框显示 pageLanguage。
     // pageLanguage 为空且 custom 时，从语言列表首项派生（与 getUILanguage 回退一致）。
     selByVal(F_UILANG, f.uiLang.empty() ? L"follow_lang" : f.uiLang);
+    // 页面语言单tag规范（--lang 只接受单个 locale，如 en-US；存档曾误写 "en-US,en"）：
+    // 显示与保存统一取首项，逗号/分号/空白后截断；custom 空则从语言列表首项派生。
     {
         std::wstring pl = f.pageLang;
-        if (pl.empty() && f.uiLang != L"follow_lang") {
-            size_t c = f.langList.find(L",");
-            pl = (c == std::wstring::npos) ? f.langList : f.langList.substr(0, c);
-            // 去首尾空格
-            pl.erase(0, pl.find_first_not_of(L" \t"));
-            if (!pl.empty()) pl.erase(pl.find_last_not_of(L" \t") + 1);
-            if (pl.empty()) pl = L"en-US";
+        // 规范化：取首项
+        {
+            size_t e = pl.find_first_of(L",;\n \t");
+            if (e != std::wstring::npos) pl = pl.substr(0, e);
+            pl.erase(0, pl.find_first_not_of(L" \t\"'"));
+            if (!pl.empty()) {
+                size_t ee = pl.find_last_not_of(L" \t\"'");
+                if (ee != std::wstring::npos) pl = pl.substr(0, ee + 1);
+                else pl.clear();
+            }
+            f.pageLang = pl;
         }
-        FpSet(C(F_PAGELANG), pl);
+        if (pl.empty() && f.uiLang != L"follow_lang") {
+            size_t c = f.langList.find_first_of(L",;\n");
+            pl = (c == std::wstring::npos) ? f.langList : f.langList.substr(0, c);
+            // 去首尾空格引号
+            pl.erase(0, pl.find_first_not_of(L" \t\"'"));
+            if (!pl.empty()) {
+                size_t ee = pl.find_last_not_of(L" \t\"'");
+                if (ee != std::wstring::npos) pl = pl.substr(0, ee + 1);
+                else pl.clear();
+            }
+            if (pl.empty()) pl = L"en-US";
+            f.pageLang = pl;
+        }
+        FpSet(C(F_PAGELANG), f.pageLang);
     }
     selByVal(F_RESM, f.resMode.empty() ? L"preset" : f.resMode);
     FpComboSel(C(F_RES), f.resolution.empty() ? L"none" : f.resolution.c_str());
@@ -1060,7 +1105,8 @@ static void FpCollect(FpWnd* w) {
     auto C = [&](int id) { return w->ctl[id - F_BASE]; };
     f.browser = FpFirstTok(FpComboGet(C(F_BROWSER)));
     f.kernelVer = FpFirstTok(FpComboGet(C(F_KERNEL)));
-    f.browserDir = FpGet(C(F_BDIR));
+    // browserDir 恒等于环境名（只存名，不存路径；路径走 A2），显示层 F_BDIR 为完整路径只读。
+    f.browserDir = w->profile;
     // A2 独立目录收集：必填。去“（默认全局，可改）”后缀；为空弹窗阻断保存。
     {
         auto stripTag = [](std::wstring s) -> std::wstring {
@@ -1095,7 +1141,19 @@ static void FpCollect(FpWnd* w) {
     f.langMode = FpFirstTok(FpComboGet(C(F_LANGM)));
     f.langList = FpGet(C(F_LANGLIST));
     f.uiLang = FpFirstTok(FpComboGet(C(F_UILANG)));
-    f.pageLang = FpGet(C(F_PAGELANG));
+    // 页面语言收集即规范为单tag（与显示一致；--lang/保存同源）
+    {
+        std::wstring pl = FpGet(C(F_PAGELANG));
+        size_t e = pl.find_first_of(L",;\n \t\"'");
+        if (e != std::wstring::npos) pl = pl.substr(0, e);
+        pl.erase(0, pl.find_first_not_of(L" \t\"'"));
+        if (!pl.empty()) {
+            size_t ee = pl.find_last_not_of(L" \t\"'");
+            if (ee != std::wstring::npos) pl = pl.substr(0, ee + 1);
+            else pl.clear();
+        }
+        f.pageLang = pl;
+    }
     f.resMode = FpFirstTok(FpComboGet(C(F_RESM)));
     f.resolution = FpComboGet(C(F_RES));
     f.resW = FpGet(C(F_RESW)); f.resH = FpGet(C(F_RESH));
@@ -1459,8 +1517,10 @@ static LRESULT CALLBACK FpWndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
             if (pidl) {
                 if (::SHGetPathFromIDListW(pidl, dir) && dir[0]) {
                     FpSet(C(F_PDATADIR), dir);
+                    // 同源联动：指纹目录 = 数据父目录 + 环境名，只读刷新
+                    FpSet(C(F_BDIR), std::wstring(dir) + L"\\" + w->profile);
                     FpCollect(w);
-                    ::SetWindowTextW(w->hStatus, L"数据目录已选择（保存进独立目录）");
+                    ::SetWindowTextW(w->hStatus, L"数据目录已选择（指纹目录已同步，保存进独立目录）");
                     LOG(L"指纹浏览 数据目录=" + std::wstring(dir) + L" " + w->profile);
                 }
                 ::CoTaskMemFree(pidl);
@@ -1504,6 +1564,37 @@ static LRESULT CALLBACK FpWndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
                 else
                     ::SetWindowTextW(w->hStatus, L"未选择浏览器文件");
             }
+            return 0;
+        }
+        // 指纹目录浏览：与数据目录同源（选父目录，两行同步）。指纹目录本身只读，不直接编辑。
+        if (id == F_BROWSEFP) {
+            bool needUninit = false;
+            HRESULT hrCo = ::CoInitializeEx(NULL, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+            if (SUCCEEDED(hrCo)) needUninit = true;
+            else if (hrCo != RPC_E_CHANGED_MODE) {
+                ::SetWindowTextW(w->hStatus, L"浏览失败：COM 初始化失败");
+                return 0;
+            }
+            wchar_t dir[MAX_PATH]{};
+            BROWSEINFOW bi{};
+            bi.hwndOwner = h;
+            bi.pszDisplayName = dir;
+            bi.lpszTitle = L"选择指纹目录的父目录（指纹目录=父目录+环境名，与数据目录相同）";
+            bi.ulFlags = BIF_RETURNONLYFSDIRS | BIF_NEWDIALOGSTYLE;
+            PIDLIST_ABSOLUTE pidl = ::SHBrowseForFolderW(&bi);
+            if (pidl) {
+                if (::SHGetPathFromIDListW(pidl, dir) && dir[0]) {
+                    FpSet(C(F_PDATADIR), dir);
+                    FpSet(C(F_BDIR), std::wstring(dir) + L"\\" + w->profile);
+                    FpCollect(w);
+                    ::SetWindowTextW(w->hStatus, L"指纹目录已选择（已同步数据目录）");
+                    LOG(L"指纹浏览 指纹目录=" + std::wstring(dir) + L"\\" + w->profile + L" " + w->profile);
+                }
+                ::CoTaskMemFree(pidl);
+            } else {
+                ::SetWindowTextW(w->hStatus, L"未选择指纹目录");
+            }
+            if (needUninit) ::CoUninitialize();
             return 0;
         }
         // 内核联动浏览器目录：内核下拉切换时，按“浏览器类型→内核版本→目录名”规则
@@ -2061,35 +2152,100 @@ static LRESULT CALLBACK FpWndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
                 }
             }
                 // 3. static 写回：FpFormToFpConfig 按表单组装（含 ProxyChain 数组），
-                // protectFill 语义：已有缓存的保护键以缓存为准，但 ProxyChain 为空数组时
-                // 允许表单新值覆盖（否则代理永远写不进去——本次 SOCKS5 不生效根因）。
-                // 对齐验证（k1h60tsv 实测）：语言三键 Langs/AcceptLang 必写（浏览器中文/
-                // 英文显示即它们决定）；Platform/HardwareConcurrency/DeviceMemory 等同表。
-                // 例外放行（表单新值覆盖缓存旧值）：Langs/AcceptLang（语言三键，用户改
-                // 中文/英文必须生效）+ ProxyChain（代理同理）。其余保护键仍以缓存为准。
+                // 合并策略（防官方 static 被 fpConfig 小 schema 覆盖丢失键）：
+                // 以缓存 curS 为基（非空时），把表单 cfg 的键逐个覆盖上去；保护键仍以缓存为准，
+                // 例外 Langs/AcceptLang/language/pageLanguage* /ProxyChain 取表单新值（语言/代理必须生效）。
+                // 缓存为空（新环境）则直接用 cfg。
                 {
                     std::string cfg = FpFormToFpConfig(w->form);
                     std::string curS;
                     FpLoadStaticJson(dd, curS);
-                // 保護鍵回填（与 main.cpp /api/fp/save protectFill 同表），例外见上：
-                static const char* prot[] = { "DeviceName","MacAddress",
-                    "MediaDevices","TTSEngines","HardwareConcurrency",
-                    "DeviceMemory","Platform","UserId","CanvasMark","WebGLMark","AudioFp",
-                    "ClientRectFp", NULL };
-                for (int i = 0; prot[i]; i++) {
-                    std::string cv = FpJsonGet(curS, prot[i]);
-                    if (!cv.empty()) {
-                        std::string merged = FpJsonSet(cfg, prot[i], cv);
-                        if (!merged.empty()) cfg = merged;
+                    // 枚举 cfg 顶层键（简易扫描 "key" :，深度1，够用）
+                    auto topKeys = [](const std::string& j) {
+                        std::vector<std::string> ks;
+                        size_t p = 0;
+                        if (j.empty() || j[0] != '{') return ks;
+                        p = 1;
+                        int depth = 0; bool inS = false;
+                        while (p < j.size()) {
+                            char c = j[p];
+                            if (inS) {
+                                if (c == '\\') { p += 2; continue; }
+                                if (c == '"') inS = false;
+                                p++; continue;
+                            }
+                            if (c == '"') {
+                                // 仅深度0的 key
+                                if (depth == 0) {
+                                    size_t q = j.find('"', p + 1);
+                                    if (q == std::string::npos) break;
+                                    // 确认后面是 :
+                                    size_t r = q + 1;
+                                    while (r < j.size() && (j[r] == ' ' || j[r] == '\t')) r++;
+                                    if (r < j.size() && j[r] == ':') {
+                                        ks.push_back(j.substr(p + 1, q - p - 1));
+                                        p = r + 1; continue;
+                                    }
+                                }
+                                inS = true; p++; continue;
+                            }
+                            if (c == '{' || c == '[') depth++;
+                            else if (c == '}' || c == ']') { if (depth > 0) depth--; }
+                            p++;
+                        }
+                        return ks;
+                    };
+                    std::string mergedBase;
+                    if (!curS.empty()) {
+                        mergedBase = curS;
+                        std::vector<std::string> keys = topKeys(cfg);
+                        static const char* prot2[] = { "DeviceName","MacAddress",
+                            "MediaDevices","TTSEngines","HardwareConcurrency",
+                            "DeviceMemory","Platform","UserId","CanvasMark","WebGLMark","AudioFp",
+                            "ClientRectFp", NULL };
+                        auto inProt = [&](const std::string& k) {
+                            for (int i = 0; prot2[i]; i++) if (k == prot2[i]) return true;
+                            return false; };
+                        for (auto& k : keys) {
+                            // 例外：语言三键 + 代理 + 页面语言系列表单优先
+                            bool forceForm = (k == "Langs" || k == "AcceptLang" || k == "language" ||
+                                k == "language_switch" || k == "pageLanguage" || k == "pageLanguageSwitch" ||
+                                k == "ProxyChain");
+                            if (inProt(k) && !forceForm) continue; // 缓存为准
+                            std::string v = FpJsonGet(cfg, k);
+                            if (v.empty()) continue;
+                            std::string nm = FpJsonSet(mergedBase, k, v);
+                            if (!nm.empty()) mergedBase = nm;
+                        }
+                        // ProxyChain 空保护：缓存非空而表单空时保留缓存
+                        std::string curPc = FpJsonGet(curS, "ProxyChain");
+                        std::string newPc = FpJsonGet(mergedBase, "ProxyChain");
+                        if (!curPc.empty() && curPc != "[]" && (newPc.empty() || newPc == "[]")) {
+                            std::string mm = FpJsonSet(mergedBase, "ProxyChain", curPc);
+                            if (!mm.empty()) mergedBase = mm;
+                        }
+                        cfg = mergedBase;
+                    } else {
+                    // 保護鍵回填（与 main.cpp /api/fp/save protectFill 同表），例外见上：
+                    static const char* prot[] = { "DeviceName","MacAddress",
+                        "MediaDevices","TTSEngines","HardwareConcurrency",
+                        "DeviceMemory","Platform","UserId","CanvasMark","WebGLMark","AudioFp",
+                        "ClientRectFp", NULL };
+                    for (int i = 0; prot[i]; i++) {
+                        std::string cv = FpJsonGet(curS, prot[i]);
+                        if (!cv.empty()) {
+                            std::string m2 = FpJsonSet(cfg, prot[i], cv);
+                            if (!m2.empty()) cfg = m2;
+                        }
                     }
-                }
-                std::string curPc = FpJsonGet(curS, "ProxyChain");
-                std::string newPc = FpJsonGet(cfg, "ProxyChain");
-                if (!curPc.empty() && curPc != "[]" && newPc == "[]") {
-                    std::string merged = FpJsonSet(cfg, "ProxyChain", curPc);
-                    if (!merged.empty()) cfg = merged;
-                }
-                bool oks = FpSaveStaticJson(dd, cfg);
+                    std::string curPc = FpJsonGet(curS, "ProxyChain");
+                    std::string newPc = FpJsonGet(cfg, "ProxyChain");
+                    if (!curPc.empty() && curPc != "[]" && newPc == "[]") {
+                        std::string m2 = FpJsonSet(cfg, "ProxyChain", curPc);
+                        if (!m2.empty()) cfg = m2;
+                    }
+                    }
+                    bool oks = FpSaveStaticJson(dd, cfg);
                 LOG(L"指纹保存 static " + std::wstring(oks ? L"OK" : L"FAIL") +
                     L" len=" + std::to_wstring(cfg.size()) + L" " + w->profile);
             }

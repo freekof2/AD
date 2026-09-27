@@ -257,6 +257,126 @@ bool FpSaveUiExtra(const std::wstring& profileDir, const std::string& jsonText) 
     return FpWriteTextFile(profileDir + L"\\ui_fingerprint.json", jsonText);
 }
 
+// ================= 语言三键工具（对齐 main.min.js LanguageTask 全文） =================
+static std::string TrimTag(const std::string& s) {
+    size_t a = s.find_first_not_of(" \t\r\n");
+    if (a == std::string::npos) return "";
+    size_t b = s.find_last_not_of(" \t\r\n");
+    return s.substr(a, b - a + 1);
+}
+std::vector<std::string> FpParseLangList(const std::string& raw) {
+    std::vector<std::string> out;
+    std::string t = TrimTag(raw);
+    if (t.empty() || t == "\"\"" || t == "[]") return out;
+    // JSON 数组形态：["en-US","en"] -> 逐项取引号内
+    if (t.front() == '[') {
+        size_t p = 0;
+        while ((p = t.find('"', p)) != std::string::npos) {
+            size_t q = t.find('"', p + 1);
+            if (q == std::string::npos) break;
+            std::string tok = TrimTag(t.substr(p + 1, q - p - 1));
+            if (!tok.empty()) out.push_back(tok);
+            p = q + 1;
+        }
+        return out;
+    }
+    // 去一层引号 "en-US,en"
+    if (t.size() >= 2 && t.front() == '"' && t.back() == '"')
+        t = t.substr(1, t.size() - 2);
+    size_t p = 0;
+    while (p <= t.size()) {
+        size_t e = t.find_first_of(",;\n", p);
+        std::string tok = TrimTag(t.substr(p, e == std::string::npos ? e : e - p));
+        if (!tok.empty()) out.push_back(tok);
+        if (e == std::string::npos) break;
+        p = e + 1;
+    }
+    return out;
+}
+void FpCompatiLangs(std::vector<std::string>& e) {
+    if (e.empty()) return;
+    auto has = [&](const std::string& x) {
+        for (auto& y : e) if (y == x) return true; return false; };
+    auto base = [](const std::string& s) -> std::string {
+        size_t d = s.find_first_of("-_"); return (d == std::string::npos) ? s : s.substr(0, d); };
+    // i 表：[zh-HK->zh-TW][en->en-US][pt->pt-BR][es->es-ES]
+    const char* pairs[][2] = { {"zh-HK","zh-TW"},{"en","en-US"},{"pt","pt-BR"},{"es","es-ES"} };
+    for (auto& pr : pairs) {
+        if (has(pr[0]) && !has(pr[1])) e.push_back(pr[1]);
+    }
+    // o 表：[/en-(?!US)/->en-GB][/pt-(?!PT)/->pt-BR][/es-(?!ES)/->es-MX]
+    struct ReMap { const char* pat; const char* val; };
+    // 简化为前缀判断（与官方正则等价，覆盖常见情形）
+    auto matchEn = [](const std::string& s) {
+        return (s.compare(0, 3, "en-") == 0 && s != "en-US"); };
+    auto matchPt = [](const std::string& s) {
+        return (s.compare(0, 3, "pt-") == 0 && s != "pt-PT" && s != "pt-BR"); };
+    auto matchEs = [](const std::string& s) {
+        return (s.compare(0, 3, "es-") == 0 && s != "es-ES"); };
+    bool needGB = false, needBR = false, needMX = false;
+    for (auto& s : e) {
+        if (matchEn(s)) needGB = true;
+        if (matchPt(s)) needBR = true;
+        if (matchEs(s)) needMX = true;
+    }
+    if (needGB && !has("en-GB")) e.push_back("en-GB");
+    if (needBR && !has("pt-BR")) e.push_back("pt-BR");
+    if (needMX && !has("es-MX")) e.push_back("es-MX");
+    // 基语补齐：首项基语若不在列表则追加
+    std::string b0 = base(e[0]);
+    if (!has(b0)) e.push_back(b0);
+}
+std::string FpGetUILanguage(std::vector<std::string>& langs) {
+    static const char* kSup[] = {
+        "ar","am","et","bg","pl","fa","da","de","de-AT","de-DE","de-LI","de-CH","ru",
+        "fr","fr-FR","fr-CA","fr-CH","fil","fi","gu","ko","nl","ca","cs","kn","hr",
+        "lv","lt","ro","mr","ml","ms","bn","af","pt","pt-BR","pt-PT","ja","sv","sr",
+        "nb","sk","sl","sw","te","ta","th","tr","ur","uk","es","es-AR","es-CO","es-CR",
+        "es-HN","es-419","es-US","es-PE","es-MX","es-VE","es-UY","es-ES","es-CL","he",
+        "el","hu","it","it-CH","it-IT","hi","id","en","en-IE","en-AU","en-CA","en-US",
+        "en-ZA","en-NZ","en-IN","en-GB-oxendict","en-GB","vi","zh-TW","zh-CN"
+    };
+    for (auto& cur : langs) {
+        for (auto s : kSup) { if (cur == s) return cur; }
+    }
+    langs.push_back("en-US");
+    return "en-US";
+}
+std::string FpSingleLangTag(const std::string& raw) {
+    std::string t = TrimTag(raw);
+    if (t.empty() || t == "\"\"" || t == "[]") return "";
+    if (t.size() >= 2 && t.front() == '"' && t.back() == '"')
+        t = t.substr(1, t.size() - 2);
+    size_t e = t.find_first_of(",;\n \t");
+    std::string first = TrimTag(e == std::string::npos ? t : t.substr(0, e));
+    // 兼容数组残留引号
+    if (first.size() >= 2 && first.front() == '"' && first.back() == '"')
+        first = first.substr(1, first.size() - 2);
+    return TrimTag(first);
+}
+std::string FpResolveLangArg(const std::string& extraSunParamsJson, const std::string& staticJson) {
+    // 语言列表：uiExtra.language 优先，否则 static.Langs
+    std::vector<std::string> langs = FpParseLangList(FpJsonGet(extraSunParamsJson, "language"));
+    if (langs.empty())
+        langs = FpParseLangList(FpJsonGet(staticJson, "Langs"));
+    if (langs.empty()) { langs.push_back("en-US"); }
+    FpCompatiLangs(langs);
+    std::string uiDefault = FpGetUILanguage(langs);
+    // pageLanguageSwitch：uiExtra 优先（"0"=自定义，"1"=跟随），缺失看 uiLang
+    std::string sw = FpSingleLangTag(FpJsonGet(extraSunParamsJson, "pageLanguageSwitch"));
+    if (sw.empty()) {
+        std::string ul = FpSingleLangTag(FpJsonGet(extraSunParamsJson, "uiLang"));
+        if (ul == "custom") sw = "0";
+        else if (ul == "follow_lang" || ul == "follow-lang") sw = "1";
+    }
+    if (sw == "0") {
+        std::string pg = FpSingleLangTag(FpJsonGet(extraSunParamsJson, "pageLanguage"));
+        if (pg.empty() || pg == "native") return uiDefault;
+        return pg;
+    }
+    return uiDefault;
+}
+
 // ================= 极简顶层 JSON 键值 =================
 // 跳过字符串/嵌套找顶层逗号与括号，够用即可；解析失败返回 "" 不抛异常。
 static size_t SkipWs(const std::string& j, size_t p) {
@@ -572,6 +692,14 @@ std::wstring FpBuildCmdline(const std::wstring& profileDir, int port,
     // DevTools 走代理回环失败（127.0.0.1:1200 类本地代理最敏感）。
     if (!proxyArg.empty())
         cmd += L" --proxy-bypass-list=https://download.adspower.net;start.adspower.net;sys.adspower.net";
+    // 语言：官方 LanguageTask.setUILanguage win32 分支必推 --lang=<单tag>。
+    // 缺了它浏览器 UI 跟随系统（中文系统即显示中文），与指纹语言列表脱节。
+    // 推导见 FpResolveLangArg：switch==1 用 getUILanguage(language)，==0 用 pageLanguage单tag。
+    {
+        std::string langArg = FpResolveLangArg(extraSunParamsJson, staticJson);
+        if (!langArg.empty())
+            cmd += L" --lang=" + W(langArg);
+    }
     cmd += L" --extended-parameters=" + W(ext);
     if (wantConsole)
         cmd += L" --enable-logging=stderr --v=0";
@@ -772,6 +900,20 @@ std::string FpDiagDumpLaunch(const std::wstring& exe, const std::wstring& workDi
         o << "[diag] proxy.arg=" << pa << "\n";
         // bypass 现场：缺了它，localhost/DevTools 会被迫走代理（127 类本地代理最敏感）
         o << "[diag] proxy.bypass=" << DiagArgOf(cmdN, "--proxy-bypass-list=") << "\n";
+        // 语言现场：三键 + --lang 推导（浏览器中文/英文显示即它决定）
+        {
+            std::string langRaw = FpJsonGet(extraSunParamsJson, "language");
+            if (langRaw.empty()) langRaw = FpJsonGet(staticJson, "Langs");
+            std::string accRaw = FpJsonGet(staticJson, "AcceptLang");
+            std::string pgSw = FpJsonGet(extraSunParamsJson, "pageLanguageSwitch");
+            std::string pg = FpJsonGet(extraSunParamsJson, "pageLanguage");
+            std::string langArg = FpResolveLangArg(extraSunParamsJson, staticJson);
+            o << "[diag] lang.list=" << (langRaw.empty() ? "(absent)" : langRaw.substr(0, 96)) << "\n";
+            o << "[diag] lang.accept=" << (accRaw.empty() ? "(absent)" : accRaw.substr(0, 96)) << "\n";
+            o << "[diag] lang.uiSwitch=" << (pgSw.empty() ? "(absent)" : pgSw)
+              << " page=" << (pg.empty() ? "(absent)" : pg.substr(0, 48)) << "\n";
+            o << "[diag] lang.arg=" << DiagArgOf(cmdN, "--lang=") << " resolve=" << langArg << "\n";
+        }
     }
     o << "[diag] arg.ext.present=" << (extVal.empty() ? "no" : "yes") << "\n";
     // 环境变量

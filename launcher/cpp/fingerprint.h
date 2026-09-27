@@ -59,6 +59,19 @@ bool FpSaveCookiesJson(const std::wstring& profileDir, const std::string& jsonTe
 bool FpLoadUiExtra(const std::wstring& profileDir, std::string& jsonOut);
 bool FpSaveUiExtra(const std::wstring& profileDir, const std::string& jsonText);
 
+// ---------- 语言三键工具（对齐 main.min.js LanguageTask 全文） ----------
+// 解析 language 原始值（支持 "en-US,en" 字符串或 ["en-US","en"] 数组）为有序列表。
+std::vector<std::string> FpParseLangList(const std::string& raw);
+// 官方 compatiLangs 移植：补基语/映射（zh-HK->zh-TW、en->en-US、pt->pt-BR、es->es-ES 等）。
+void FpCompatiLangs(std::vector<std::string>& langs);
+// 官方 getUILanguage 移植：取列表中首个受支持项，否则返回 en-US（并 push 进列表）。
+std::string FpGetUILanguage(std::vector<std::string>& langs);
+// 取 pageLanguage 单 tag（去逗号/分号/空白后首项）；空返回 ""。
+std::string FpSingleLangTag(const std::string& raw);
+// 由 uiExtra/static 推导本次启动 --lang 值（单 tag）。逻辑对齐 setUILanguage win32 分支：
+// pageLanguageSwitch==1 -> getUILanguage(language)；==0 -> pageLanguage单tag（native则跟随系统，取getUILanguage）。
+std::string FpResolveLangArg(const std::string& extraSunParamsJson, const std::string& staticJson);
+
 // ---------- 启动参数组装 ----------
 //   --user-data-dir="<profileDir>" --profile-directory=Default
 //   --remote-debugging-port=<port> --no-first-run --no-default-browser-check

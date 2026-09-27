@@ -541,6 +541,7 @@
     };
     set("fpUaPreset", fp.uaPreset);
     set("fpProxyHost", fp.proxyHost); set("fpProxyPort", fp.proxyPort);
+    set("fpProxyUser", fp.proxyUser); set("fpProxyPass", fp.proxyPass);
     set("fpLat", fp.lat); set("fpLng", fp.lng); set("fpAccuracy", fp.accuracy);
     set("fpDevName", fp.devName); set("fpMac", fp.mac);
     set("fpCookie", fp.cookie); set("fpRemark", fp.remark);
@@ -639,6 +640,7 @@
       proxyHost: $("fpProxyHost").value.trim(),
       proxyPort: $("fpProxyPort").value.trim(),
       proxyUser: $("fpProxyUser").value.trim(),
+      proxyPass: ($("fpProxyPass") && $("fpProxyPass").value || "").trim(),
       cookie: $("fpCookie").value.trim(),
       remark: $("fpRemark").value.trim(),
       webrtc,
@@ -655,7 +657,8 @@
       languageSwitch: langList.length <= 1 ? "1" : "0",
       uiLang,
       pageLanguageSwitch: uiLang === "custom" ? "0" : "1",
-      pageLanguage: ($("fpPageLang") && $("fpPageLang").value || "").trim(),
+      // 页面语言单tag规范（--lang 同源；"en-US,en"类多值取首项，避免浏览器回落中文）
+      pageLanguage: (($("fpPageLang") && $("fpPageLang").value || "").trim().split(/[,;\s]+/)[0] || ""),
       resMode,
       resolution,
       screenResolution: resolution,
