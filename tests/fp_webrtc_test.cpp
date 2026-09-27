@@ -13,9 +13,9 @@ int main() {
     WSADATA wsa{};
     if (::WSAStartup(MAKEWORD(2, 2), &wsa) != 0) return 1;
 
-    const FpWebRtcResolution forward = FpResolveWebRtc(L"forward", L"");
+    const FpWebRtcResolution forward = FpResolveWebRtc(L"forward", L"104.28.152.166");
     CHECK(!forward.disableWebRtc && !forward.disableUdp && forward.address.empty());
-    CHECK(!forward.proxyIpMissing);
+    CHECK(!forward.proxyIpMissing && forward.proxyIpIgnored);
 
     const FpWebRtcResolution disabled = FpResolveWebRtc(L"disabled", L"");
     CHECK(disabled.disableWebRtc && disabled.address.empty());

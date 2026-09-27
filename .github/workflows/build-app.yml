@@ -284,10 +284,10 @@ jobs:
           Write-Host "webrtc options ok"
           # WebRTC 伪装 IP + 实际 static/dynamic 配置写回契约
           $rtcHeader = Get-Content launcher\cpp\fp_webrtc.h -Raw
-          foreach ($s in @("FpResolveWebRtc", "InetPtonW", "proxyIpMissing", "disableWebRtc")) {
+          foreach ($s in @("FpResolveWebRtc", "InetPtonW", "proxyIpMissing", "proxyIpIgnored", "disableWebRtc")) {
             if ($rtcHeader -notmatch [regex]::Escape($s)) { throw "WebRTC resolver contract '$s' missing" }
           }
-          foreach ($s in @("webrtcIp", "F_WEBRTCIP", "FpSaveDynamicJson", "WebRTCAddress", "DisableWebRTC", "代理模式缺少有效 IP")) {
+          foreach ($s in @("webrtcIp", "F_WEBRTCIP", "FpSaveDynamicJson", "WebRTCAddress", "DisableWebRTC", "代理模式缺少有效 IP", "当前选择 forward", "切换到 proxy 模式后保存")) {
             if ($fpc2 -notmatch [regex]::Escape($s)) { throw "WebRTC persistence contract '$s' missing in fp_ui.cpp" }
           }
           $rtcFpCpp = Get-Content launcher\cpp\fingerprint.cpp -Raw

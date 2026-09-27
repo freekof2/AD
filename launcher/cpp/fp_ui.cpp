@@ -1984,6 +1984,12 @@ static LRESULT CALLBACK FpWndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
                     L"WebRTC 伪装 IP 未设置", MB_OK | MB_ICONWARNING);
                 LOG(L"WebRTC 代理模式缺少有效 IP，已按禁用保存 " + w->profile);
             }
+            if (rtc.proxyIpIgnored) {
+                ::MessageBoxW(h,
+                    L"当前选择 forward：将按普通 WebRTC 工作，不会应用已填写的伪装 IP。\r\n要让 WebRTC 测试显示指定 IP，请切换到 proxy 模式后保存。",
+                    L"WebRTC 伪装 IP 未启用", MB_OK | MB_ICONINFORMATION);
+                LOG(L"WebRTC forward 模式忽略已填写的伪装 IP " + w->profile);
+            }
             // A2 独立目录落盘：只写 sunlauncher.json profiles 段（非官方设置，
             // 不进三件套/ext）。写盘失败记日志，不阻断指纹保存。
             {

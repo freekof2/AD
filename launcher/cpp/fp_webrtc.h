@@ -9,6 +9,7 @@ struct FpWebRtcResolution {
     bool disableWebRtc = true;
     bool disableUdp = false;
     bool proxyIpMissing = false;
+    bool proxyIpIgnored = false;
     std::wstring address;
 };
 
@@ -33,6 +34,7 @@ inline FpWebRtcResolution FpResolveWebRtc(const std::wstring& mode,
     FpWebRtcResolution result;
     if (mode == L"forward") {
         result.disableWebRtc = false;
+        result.proxyIpIgnored = !FpTrimWebRtcIp(proxyIp).empty();
         return result;
     }
     if (mode == L"disable_udp") {
