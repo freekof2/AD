@@ -31,7 +31,8 @@ name: Build SunLauncher App
 #     不访问任何云端测速接口；
 #   - 以缓存为准：UserId/CanvasMark/WebGLMark/AudioFp/ClientRects/ProxyChain/DeviceName/
 #     MacAddress/MediaDevices/TTSEngines/Langs/TimeZone/Geoposition/WebRTCAddress/
-#     DisableWebRTC 等保护键在注入与 static/dynamic 写回时被缓存值覆盖，只进 ui 侧车。
+#     其余保护键以缓存为准；WebRTCAddress/DisableWebRTC 由 native WebRTC 模式解析器
+#     按 forward/proxy/disabled 明确同步写入 static + dynamic，Web UI API 保持保护键策略。
 # asar 兼容路由（main.cpp 另有 B 组实现，行为对齐 main.min.js）：
 #   POST /api/openBrowser /api/openBrowserV3 /api/checkOpen /api/checkProfileOpen
 #     /api/batcCloseBrowser /api/updateTabs /api/frontBrowser /api/log
@@ -77,6 +78,16 @@ jobs:
           $pdb = Get-ChildItem launcher\cpp\x64\Release\*.pdb -ErrorAction SilentlyContinue
           if ($pdb) { Write-Host "symbols: $($pdb.FullName) ($($pdb.Length) bytes)" }
           else { Write-Host "warning: no pdb emitted" }
+
+      - name: WebRTC mode unit tests
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          msbuild tests\fp_webrtc_test.vcxproj /p:Configuration=Release /p:Platform=x64
+          $testExe = Get-ChildItem tests\x64\Release\fp_webrtc_test.exe -ErrorAction Stop
+          & $testExe.FullName
+          if ($LASTEXITCODE -ne 0) { throw "WebRTC mode unit test failed: $LASTEXITCODE" }
+          Write-Host "WebRTC mode tests passed"
 
       - name: Check web-ui required files
         shell: pwsh
@@ -169,8 +180,8 @@ jobs:
             if ($fpcProxy -notmatch [regex]::Escape($s)) { throw "missing proxy-fill symbol '$s' in fp_ui.cpp" }
             Write-Host "proxyfill ok: $s"
           }
-          # 2a5b. 全量回填：ui 缺失键才用 static 补（Langs/Platform/CPU/RAM/设备/MAC/
-          #      媒体/语音/时区/噪音/WebRTC），ui 有值不覆盖——打开即对应 profile 内容
+          # 2a5b. 全量回填：ui 缺失键才用 static/dynamic 补（Langs/Platform/CPU/RAM/设备/MAC/
+          #      媒体/语音/时区/噪音/WebRTC），ui 有值不覆盖；WebRTC IP 缺失时再从配置文件补。
           foreach ($s in @("uiHasLangs", "ui 存档优先", "static 仅补 ui 缺失的键")) {
             if ($fpcProxy -notmatch [regex]::Escape($s)) { throw "missing fill-all symbol '$s' in fp_ui.cpp" }
             Write-Host "fillall ok: $s"
@@ -271,6 +282,19 @@ jobs:
             if ($fpc2 -notmatch [regex]::Escape($v)) { throw "webrtc option '$v' missing in fp_ui.cpp" }
           }
           Write-Host "webrtc options ok"
+          # WebRTC 伪装 IP + 实际 static/dynamic 配置写回契约
+          $rtcHeader = Get-Content launcher\cpp\fp_webrtc.h -Raw
+          foreach ($s in @("FpResolveWebRtc", "InetPtonW", "proxyIpMissing", "disableWebRtc")) {
+            if ($rtcHeader -notmatch [regex]::Escape($s)) { throw "WebRTC resolver contract '$s' missing" }
+          }
+          foreach ($s in @("webrtcIp", "F_WEBRTCIP", "FpSaveDynamicJson", "WebRTCAddress", "DisableWebRTC", "代理模式缺少有效 IP")) {
+            if ($fpc2 -notmatch [regex]::Escape($s)) { throw "WebRTC persistence contract '$s' missing in fp_ui.cpp" }
+          }
+          $rtcFpCpp = Get-Content launcher\cpp\fingerprint.cpp -Raw
+          foreach ($s in @("webrtc.mode=", "webrtc-ip-handling-policy=disable_non_proxied_udp")) {
+            if ($rtcFpCpp -notmatch [regex]::Escape($s)) { throw "WebRTC launch/diagnostic contract '$s' missing" }
+          }
+          Write-Host "webrtc persistence contract ok"
           # (b) 地理三态 ask/allow/block + 时区 Asia/Shanghai 默认 + 默认经纬度
           foreach ($v in @("ask - ", "allow - ", "block - ", "Asia/Shanghai", "31.2304", "121.4737")) {
             if ($fpc2 -notmatch [regex]::Escape($v)) { throw "geo/tz default '$v' missing in fp_ui.cpp" }
@@ -304,7 +328,7 @@ jobs:
           Write-Host "fonts split ok"
           # 2c. vcxproj 必须编译新模块
           $vcx = Get-Content launcher\cpp\SunLauncher.vcxproj -Raw
-          foreach ($s in @("fp_ui.cpp", "fp_ui.h")) {
+          foreach ($s in @("fp_ui.cpp", "fp_ui.h", "fp_webrtc.h")) {
             if ($vcx -notmatch [regex]::Escape($s)) { throw "missing '$s' in vcxproj" }
             Write-Host "vcxproj ok: $s"
           }

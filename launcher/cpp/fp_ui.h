@@ -33,6 +33,7 @@ struct FpFormData {
     std::wstring remark;
     // 1. WebRTC: forward | proxy | disabled | disable_udp
     std::wstring webrtc;
+    std::wstring webrtcIp;    // proxy 模式伪装用的 IPv4/IPv6 地址
     // 2. 时区
     std::wstring timezoneMode; // ip | custom
     std::wstring timezone;     // 如 Asia/Shanghai

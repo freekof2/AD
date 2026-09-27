@@ -700,6 +700,11 @@ std::wstring FpBuildCmdline(const std::wstring& profileDir, int port,
         if (!langArg.empty())
             cmd += L" --lang=" + W(langArg);
     }
+    {
+        std::string mode = FpJsonGet(staticJson, "webrtc");
+        if (mode == "\"disable_udp\"" || mode == "disable_udp")
+            cmd += L" --webrtc-ip-handling-policy=disable_non_proxied_udp";
+    }
     cmd += L" --extended-parameters=" + W(ext);
     if (wantConsole)
         cmd += L" --enable-logging=stderr --v=0";
@@ -880,6 +885,20 @@ std::string FpDiagDumpLaunch(const std::wstring& exe, const std::wstring& workDi
       << "（官方=0随机；若此处非0即偏离官方buildLaunchOpt）\n";
     o << "[diag] arg.safeopen=" << (cmdN.find("--protected-disable-safe-open") == std::string::npos ? "MISSING(偏离官方)" : "present") << "\n";
     o << "[diag] arg.nosandbox=" << (cmdN.find("--no-sandbox") == std::string::npos ? "MISSING" : "present") << "\n";
+    {
+        std::string mode = FpJsonGet(staticJson, "webrtc");
+        std::string staticDisable = FpJsonGet(staticJson, "DisableWebRTC");
+        std::string dynamicDisable = FpJsonGet(dynamicJson, "DisableWebRTC");
+        std::string staticAddress = FpJsonGet(staticJson, "WebRTCAddress");
+        std::string dynamicAddress = FpJsonGet(dynamicJson, "WebRTCAddress");
+        o << "[diag] webrtc.mode=" << (mode.empty() ? "(absent)" : mode)
+          << " static.disabled=" << (staticDisable.empty() ? "(absent)" : staticDisable)
+          << " dynamic.disabled=" << (dynamicDisable.empty() ? "(absent)" : dynamicDisable)
+          << " static.address=" << (!staticAddress.empty() && staticAddress != "\"\"" ? "set" : "empty")
+          << " dynamic.address=" << (!dynamicAddress.empty() && dynamicAddress != "\"\"" ? "set" : "empty")
+          << " udpPolicy=" << (cmdN.find("--webrtc-ip-handling-policy=disable_non_proxied_udp") == std::string::npos ? "absent" : "set")
+          << "\n";
+    }
     // 代理现场：static.ProxyChain 第一项 + 命令行 --proxy-server 是否生效（密码打码）。
     // 若 uiExtra 有代理但 proxyArg=missing，说明表单值没进 static（保存链路问题）；
     // 若 proxyArg present 但浏览器仍直连，说明 static.ProxyChain 与命令行不一致或代理本身不通。

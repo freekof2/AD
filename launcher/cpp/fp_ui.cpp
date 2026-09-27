@@ -1,6 +1,7 @@
 // fp_ui.cpp — 指纹配置原生窗口实现（part 1/4：JSON 互转 + 随机库）
 #include "fp_ui.h"
 #include "fingerprint.h"
+#include "fp_webrtc.h"
 #include <ctime>
 #include <shlobj.h>  // SHBrowseForFolderW（数据目录浏览）
 #include <commdlg.h> // GetOpenFileNameW（浏览器 SunBrowser.exe 选择）
@@ -70,7 +71,8 @@ std::string FpFormToUiJson(const FpFormData& f) {
     o += ",\"proxyPort\":\"" + JEsc(f.proxyPort) + "\",\"proxyUser\":\"" + JEsc(f.proxyUser) + "\"";
     o += ",\"proxyPass\":\"" + JEsc(f.proxyPass) + "\"";
     o += ",\"cookie\":\"" + JEsc(f.cookie) + "\",\"remark\":\"" + JEsc(f.remark) + "\"";
-    o += ",\"webrtc\":\"" + JEsc(f.webrtc) + "\",\"timezoneMode\":\"" + JEsc(f.timezoneMode) + "\"";
+    o += ",\"webrtc\":\"" + JEsc(f.webrtc) + "\",\"webrtcIp\":\"" + JEsc(f.webrtcIp) + "\"";
+    o += ",\"timezoneMode\":\"" + JEsc(f.timezoneMode) + "\"";
     o += ",\"timezone\":\"" + JEsc(f.timezone) + "\",\"geoMode\":\"" + JEsc(f.geoMode) + "\"";
     o += ",\"geoIp\":\"" + JEsc(f.geoIp) + "\",\"lat\":\"" + JEsc(f.lat) + "\",\"lng\":\"" + JEsc(f.lng) + "\"";
     o += ",\"accuracy\":\"" + JEsc(f.accuracy) + "\",\"langMode\":\"" + JEsc(f.langMode) + "\"";
@@ -118,6 +120,7 @@ bool FpFormFromUiJson(const std::string& json, FpFormData& f) {
     FJSet(&FpFormData::cookie, json, "cookie", f);
     FJSet(&FpFormData::remark, json, "remark", f);
     FJSet(&FpFormData::webrtc, json, "webrtc", f);
+    FJSet(&FpFormData::webrtcIp, json, "webrtcIp", f);
     FJSet(&FpFormData::timezoneMode, json, "timezoneMode", f);
     FJSet(&FpFormData::timezone, json, "timezone", f);
     FJSet(&FpFormData::geoMode, json, "geoMode", f);
@@ -269,8 +272,13 @@ std::string FpFormToFpConfig(const FpFormData& f) {
         }
         return t;
     };
+    const FpWebRtcResolution rtc = FpResolveWebRtc(f.webrtc, f.webrtcIp);
     std::string sp = N(f.webrtc), tz = (f.timezoneMode == L"ip") ? "1" : "0";
-    std::string o = "{\"webrtc\":\"" + sp + "\",\"automatic_timezone\":\"" + tz + "\"";
+    std::string o = "{\"webrtc\":\"" + sp + "\",\"DisableWebRTC\":" +
+        std::string(rtc.disableWebRtc ? "true" : "false") + ",\"WebRTCAddress\":\"" +
+        JEsc(rtc.address) + "\",\"automatic_timezone\":\"" + tz + "\"";
+    if (f.webrtc == L"forward")
+        o += ",\"WebRTCStun\":\"stun:stun.l.google.com:19302\",\"WebRTCTurn\":\"stun:stun.l.google.com:19302\"";
     o += ",\"tzAuto\":\"" + tz + "\"";
     if (tz == "0") {
         std::string tzn = N(f.timezone);
@@ -432,7 +440,7 @@ enum FpCtl {
     F_PDATADIR, F_PBROWSERDIR, F_BROWSEDATA, F_BROWSEBROWSER, // A2 目录+浏览（数据目录单行，内核由浏览器目录推导）
     F_PTYPE, F_PHOST, F_PPORT, F_PUSER, F_PPASS, F_PTEST, F_PSAVE, F_PSTATUS,
     F_COOKIE, F_MERGECOOKIE, F_REMARK,
-    F_WEBRTC, F_TZM, F_TZ, F_GEOM, F_GEOIP, F_LAT, F_LNG, F_ACC,
+    F_WEBRTC, F_WEBRTCIP, F_TZM, F_TZ, F_GEOM, F_GEOIP, F_LAT, F_LNG, F_ACC,
     F_LANGM, F_LANGLIST, F_UILANG, F_PAGELANG,
     F_RESM, F_RES, F_RESW, F_RESH,
     F_FONTM, F_FONTS, F_SHUFFLEFONTS,
@@ -797,13 +805,17 @@ static void FpBuildPages(FpWnd* w, HWND p, HINSTANCE hi) {
     FpMkBtn(p, w, F_PTEST, L"测速/检测", 490, 412, 90);
     FpMkBtn(p, w, F_PSAVE, L"保存为代理", 590, 412, 110);
     FpMkLabel(p, w, F_PSTATUS, L"未检测", 12, 448, 400);
-    // ---- 1. WebRTC（y 480..；整体下移 48）----
-    FpMkLabel(p, w, F_WEBRTC, L"WebRTC", 12, 482, 80);
-    FpMkCombo(p, w, F_WEBRTC, 100, 480, 260);
+    // ---- 1. WebRTC（forward 直通；proxy 必须有伪装 IP）----
+    FpMkLabel(p, w, F_WEBRTC, L"WebRTC", 12, 482, 70);
+    FpMkCombo(p, w, F_WEBRTC, 88, 480, 250);
     FpComboAdd(w->ctl[F_WEBRTC - F_BASE], L"forward - 转发");
     FpComboAdd(w->ctl[F_WEBRTC - F_BASE], L"proxy - 替换");
     FpComboAdd(w->ctl[F_WEBRTC - F_BASE], L"disabled - 禁用");
     FpComboAdd(w->ctl[F_WEBRTC - F_BASE], L"disable_udp - 禁用UDP");
+    FpMkLabel(p, w, F_WEBRTCIP, L"伪装IP", 350, 482, 65);
+    FpMkEdit(p, w, F_WEBRTCIP, 420, 480, 250);
+    ::SendMessageW(w->ctl[F_WEBRTCIP - F_BASE], EM_SETCUEBANNER, TRUE,
+        (LPARAM)L"proxy 模式填写 IPv4 / IPv6 地址");
     FpMkLabel(p, w, F_TZM, L"时区模式", 12, 524, 80);
     FpMkCombo(p, w, F_TZM, 100, 522, 150);
     FpComboAdd(w->ctl[F_TZM - F_BASE], L"ip - 基于IP");
@@ -1012,6 +1024,8 @@ static void FpFill(FpWnd* w) {
     FpSet(C(F_COOKIE), f.cookie);
     FpSet(C(F_REMARK), f.remark);
     selByVal(F_WEBRTC, f.webrtc.empty() ? L"proxy" : f.webrtc);
+    FpSet(C(F_WEBRTCIP), f.webrtcIp);
+    ::EnableWindow(C(F_WEBRTCIP), f.webrtc.empty() || f.webrtc == L"proxy");
     selByVal(F_TZM, f.timezoneMode.empty() ? L"custom" : f.timezoneMode);
     FpComboSel(C(F_TZ), f.timezone.c_str());
     selByVal(F_GEOM, f.geoMode.empty() ? L"allow" : f.geoMode);
@@ -1128,6 +1142,7 @@ static void FpCollect(FpWnd* w) {
     f.cookie = FpGet(C(F_COOKIE));
     f.remark = FpGet(C(F_REMARK));
     f.webrtc = FpFirstTok(FpComboGet(C(F_WEBRTC)));
+    f.webrtcIp = FpGet(C(F_WEBRTCIP));
     f.timezoneMode = FpFirstTok(FpComboGet(C(F_TZM)));
     f.timezone = FpComboGet(C(F_TZ));
     f.geoMode = FpFirstTok(FpComboGet(C(F_GEOM)));
@@ -1224,6 +1239,7 @@ static LRESULT CALLBACK FpWndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
         // 且 ui 已有值时不覆盖——否则“保存后重进看不到修改内容”。
         {
             std::string sj, dj, cj;
+            FpLoadDynamicJson(dd, dj);
             // 取 ui 已有值快照（判空用，避免 static 空值覆盖 ui 实值）
             std::string uiLangs = FpJsonGet(ui, "language");
             // ui 存档 language 可能是数组 ["en-US","en"] 或字符串，任一非空即视为有值
@@ -1353,12 +1369,19 @@ static LRESULT CALLBACK FpWndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
                         v = FpJsonGet(sj, "WebGLMark");
                         if (!v.empty()) w->form.swWebglImg = true;
                     }
-                    // WebRTC/代理 static 后备（ui 缺失时）
+                    // WebRTC 回填：ui 模式优先；缺 IP 时从 static/dynamic WebRTCAddress 补。
                     std::string uiWr = FpJsonGet(ui, "webrtc");
+                    std::string uiWrIp = FpJsonGet(ui, "webrtcIp");
+                    std::string wrAddress = FpJsonGet(sj, "WebRTCAddress");
+                    if (wrAddress.empty() || wrAddress == "\"\"") wrAddress = FpJsonGet(dj, "WebRTCAddress");
+                    if ((uiWrIp.empty() || uiWrIp == "\"\"") && wrAddress.size() >= 2 && wrAddress.front() == '"')
+                        w->form.webrtcIp = WJ(wrAddress);
                     if (uiWr.empty() || uiWr == "\"\"") {
-                        v = FpJsonGet(sj, "WebRTCAddress");
                         std::string dw = FpJsonGet(sj, "DisableWebRTC");
+                        if (dw.empty()) dw = FpJsonGet(dj, "DisableWebRTC");
                         if (dw == "true" || dw == "\"true\"") w->form.webrtc = L"disabled";
+                        else if (wrAddress.size() >= 2 && wrAddress.front() == '"' && wrAddress != "\"\"") w->form.webrtc = L"proxy";
+                        else w->form.webrtc = L"forward";
                     }
                 }
                 // ProxyChain 回填（ui 优先：ui 存档是用户最后一次保存的值；static 只在
@@ -1389,7 +1412,7 @@ static LRESULT CALLBACK FpWndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
                 else
                     LOG(L"指纹载入 代理=无(static缺失且ui无代理) " + w->profile);
             }
-            if (FpLoadDynamicJson(dd, dj) && !dj.empty()) {
+            if (!dj.empty()) {
                 std::string g = FpJsonGet(dj, "Geoposition");
                 if (g.size() >= 2 && g.front() == '"') {
                     std::string gs = N(WJ(g));
@@ -1557,6 +1580,11 @@ static LRESULT CALLBACK FpWndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
                 else
                     ::SetWindowTextW(w->hStatus, L"未选择浏览器文件");
             }
+            return 0;
+        }
+        if (id == F_WEBRTC && (code == CBN_SELCHANGE || code == CBN_SELENDOK)) {
+            FpCollect(w);
+            ::EnableWindow(C(F_WEBRTCIP), w->form.webrtc == L"proxy");
             return 0;
         }
         // 浏览器类型联动浏览器目录：切 sun/flower 时按尾段目录名规则自动建议
@@ -1824,9 +1852,17 @@ static LRESULT CALLBACK FpWndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
                     std::string uiWg = FpJsonGet(ui2, "webglImage");
                     if (uiWg.empty() || uiWg == "\"\"") { v = FpJsonGet(sj2, "WebGLMark"); if (!v.empty()) w->form.swWebglImg = true; }
                     std::string uiWr = FpJsonGet(ui2, "webrtc");
+                    std::string uiWrIp = FpJsonGet(ui2, "webrtcIp");
+                    std::string wrAddress = FpJsonGet(sj2, "WebRTCAddress");
+                    if (wrAddress.empty() || wrAddress == "\"\"") wrAddress = FpJsonGet(dj2, "WebRTCAddress");
+                    if ((uiWrIp.empty() || uiWrIp == "\"\"") && wrAddress.size() >= 2 && wrAddress.front() == '"')
+                        w->form.webrtcIp = WJ(wrAddress);
                     if (uiWr.empty() || uiWr == "\"\"") {
-                        v = FpJsonGet(sj2, "WebRTCAddress"); std::string dw = FpJsonGet(sj2, "DisableWebRTC");
+                        std::string dw = FpJsonGet(sj2, "DisableWebRTC");
+                        if (dw.empty()) dw = FpJsonGet(dj2, "DisableWebRTC");
                         if (dw == "true" || dw == "\"true\"") w->form.webrtc = L"disabled";
+                        else if (wrAddress.size() >= 2 && wrAddress.front() == '"' && wrAddress != "\"\"") w->form.webrtc = L"proxy";
+                        else w->form.webrtc = L"forward";
                     }
                 }
                 std::string pc = FpJsonGet(sj2, "ProxyChain");
@@ -1940,6 +1976,13 @@ static LRESULT CALLBACK FpWndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
                 ::SetWindowTextW(w->hStatus, L"保存已阻断：A2 独立目录必填");
                 LOG(L"指纹保存 BLOCKED(A2目录空) " + w->profile);
                 return 0;
+            }
+            const FpWebRtcResolution rtc = FpResolveWebRtc(w->form.webrtc, w->form.webrtcIp);
+            if (rtc.proxyIpMissing) {
+                ::MessageBoxW(h,
+                    L"代理模式缺少有效 IP，当前会按禁用 WebRTC 保存。\r\n请输入有效 IPv4 或 IPv6 地址后再切换回 proxy 模式。",
+                    L"WebRTC 伪装 IP 未设置", MB_OK | MB_ICONWARNING);
+                LOG(L"WebRTC 代理模式缺少有效 IP，已按禁用保存 " + w->profile);
             }
             // A2 独立目录落盘：只写 sunlauncher.json profiles 段（非官方设置，
             // 不进三件套/ext）。写盘失败记日志，不阻断指纹保存。
@@ -2202,6 +2245,20 @@ static LRESULT CALLBACK FpWndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
                     bool oks = FpSaveStaticJson(dd, cfg);
                 LOG(L"指纹保存 static " + std::wstring(oks ? L"OK" : L"FAIL") +
                     L" len=" + std::to_wstring(cfg.size()) + L" " + w->profile);
+            }
+            // WebRTC 有效值必须同步写 static + dynamic；否则旧 dynamic.DisableWebRTC=true
+            // 会覆盖界面选择，让 forward/proxy 表现为“保存了但浏览器仍禁用”。
+            {
+                std::string dynamic;
+                FpLoadDynamicJson(dd, dynamic);
+                if (dynamic.empty() || dynamic.front() != '{') dynamic = "{}";
+                dynamic = FpJsonSet(dynamic, "DisableWebRTC", rtc.disableWebRtc ? "true" : "false");
+                dynamic = FpJsonSet(dynamic, "WebRTCAddress", "\"" + JEsc(rtc.address) + "\"");
+                bool okd = FpSaveDynamicJson(dd, dynamic);
+                std::wstring detail = L" mode=" + w->form.webrtc +
+                    L" disabled=" + (rtc.disableWebRtc ? L"1" : L"0") +
+                    L" ip=" + (rtc.address.empty() ? L"(empty)" : rtc.address);
+                LOG(L"指纹保存 WebRTC dynamic " + std::wstring(okd ? L"OK" : L"FAIL") + detail + L" " + w->profile);
             }
             (void)okc;
             w->saved = true;
