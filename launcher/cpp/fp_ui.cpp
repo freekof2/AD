@@ -2,6 +2,8 @@
 #include "fp_ui.h"
 #include "fingerprint.h"
 #include <ctime>
+#include <shlobj.h>  // SHBrowseForFolderW（数据目录浏览）
+#include <commdlg.h> // GetOpenFileNameW（浏览器 SunBrowser.exe 选择）
 
 static std::string JEsc(const std::wstring& w) {
     // JSON 字符串全转义：" \ / \b \f \n \r \t + \u00XX 控制字符。
@@ -235,6 +237,38 @@ static std::wstring FpOsToAsarPlatform(const std::wstring& os);
 // 云端表缺失回退：win32/darwin/linux 键表与值表均用 u[] 全集；mobile 键表用 mobileFonts 精确 12 条。
 
 std::string FpFormToFpConfig(const FpFormData& f) {
+    // AcceptLang 派生（main.min.js getAccept 全文移植）：首项无 q，后续项 q=0.9..0.1
+    // 递减，同项/同基语去重，基语（如 en-US 的 en）补 q。例 en-US,en -> "en-US,en;q=0.9"。
+    auto buildAccept = [](const std::string& langCsv) -> std::string {
+        std::vector<std::string> e;
+        { size_t p = 0; while (p <= langCsv.size()) {
+            size_t q = langCsv.find(',', p);
+            std::string t = langCsv.substr(p, q == std::string::npos ? q : q - p);
+            size_t a = t.find_first_not_of(" \t\r\n"), b = t.find_last_not_of(" \t\r\n");
+            if (a != std::string::npos) e.push_back(t.substr(a, b - a + 1));
+            if (q == std::string::npos) break; p = q + 1; } }
+        if (e.empty()) return "";
+        auto base = [](const std::string& s) -> std::string {
+            size_t d = s.find('-'); return (d == std::string::npos) ? s : s.substr(0, d); };
+        std::string t; int n = 0; std::vector<std::string> r;
+        for (size_t a = 0; a < e.size(); a++) {
+            std::string i = e[a], o = (a + 1 < e.size()) ? e[a + 1] : "";
+            std::string s = base(i), l = base(o);
+            auto has = [&](const std::string& x) {
+                for (auto& y : r) if (y == x) return true; return false; };
+            if (a == 0) { t += i; n++; }
+            else if (!has(i)) {
+                int q = 10 - n; if (q < 1) q = 1;
+                t += "," + i + ";q=0." + std::to_string(q); n++;
+            }
+            if (!(i == s || s == l || has(s))) {
+                int q = 10 - n; if (q < 1) q = 1;
+                t += "," + s + ";q=0." + std::to_string(q); n++; r.push_back(s);
+            }
+            r.push_back(i);
+        }
+        return t;
+    };
     std::string sp = N(f.webrtc), tz = (f.timezoneMode == L"ip") ? "1" : "0";
     std::string o = "{\"webrtc\":\"" + sp + "\",\"automatic_timezone\":\"" + tz + "\"";
     if (tz == "0") {
@@ -252,6 +286,13 @@ std::string FpFormToFpConfig(const FpFormData& f) {
     // 与 web-ui collectFp 一致：按逗号/分号/换行切分计数（单行 EDIT 无换行，但兼容粘贴值）
     { size_t p = 0; cnt = 0; while (p <= lang.size()) { size_t e = lang.find_first_of(",;\n", p); cnt++; if (e == std::string::npos) break; p = e + 1; } }
     o += ",\"language\":\"" + lang + "\",\"language_switch\":\"" + std::string(cnt <= 1 ? "1" : "0") + "\"";
+    o += ",\"AcceptLang\":\"" + buildAccept(lang) + "\"";
+    // 语言三键对齐（main.min.js setLangs/setUILanguage 实测）：
+    // ui 界面语言：follow_lang -> pageLanguageSwitch=1（跟随语言）；custom -> 0 + pageLanguage。
+    // uiLang 存档键为 uiLang（follow_lang/custom），页面语言存档键为 pageLanguage。
+    o += ",\"pageLanguageSwitch\":\"" + std::string(f.uiLang == L"custom" ? "0" : "1") + "\"";
+    if (f.uiLang == L"custom") o += ",\"pageLanguage\":\"" + N(f.pageLang) + "\"";
+    else o += ",\"pageLanguage\":\"\"";
     std::string res = N(f.resolution);
     if (f.resMode == L"custom" && !f.resW.empty() && !f.resH.empty())
         res = N(f.resW) + "_" + N(f.resH);
@@ -360,7 +401,7 @@ std::string FpFormToFpConfig(const FpFormData& f) {
 enum FpCtl {
     F_BASE = 2000,
     F_BROWSER, F_KERNEL, F_BDIR, F_OS, F_UAPRESET, F_UA, F_SHUFFLEUA,
-    F_PDATADIR, F_PBROWSERDIR, // 本指纹独立目录（顶端 A2 行；空=跟随全局）
+    F_PDATADIR, F_PBROWSERDIR, F_BROWSEDATA, F_BROWSEBROWSER, // A2 二合一目录+浏览按钮
     F_PTYPE, F_PHOST, F_PPORT, F_PUSER, F_PPASS, F_PTEST, F_PSAVE, F_PSTATUS,
     F_COOKIE, F_MERGECOOKIE, F_REMARK,
     F_WEBRTC, F_TZM, F_TZ, F_GEOM, F_GEOIP, F_LAT, F_LNG, F_ACC,
@@ -534,7 +575,8 @@ static std::wstring FpBuildUA(const std::wstring& os, const std::wstring& ver) {
 
 static void FpFormDefaults(FpFormData& f, const std::wstring& profileName) {
     f.browser = L"sun"; f.kernelVer = L"chrome143"; f.browserDir = profileName;
-    f.profDataDir.clear(); f.profBrowserDir.clear(); // 默认跟随全局，留空
+    // A2 必填：默认取全局生效值（打开后 FpFill 会用 Eff* 覆盖为有效值）
+    f.profDataDir.clear(); f.profBrowserDir.clear();
     f.os = L"win"; f.uaPreset = L"152"; f.ua = FpBuildUA(L"win", L"152");
     f.proxyType = L"socks5";
     f.webrtc = L"proxy"; f.timezoneMode = L"custom"; f.timezone = L"Asia/Shanghai";
@@ -679,11 +721,14 @@ static void FpBuildPages(FpWnd* w, HWND p, HINSTANCE hi) {
     FpMkLabel(p, w, F_BDIR, L"环境目录名", 12, 46, 80);
     FpMkEdit(p, w, F_BDIR, 100, 44, 570);
     ::SendMessageW(w->ctl[F_BDIR - F_BASE], EM_SETREADONLY, TRUE, 0);
-    // ---- A2. 本指纹独立目录（y 72..124；空=跟随全局；非官方设置，只存 sunlauncher.json）----
+    // ---- A2. 本指纹独立目录（y 72..124；必填；二合一：指纹目录=数据父目录+环境名，
+    // 浏览按钮选父目录；浏览器目录浏览按钮直接选 SunBrowser.exe，自动取其父目录）----
     FpMkLabel(p, w, F_PDATADIR, L"数据目录", 12, 76, 80);
-    FpMkEdit(p, w, F_PDATADIR, 100, 74, 570);
+    FpMkEdit(p, w, F_PDATADIR, 100, 74, 500);
+    FpMkBtn(p, w, F_BROWSEDATA, L"浏览...", 606, 72, 64);
     FpMkLabel(p, w, F_PBROWSERDIR, L"浏览器目录", 12, 102, 80);
-    FpMkEdit(p, w, F_PBROWSERDIR, 100, 100, 570);
+    FpMkEdit(p, w, F_PBROWSERDIR, 100, 100, 500);
+    FpMkBtn(p, w, F_BROWSEBROWSER, L"浏览...", 606, 98, 64);
     // ---- B. 系统/UA（y 128..170；整体下移 48）----
     FpMkLabel(p, w, F_OS, L"系统", 12, 128, 80);
     FpMkCombo(p, w, F_OS, 100, 126, 200);
@@ -750,11 +795,15 @@ static void FpBuildPages(FpWnd* w, HWND p, HINSTANCE hi) {
     FpComboAdd(w->ctl[F_LANGM - F_BASE], L"ip - 基于IP");
     FpComboAdd(w->ctl[F_LANGM - F_BASE], L"custom - 自定义");
     FpMkEdit(p, w, F_LANGLIST, 260, 718, 260, 48);
-    FpMkLabel(p, w, F_UILANG, L"界面语言", 12, 822, 80);
-    FpMkCombo(p, w, F_UILANG, 100, 820, 180);
-    FpComboAdd(w->ctl[F_UILANG - F_BASE], L"follow_lang - 基于语言");
+    // 语言三键说明（main.min.js setLangs/setUILanguage 实测）：
+    // 语言列表决定 static.Langs/AcceptLang（浏览器 Accept-Language/JS 语言）；
+    // 界面语言 custom 时 pageLanguage 决定 --lang（浏览器 UI 中文/英文显示）。
+    FpMkLabel(p, w, F_UILANG, L"界面语言", 12, 774, 80);
+    FpMkCombo(p, w, F_UILANG, 100, 772, 180);
+    FpComboAdd(w->ctl[F_UILANG - F_BASE], L"follow_lang - 跟语言");
     FpComboAdd(w->ctl[F_UILANG - F_BASE], L"custom - 自定义");
-    FpMkEdit(p, w, F_PAGELANG, 290, 820, 220);
+    FpMkLabel(p, w, F_PAGELANG, L"页面语言", 290, 774, 70);
+    FpMkEdit(p, w, F_PAGELANG, 370, 772, 140);
         // ---- 6. 分辨率（y 862..；整体下移 48）----
     FpMkLabel(p, w, F_RESM, L"分辨率", 12, 864, 80);
     FpMkCombo(p, w, F_RESM, 100, 862, 140);
@@ -938,8 +987,22 @@ static void FpFill(FpWnd* w) {
     FpSet(C(F_LAT), f.lat); FpSet(C(F_LNG), f.lng); FpSet(C(F_ACC), f.accuracy);
     selByVal(F_LANGM, f.langMode.empty() ? L"custom" : f.langMode);
     FpSet(C(F_LANGLIST), f.langList);
+    // 语言三键回填对齐（main.min.js setLangs/setUILanguage）：
+    // uiLang 空 -> follow_lang（跟语言列表首项）；custom -> 页面语言框显示 pageLanguage。
+    // pageLanguage 为空且 custom 时，从语言列表首项派生（与 getUILanguage 回退一致）。
     selByVal(F_UILANG, f.uiLang.empty() ? L"follow_lang" : f.uiLang);
-    FpSet(C(F_PAGELANG), f.pageLang);
+    {
+        std::wstring pl = f.pageLang;
+        if (pl.empty() && f.uiLang != L"follow_lang") {
+            size_t c = f.langList.find(L",");
+            pl = (c == std::wstring::npos) ? f.langList : f.langList.substr(0, c);
+            // 去首尾空格
+            pl.erase(0, pl.find_first_not_of(L" \t"));
+            if (!pl.empty()) pl.erase(pl.find_last_not_of(L" \t") + 1);
+            if (pl.empty()) pl = L"en-US";
+        }
+        FpSet(C(F_PAGELANG), pl);
+    }
     selByVal(F_RESM, f.resMode.empty() ? L"preset" : f.resMode);
     FpComboSel(C(F_RES), f.resolution.empty() ? L"none" : f.resolution.c_str());
     FpSet(C(F_RESW), f.resW); FpSet(C(F_RESH), f.resH);
@@ -1071,12 +1134,16 @@ static LRESULT CALLBACK FpWndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
         // 初值：ui 侧车 -> static/dynamic 回填 -> 默认。
         // dd 解析：该指纹独立父目录优先（sunlauncher.json profiles 段），否则全局。
         // 注意：独立目录的 profile 可能住在别处，ui/三件套都从 dd 读。
+        // A2 必填：FpFormDefaults 留空，FpFill 时用 Eff* 填有效值。
         std::wstring effParent0 = EffDataDir(w->cfg, w->profile);
         std::wstring dd = effParent0 + L"\\" + w->profile;
         std::string ui;
         bool hasUi = FpLoadUiExtra(dd, ui) && !ui.empty();
         if (hasUi) FpFormFromUiJson(ui, w->form);
         else FpFormDefaults(w->form, w->profile);
+        // A2 默认取全局生效值（必填，保存时以前缀判断落盘，见 FpFill/F_OK）
+        if (w->form.profDataDir.empty()) w->form.profDataDir = effParent0;
+        if (w->form.profBrowserDir.empty()) w->form.profBrowserDir = EffBrowserDir(w->cfg, w->profile);
         // static 回填（与 web-ui applyImportResult 同字段）。
         // 优先级：ui 存档优先（用户最后一次保存的值），static 仅补 ui 缺失的键。
         // 以缓存为准的保护键（ProxyChain/DeviceName/MacAddress 等）在 ui 缺失时才用 static 值，
@@ -1087,6 +1154,11 @@ static LRESULT CALLBACK FpWndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
             std::string uiLangs = FpJsonGet(ui, "language");
             // ui 存档 language 可能是数组 ["en-US","en"] 或字符串，任一非空即视为有值
             bool uiHasLangs = (!uiLangs.empty() && uiLangs != "\"\"" && uiLangs != "[]");
+            // 语言三键快照：uiLang/pageLanguage（界面语言显示即它们决定）
+            std::string uiUiLang = FpJsonGet(ui, "uiLang");
+            std::string uiPageLang = FpJsonGet(ui, "pageLanguage");
+            bool uiHasUiLang = (!uiUiLang.empty() && uiUiLang != "\"\"");
+            bool uiHasPageLang = (!uiPageLang.empty() && uiPageLang != "\"\"");
             bool uiHasProxyHost = false, uiHasProxyPort = false;
             {
                 std::string hh0 = FpJsonGet(ui, "proxyHost"), pp0 = FpJsonGet(ui, "proxyPort");
@@ -1095,6 +1167,9 @@ static LRESULT CALLBACK FpWndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
             }
             if (FpLoadStaticJson(dd, sj) && !sj.empty()) {
                 std::string v;
+                // 语言回填对齐（main.min.js setLangs：Langs=language.join(",")）：
+                // ui 有 language 即用 ui；ui 无才用 static.Langs。AcceptLang 是派生
+                // （getAccept 算法），不直接回填，只在保存时重算。
                 if (!uiHasLangs) {
                     v = FpJsonGet(sj, "Langs");
                     if (!v.empty() && v.front() == '"') {
@@ -1102,6 +1177,20 @@ static LRESULT CALLBACK FpWndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
                         w->form.langList = WJ(v);
                         w->form.langMode = L"custom";
                     }
+                }
+                // 界面语言回填对齐（main.min.js setUILanguage：--lang 取 language 首项
+                // 经 getUILanguage 映射；pageLanguageSwitch=1 跟随，0 用 pageLanguage）：
+                // ui 有 uiLang/pageLanguage 即用 ui；ui 无才从语言列表首项派生。
+                if (!uiHasUiLang) w->form.uiLang = L"follow_lang";
+                if (!uiHasPageLang) {
+                    if (w->form.uiLang == L"custom") {
+                        std::wstring src = w->form.langList;
+                        size_t c = src.find(L",");
+                        std::wstring first = (c == std::wstring::npos) ? src : src.substr(0, c);
+                        first.erase(0, first.find_first_not_of(L" \t"));
+                        if (!first.empty()) first.erase(first.find_last_not_of(L" \t") + 1);
+                        w->form.pageLang = first.empty() ? L"en-US" : first;
+                    } else w->form.pageLang.clear();
                 }
                 // Platform -> os 反推（仅 ui 无 os 时；ui 存档 os 为准）
                 {
@@ -1326,6 +1415,54 @@ static LRESULT CALLBACK FpWndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
         int code = HIWORD(wp);
         auto C = [&](int c) { return w->ctl[c - F_BASE]; };
         if (id == F_CANCEL) { ::DestroyWindow(h); return 0; }
+        // A2 浏览按钮：数据目录选父目录（SHGetFolder）；浏览器目录选 SunBrowser.exe
+        // 文件（GetOpenFileName），自动取其父目录填入。选后 FpCollect 同步表单。
+        if (id == F_BROWSEDATA) {
+            wchar_t dir[MAX_PATH]{};
+            BROWSEINFOW bi{};
+            bi.hwndOwner = h;
+            bi.pszDisplayName = dir;
+            bi.lpszTitle = L"选择该指纹的数据父目录（指纹目录=父目录+环境名）";
+            bi.ulFlags = BIF_RETURNONLYFSDIRS | BIF_NEWDIALOGSTYLE;
+            PIDLIST_ABSOLUTE pidl = ::SHBrowseForFolderW(&bi);
+            if (pidl) {
+                if (::SHGetPathFromIDListW(pidl, dir) && dir[0]) {
+                    FpSet(C(F_PDATADIR), dir);
+                    FpCollect(w);
+                    ::SetWindowTextW(w->hStatus, L"数据目录已选择（保存进独立目录）");
+                    LOG(L"指纹浏览 数据目录=" + std::wstring(dir) + L" " + w->profile);
+                }
+                ::CoTaskMemFree(pidl);
+            }
+            return 0;
+        }
+        if (id == F_BROWSEBROWSER) {
+            wchar_t file[MAX_PATH]{};
+            OPENFILENAMEW ofn{};
+            ofn.lStructSize = sizeof(ofn);
+            ofn.hwndOwner = h;
+            ofn.lpstrFile = file;
+            ofn.nMaxFile = MAX_PATH;
+            ofn.lpstrFilter = L"SunBrowser 程序\0SunBrowser.exe\0所有文件\0*.*\0";
+            ofn.lpstrTitle = L"选择浏览器内核程序 SunBrowser.exe（自动取其父目录）";
+            ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST;
+            if (::GetOpenFileNameW(&ofn) && file[0]) {
+                std::wstring f = file, low = file;
+                for (auto& c : low) c = towlower(c);
+                std::wstring dir = f;
+                size_t p = dir.find_last_of(L"\\/");
+                if (p != std::wstring::npos) dir = dir.substr(0, p);
+                if (low.size() < 14 || low.compare(low.size() - 14, 14, L"sunbrowser.exe") != 0) {
+                    ::MessageBoxW(h, L"请选择 SunBrowser.exe（不是 chrome.exe 或目录）。\r\n已按所选文件的父目录填入，请确认。",
+                        L"浏览器目录", MB_OK | MB_ICONWARNING);
+                }
+                FpSet(C(F_PBROWSERDIR), dir);
+                FpCollect(w);
+                ::SetWindowTextW(w->hStatus, L"浏览器目录已选择（保存进独立目录）");
+                LOG(L"指纹浏览 浏览器目录=" + dir + L" file=" + f + L" " + w->profile);
+            }
+            return 0;
+        }
         // 内核联动浏览器目录：内核下拉切换时，按“浏览器类型→内核版本→目录名”规则
         // 自动重算浏览器目录建议值（chrome143→chrome_152、chrome121→chrome_121、
         // firefox128→flower_100；全局前缀不变，只换尾段目录名），填入 A2 行。
@@ -1518,12 +1655,24 @@ static LRESULT CALLBACK FpWndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
                 // ui 侧车
                 if (FpLoadUiExtra(srcDir, ui2) && !ui2.empty())
                     FpFormFromUiJson(ui2, w->form);
-                // static 关键字段（与打开回填同表，ui 已有值不覆盖）
+                // static 关键字段（与打开回填同表：语言三键 ui 有值不覆盖，无才用 Langs/首项派生）
                 std::string v;
                 std::string uiLangs = FpJsonGet(ui2, "language");
                 if ((uiLangs.empty() || uiLangs == "\"\"" || uiLangs == "[]")) {
                     v = FpJsonGet(sj2, "Langs");
                     if (!v.empty() && v.front() == '"') { w->form.langList = WJ(v); w->form.langMode = L"custom"; }
+                }
+                {
+                    std::string uiU = FpJsonGet(ui2, "uiLang"), uiP = FpJsonGet(ui2, "pageLanguage");
+                    if (uiU.empty() || uiU == "\"\"") w->form.uiLang = L"follow_lang";
+                    if ((uiP.empty() || uiP == "\"\"") && w->form.uiLang == L"custom") {
+                        std::wstring src = w->form.langList;
+                        size_t c = src.find(L",");
+                        std::wstring first = (c == std::wstring::npos) ? src : src.substr(0, c);
+                        first.erase(0, first.find_first_not_of(L" \t"));
+                        if (!first.empty()) first.erase(first.find_last_not_of(L" \t") + 1);
+                        w->form.pageLang = first.empty() ? L"en-US" : first;
+                    } else if (w->form.uiLang == L"follow_lang") w->form.pageLang.clear();
                 }
                 std::string pc = FpJsonGet(sj2, "ProxyChain");
                 std::string uiH = FpJsonGet(ui2, "proxyHost"), uiP = FpJsonGet(ui2, "proxyPort");
@@ -1677,6 +1826,37 @@ static LRESULT CALLBACK FpWndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
                 size_t p = 0; int cnt = 0;
                 while (p <= lang.size()) { size_t e = lang.find(',', p); cnt++; if (e == std::string::npos) break; p = e + 1; }
                 ui = FpJsonSet(ui, "languageSwitch", (cnt <= 1) ? "\"1\"" : "\"0\"");
+                // AcceptLang 派生与 fpConfig 同算法（getAccept），存档可直接验算
+                {
+                    std::string _lang = N(w->form.langList);
+                    std::vector<std::string> _e;
+                    { size_t _p = 0; while (_p <= _lang.size()) {
+                        size_t _q = _lang.find(',', _p);
+                        std::string _t = _lang.substr(_p, _q == std::string::npos ? _q : _q - _p);
+                        size_t _a = _t.find_first_not_of(" \t\r\n"), _b = _t.find_last_not_of(" \t\r\n");
+                        if (_a != std::string::npos) _e.push_back(_t.substr(_a, _b - _a + 1));
+                        if (_q == std::string::npos) break; _p = _q + 1; } }
+                    std::string _acc; int _n = 0; std::vector<std::string> _r;
+                    auto _base = [](const std::string& s) -> std::string {
+                        size_t _d = s.find('-'); return (_d == std::string::npos) ? s : s.substr(0, _d); };
+                    for (size_t _a = 0; _a < _e.size(); _a++) {
+                        std::string _i = _e[_a], _o = (_a + 1 < _e.size()) ? _e[_a + 1] : "";
+                        std::string _s = _base(_i), _l = _base(_o);
+                        auto _has = [&](const std::string& _x) {
+                            for (auto& _y : _r) if (_y == _x) return true; return false; };
+                        if (_a == 0) { _acc += _i; _n++; }
+                        else if (!_has(_i)) {
+                            int _q = 10 - _n; if (_q < 1) _q = 1;
+                            _acc += "," + _i + ";q=0." + std::to_string(_q); _n++;
+                        }
+                        if (!(_i == _s || _s == _l || _has(_s))) {
+                            int _q = 10 - _n; if (_q < 1) _q = 1;
+                            _acc += "," + _s + ";q=0." + std::to_string(_q); _n++; _r.push_back(_s);
+                        }
+                        _r.push_back(_i);
+                    }
+                    ui = FpJsonSet(ui, "AcceptLang", "\"" + _acc + "\"");
+                }
                 ui = FpJsonSet(ui, "pageLanguageSwitch", (w->form.uiLang == L"custom") ? "\"0\"" : "\"1\"");
                 std::string res = N(w->form.resolution);
                 if (w->form.resMode == L"custom" && !w->form.resW.empty() && !w->form.resH.empty())
@@ -1770,17 +1950,20 @@ static LRESULT CALLBACK FpWndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
                     LOG(L"指纹保存 cookies SKIP（非JSON数组，不写盘） " + w->profile);
                 }
             }
-            // 3. static 写回：FpFormToFpConfig 按表单组装（含 ProxyChain 数组），
-            // protectFill 语义：已有缓存的保护键以缓存为准，但 ProxyChain 为空数组时
-            // 允许表单新值覆盖（否则代理永远写不进去——本次 SOCKS5 不生效根因）。
-            {
-                std::string cfg = FpFormToFpConfig(w->form);
-                std::string curS;
-                FpLoadStaticJson(dd, curS);
-                // 保護鍵回填（与 main.cpp /api/fp/save protectFill 同表），但 ProxyChain 例外：
-                // 缓存 ProxyChain 为空/缺失时用表单新值；非空时以缓存为准。
+                // 3. static 写回：FpFormToFpConfig 按表单组装（含 ProxyChain 数组），
+                // protectFill 语义：已有缓存的保护键以缓存为准，但 ProxyChain 为空数组时
+                // 允许表单新值覆盖（否则代理永远写不进去——本次 SOCKS5 不生效根因）。
+                // 对齐验证（k1h60tsv 实测）：语言三键 Langs/AcceptLang 必写（浏览器中文/
+                // 英文显示即它们决定）；Platform/HardwareConcurrency/DeviceMemory 等同表。
+                // 例外放行（表单新值覆盖缓存旧值）：Langs/AcceptLang（语言三键，用户改
+                // 中文/英文必须生效）+ ProxyChain（代理同理）。其余保护键仍以缓存为准。
+                {
+                    std::string cfg = FpFormToFpConfig(w->form);
+                    std::string curS;
+                    FpLoadStaticJson(dd, curS);
+                // 保護鍵回填（与 main.cpp /api/fp/save protectFill 同表），例外见上：
                 static const char* prot[] = { "DeviceName","MacAddress",
-                    "MediaDevices","TTSEngines","Langs","AcceptLang","HardwareConcurrency",
+                    "MediaDevices","TTSEngines","HardwareConcurrency",
                     "DeviceMemory","Platform","UserId","CanvasMark","WebGLMark","AudioFp",
                     "ClientRectFp", NULL };
                 for (int i = 0; prot[i]; i++) {

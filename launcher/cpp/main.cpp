@@ -1528,16 +1528,20 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE, LPWSTR, int show) {
                                   sC = grabRaw("cookies"), sU = grabRaw("ui");
                     // 保护键只进 ui 存档：static/dynamic 按原文写，但先做保护键回填——
                     // 以缓存为准：若调用方 static 里改了保护键，用缓存值覆盖后再写。
+                    // 例外（k1h60tsv 对齐验证）：语言三键 Langs/AcceptLang 允许表单新值覆盖
+                    // 缓存旧值——否则界面语言改了中文/英文，static 仍是旧语言，浏览器显示不对。
+                    // ProxyChain 同理（旧逻辑已放行，见 fp_ui.cpp F_OK）。
                     std::string curS, curD;
                     FpLoadStaticJson(dataDir, curS);
                     FpLoadDynamicJson(dataDir, curD);
-                    auto protectFill = [&](std::string& nw, const std::string& cur) {
+                    auto protectFill = [&](std::string& nw, const std::string& cur, const std::string& allowNew) {
                         if (nw.empty() || cur.empty()) return;
                         static const char* prot[] = { "ProxyChain","DeviceName","MacAddress",
                             "MediaDevices","TTSEngines","Langs","AcceptLang","HardwareConcurrency",
                             "DeviceMemory","Platform","UserId","CanvasMark","WebGLMark","AudioFp",
                             "ClientRectFp", NULL };
                         for (int i = 0; prot[i]; i++) {
+                            if (!allowNew.empty() && allowNew.find(prot[i]) != std::string::npos) continue;
                             std::string cv = FpJsonGet(cur, prot[i]);
                             if (!cv.empty()) {
                                 std::string merged = FpJsonSet(nw, prot[i], cv);
@@ -1545,7 +1549,15 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE, LPWSTR, int show) {
                             }
                         }
                     };
-                    if (!sS.empty()) { protectFill(sS, curS); if (FpSaveStaticJson(dataDir, sS)) notes.push_back("static 已写入"); }
+                    // 调用方 ui 存档语言非空 -> 语言三键用新值（不过滤回缓存）
+                    std::string allowNew;
+                    {
+                        std::string ul = FpJsonGet(sU, "language");
+                        if (!ul.empty() && ul != "\"\"" && ul != "[]") allowNew += "Langs AcceptLang ";
+                        std::string pc = FpJsonGet(sS, "ProxyChain");
+                        if (pc.empty() || pc == "[]") allowNew += "ProxyChain ";
+                    }
+                    if (!sS.empty()) { protectFill(sS, curS, allowNew); if (FpSaveStaticJson(dataDir, sS)) notes.push_back("static 已写入"); }
                     if (!sD.empty()) {
                         // dynamic 保护键：TimeZone/Geoposition/WebRTCAddress/DisableWebRTC
                         static const char* dprot[] = { "TimeZone","Geoposition","WebRTCAddress","DisableWebRTC", NULL };
