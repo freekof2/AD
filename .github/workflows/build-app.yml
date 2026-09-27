@@ -350,20 +350,27 @@ jobs:
             if ($mcpp -match [regex]::Escape($s)) { throw "legacy LISTBOX '$s' still in main.cpp" }
             Write-Host "nolb ok: $s"
           }
-          # 2f. 指纹单页（860x640 滚动，无 Tab；数据层符号保留；A2 行后内容高 1770）
-          foreach ($s in @("kFpWinW = 860", "kFpWinH = 640", "kFpContentW = 828", "kFpContentH = 1770",
-                           "F_PDATADIR", "F_PBROWSERDIR", "F_BROWSEDATA", "F_BROWSEBROWSER", "F_BROWSEFP",
+          # 2f. 指纹单页（860x640 滚动，无 Tab；数据层符号保留；去重后内容高 1744）
+          #     A 区只留浏览器下拉 + 数据目录 + 浏览器目录（指纹目录=数据目录+环境名，不单列；
+          #     内核由浏览器目录尾段推导，不单独下拉）。
+          foreach ($s in @("kFpWinW = 860", "kFpWinH = 640", "kFpContentW = 828", "kFpContentH = 1744",
+                           "F_PDATADIR", "F_PBROWSERDIR", "F_BROWSEDATA", "F_BROWSEBROWSER",
                            "SHBrowseForFolderW", "GetOpenFileNameW", "SunBrowser.exe",
                            "FpMkScroll", "FpScrollTo", "FpScrollInit", "WS_VSCROLL",
                            "SW_SCROLLCHILDREN", "SB_THUMBTRACK", "WM_MOUSEWHEEL")) {
             if ($fpc -notmatch [regex]::Escape($s)) { throw "single-page symbol '$s' missing in fp_ui.cpp" }
             Write-Host "singlepage ok: $s"
           }
+          # 去重回归：指纹目录单列行与内核下拉不得重现（与数据目录/浏览器目录同参数）
+          foreach ($s in @("F_BDIR", "F_KERNEL", "F_BROWSEFP")) {
+            if ($fpc -match [regex]::Escape($s)) { throw "deduped symbol '$s' still in fp_ui.cpp" }
+            Write-Host "dedup ok: $s gone"
+          }
           # 2f2. 语言三键对齐（main.min.js setLangs/setUILanguage 实测）：
           #     界面语言决定 --lang（浏览器 UI 中文/英文）；语言列表决定 Langs/AcceptLang。
           #     k1h60tsv 实测：AcceptLang=en-US,en;q=0.9 由 getAccept 派生，保存必写。
           #     启动必须带 --lang 单tag，否则中文系统默认中文 UI（本次根因）。
-          foreach ($s in @("pageLanguageSwitch", "AcceptLang", "buildAccept", "Langs", "F_BROWSEFP")) {
+          foreach ($s in @("pageLanguageSwitch", "AcceptLang", "buildAccept", "Langs")) {
             if ($fpc -notmatch [regex]::Escape($s)) { throw "lang-align symbol '$s' missing in fp_ui.cpp" }
             Write-Host "langalign ok: $s"
           }

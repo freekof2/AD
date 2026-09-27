@@ -428,8 +428,8 @@ std::string FpFormToFpConfig(const FpFormData& f) {
 // fp_ui.cpp — part 2/4：控件 id 表 + 随机库 + 默认值
 enum FpCtl {
     F_BASE = 2000,
-    F_BROWSER, F_KERNEL, F_BDIR, F_OS, F_UAPRESET, F_UA, F_SHUFFLEUA,
-    F_PDATADIR, F_PBROWSERDIR, F_BROWSEDATA, F_BROWSEBROWSER, F_BROWSEFP, // A2 目录+浏览，指纹目录浏览同数据源
+    F_BROWSER, F_OS, F_UAPRESET, F_UA, F_SHUFFLEUA,
+    F_PDATADIR, F_PBROWSERDIR, F_BROWSEDATA, F_BROWSEBROWSER, // A2 目录+浏览（数据目录单行，内核由浏览器目录推导）
     F_PTYPE, F_PHOST, F_PPORT, F_PUSER, F_PPASS, F_PTEST, F_PSAVE, F_PSTATUS,
     F_COOKIE, F_MERGECOOKIE, F_REMARK,
     F_WEBRTC, F_TZM, F_TZ, F_GEOM, F_GEOIP, F_LAT, F_LNG, F_ACC,
@@ -632,7 +632,7 @@ static void FpFormDefaults(FpFormData& f, const std::wstring& profileName) {
 static const int kFpWinW = 860;
 static const int kFpWinH = 640;
 static const int kFpContentW = 828;   // 内容区宽（窗口 860 - 边距 2*16）
-static const int kFpContentH = 1770;  // 内容总高（A2 新增 52 + 整体下移 48：1674+96=1770）
+static const int kFpContentH = 1744;  // 内容总高（去指纹目录单列行 -26：1770-26=1744）
 
 // 单页窗口状态（滚动位置 + 内容容器；Tab 相关已删除，见 git 历史）
 // hPage 子类化：STATIC 父容器默认把 BUTTON 的 WM_COMMAND 吃掉（BN_CLICKED 不向上传），
@@ -745,35 +745,23 @@ static void FpScrollInit(FpWnd* w) {
     w->scrollY = 0;
 }
 // fp_ui.cpp — 单页控件排布（对齐 web-ui/index.html fp-row 顺序，无 Tab）
-// 行高：A(浏览器/内核/目录 64)+A2(独立目录 52)+B(系统/UA 112)+Cookie/备注/代理/WebRTC/时区/地理/语言/界面语言/分辨率/字体
-// +噪音+WebGL+WebGPU+CPU+RAM+设备名+MAC+DNT+端口+加速+TLS+启动参数 ≈ 1770
+// 行高：A(浏览器 32)+A2(数据/浏览器目录 56)+B(系统/UA 112)+Cookie/备注/代理/WebRTC/时区/地理/语言/界面语言/分辨率/字体
+// +噪音+WebGL+WebGPU+CPU+RAM+设备名+MAC+DNT+端口+加速+TLS+启动参数 ≈ 1744
 static void FpBuildPages(FpWnd* w, HWND p, HINSTANCE hi) {
     (void)hi;
-    // ---- A. 浏览器 / 内核 / 目录（y 8..72）----
+    // ---- A. 浏览器（y 8..38；内核由浏览器目录尾段推导，不再单独下拉）----
     FpMkLabel(p, w, F_BROWSER, L"浏览器", 12, 12, 80);
-    FpMkCombo(p, w, F_BROWSER, 100, 10, 200);
+    FpMkCombo(p, w, F_BROWSER, 100, 10, 570);
     FpComboAdd(w->ctl[F_BROWSER - F_BASE], L"sun - SunBrowser");
     FpComboAdd(w->ctl[F_BROWSER - F_BASE], L"flower - FlowerBrowser");
-    FpMkLabel(p, w, F_KERNEL, L"内核", 320, 12, 50);
-    FpMkCombo(p, w, F_KERNEL, 370, 10, 300);
-    FpComboAdd(w->ctl[F_KERNEL - F_BASE], L"chrome143 - Chrome 143 (SunBrowser 150)");
-    FpComboAdd(w->ctl[F_KERNEL - F_BASE], L"chrome121 - Chrome 121 (SunBrowser 121)");
-    FpComboAdd(w->ctl[F_KERNEL - F_BASE], L"firefox128 - Firefox 128 (FlowerBrowser)");
-    // F_BDIR 是指纹目录完整路径（= 数据父目录 + 环境名），只读展示，与数据目录同源：
-    // 数据目录改，联动刷新；浏览按钮选父目录，两行同步。真正落盘只用 A2 两行。
-    FpMkLabel(p, w, F_BDIR, L"指纹目录", 12, 46, 80);
-    FpMkEdit(p, w, F_BDIR, 100, 44, 500);
-    ::SendMessageW(w->ctl[F_BDIR - F_BASE], EM_SETREADONLY, TRUE, 0);
-    FpMkBtn(p, w, F_BROWSEFP, L"浏览...", 606, 42, 64);
-    // ---- A2. 本指纹独立目录（y 72..124；必填；二合一：指纹目录=数据父目录+环境名，
-    // 浏览按钮选父目录；浏览器目录浏览按钮直接选 SunBrowser.exe，自动取其父目录）----
-    FpMkLabel(p, w, F_PDATADIR, L"数据目录", 12, 76, 80);
-    FpMkEdit(p, w, F_PDATADIR, 100, 74, 500);
-    FpMkBtn(p, w, F_BROWSEDATA, L"浏览...", 606, 72, 64);
-    FpMkLabel(p, w, F_PBROWSERDIR, L"浏览器目录", 12, 102, 80);
-    FpMkEdit(p, w, F_PBROWSERDIR, 100, 100, 500);
-    FpMkBtn(p, w, F_BROWSEBROWSER, L"浏览...", 606, 98, 64);
-    // ---- B. 系统/UA（y 128..170；整体下移 48）----
+    // ---- A2. 数据目录 + 浏览器目录（y 46..102；指纹目录=数据目录+环境名，不再单列一行）----
+    FpMkLabel(p, w, F_PDATADIR, L"数据目录", 12, 50, 80);
+    FpMkEdit(p, w, F_PDATADIR, 100, 48, 500);
+    FpMkBtn(p, w, F_BROWSEDATA, L"浏览...", 606, 46, 64);
+    FpMkLabel(p, w, F_PBROWSERDIR, L"浏览器目录", 12, 76, 80);
+    FpMkEdit(p, w, F_PBROWSERDIR, 100, 74, 500);
+    FpMkBtn(p, w, F_BROWSEBROWSER, L"浏览...", 606, 72, 64);
+    // ---- B. 系统/UA（y 128..170）----
     FpMkLabel(p, w, F_OS, L"系统", 12, 128, 80);
     FpMkCombo(p, w, F_OS, 100, 126, 200);
     FpComboAdd(w->ctl[F_OS - F_BASE], L"win - Windows");
@@ -792,7 +780,7 @@ static void FpBuildPages(FpWnd* w, HWND p, HINSTANCE hi) {
     FpMkBtn(p, w, F_IMPORT, L"从目录导入指纹", 220, 298, 140);
     FpMkLabel(p, w, F_REMARK, L"备注", 12, 338, 80);
     FpMkEdit(p, w, F_REMARK, 100, 336, 640);
-    // ---- C. 代理（y 378..474；整体下移 48）----
+    // ---- C. 代理（y 378..474）----
     FpMkLabel(p, w, F_PTYPE, L"代理", 12, 384, 80);
     FpMkCombo(p, w, F_PTYPE, 100, 380, 120);
     FpComboAdd(w->ctl[F_PTYPE - F_BASE], L"socks5");
@@ -981,14 +969,13 @@ static void FpFill(FpWnd* w) {
         if (n > 0) ::SendMessageW(c, CB_SETCURSEL, 0, 0);
     };
     selByVal(F_BROWSER, f.browser.empty() ? L"sun" : f.browser);
-    selByVal(F_KERNEL, f.kernelVer.empty() ? L"chrome143" : f.kernelVer);
-    // 指纹目录与数据目录同源显示：指纹目录 = 数据父目录 + 环境名（只读），数据目录改即联动。
+    // 内核无独立下拉：由浏览器目录尾段推导（chrome_152→chrome143、chrome_121→chrome121、
+    // flower_100→firefox128），f.kernelVer 保留载入值用于存档兼容，显示层不再设置。
     // A2 独立目录回填：必填（无全局兜底）。显示已保存的独立值；从未保存过则
     // 显示全局值作参考（带“（默认全局，可改）”后缀），保存时以前缀判断落盘。
     {
         std::wstring effD = EffDataDir(w->cfg, w->profile);
         std::wstring effB = EffBrowserDir(w->cfg, w->profile);
-        FpSet(C(F_BDIR), effD + L"\\" + w->profile);
         auto it = w->cfg.profiles.find(w->profile);
         bool hasD = (it != w->cfg.profiles.end() && !it->second.dataDir.empty());
         bool hasB = (it != w->cfg.profiles.end() && !it->second.sunBrowserDir.empty());
@@ -1104,24 +1091,32 @@ static void FpCollect(FpWnd* w) {
     FpFormData& f = w->form;
     auto C = [&](int id) { return w->ctl[id - F_BASE]; };
     f.browser = FpFirstTok(FpComboGet(C(F_BROWSER)));
-    f.kernelVer = FpFirstTok(FpComboGet(C(F_KERNEL)));
-    // browserDir 恒等于环境名（只存名，不存路径；路径走 A2），显示层 F_BDIR 为完整路径只读。
-    f.browserDir = w->profile;
-    // A2 独立目录收集：必填。去“（默认全局，可改）”后缀；为空弹窗阻断保存。
+    // 内核由浏览器目录尾段推导（与目录同参数）：flower_100→firefox128、chrome_121→chrome121、
+    // chrome_152→chrome143；browser 类型同步（flower_100→flower，其余 sun）。
+    // browserDir 恒等于环境名（只存名，不存路径；路径走 A2）。
     {
         auto stripTag = [](std::wstring s) -> std::wstring {
             size_t p = s.find(L"（默认全局，可改）");
             if (p != std::wstring::npos) s = s.substr(0, p);
             p = s.find(L"（跟随全局）"); // 兼容旧版后缀
             if (p != std::wstring::npos) s = s.substr(0, p);
-            // 去首尾空格
             s.erase(0, s.find_first_not_of(L" \t"));
             if (!s.empty()) s.erase(s.find_last_not_of(L" \t") + 1);
             return s;
         };
+        // 先收目录（推导需要它）
         f.profDataDir = stripTag(FpGet(C(F_PDATADIR)));
         f.profBrowserDir = stripTag(FpGet(C(F_PBROWSERDIR)));
+        std::wstring low = f.profBrowserDir;
+        for (auto& c : low) c = towlower(c);
+        auto tail = [&](const wchar_t* t) {
+            return low.size() >= wcslen(t) &&
+                low.compare(low.size() - wcslen(t), wcslen(t), t) == 0; };
+        if (tail(L"flower_100")) { f.kernelVer = L"firefox128"; f.browser = L"flower"; }
+        else if (tail(L"chrome_121")) { f.kernelVer = L"chrome121"; if (f.browser != L"flower") f.browser = L"sun"; }
+        else { f.kernelVer = L"chrome143"; if (f.browser != L"flower") f.browser = L"sun"; }
     }
+    f.browserDir = w->profile;
     f.os = FpFirstTok(FpComboGet(C(F_OS)));
     f.uaPreset = FpGet(C(F_UAPRESET));
     f.ua = FpGet(C(F_UA));
@@ -1517,10 +1512,8 @@ static LRESULT CALLBACK FpWndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
             if (pidl) {
                 if (::SHGetPathFromIDListW(pidl, dir) && dir[0]) {
                     FpSet(C(F_PDATADIR), dir);
-                    // 同源联动：指纹目录 = 数据父目录 + 环境名，只读刷新
-                    FpSet(C(F_BDIR), std::wstring(dir) + L"\\" + w->profile);
                     FpCollect(w);
-                    ::SetWindowTextW(w->hStatus, L"数据目录已选择（指纹目录已同步，保存进独立目录）");
+                    ::SetWindowTextW(w->hStatus, L"数据目录已选择（指纹目录=该目录+环境名，保存进独立目录）");
                     LOG(L"指纹浏览 数据目录=" + std::wstring(dir) + L" " + w->profile);
                 }
                 ::CoTaskMemFree(pidl);
@@ -1566,51 +1559,12 @@ static LRESULT CALLBACK FpWndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
             }
             return 0;
         }
-        // 指纹目录浏览：与数据目录同源（选父目录，两行同步）。指纹目录本身只读，不直接编辑。
-        if (id == F_BROWSEFP) {
-            bool needUninit = false;
-            HRESULT hrCo = ::CoInitializeEx(NULL, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
-            if (SUCCEEDED(hrCo)) needUninit = true;
-            else if (hrCo != RPC_E_CHANGED_MODE) {
-                ::SetWindowTextW(w->hStatus, L"浏览失败：COM 初始化失败");
-                return 0;
-            }
-            wchar_t dir[MAX_PATH]{};
-            BROWSEINFOW bi{};
-            bi.hwndOwner = h;
-            bi.pszDisplayName = dir;
-            bi.lpszTitle = L"选择指纹目录的父目录（指纹目录=父目录+环境名，与数据目录相同）";
-            bi.ulFlags = BIF_RETURNONLYFSDIRS | BIF_NEWDIALOGSTYLE;
-            PIDLIST_ABSOLUTE pidl = ::SHBrowseForFolderW(&bi);
-            if (pidl) {
-                if (::SHGetPathFromIDListW(pidl, dir) && dir[0]) {
-                    FpSet(C(F_PDATADIR), dir);
-                    FpSet(C(F_BDIR), std::wstring(dir) + L"\\" + w->profile);
-                    FpCollect(w);
-                    ::SetWindowTextW(w->hStatus, L"指纹目录已选择（已同步数据目录）");
-                    LOG(L"指纹浏览 指纹目录=" + std::wstring(dir) + L"\\" + w->profile + L" " + w->profile);
-                }
-                ::CoTaskMemFree(pidl);
-            } else {
-                ::SetWindowTextW(w->hStatus, L"未选择指纹目录");
-            }
-            if (needUninit) ::CoUninitialize();
-            return 0;
-        }
-        // 内核联动浏览器目录：内核下拉切换时，按“浏览器类型→内核版本→目录名”规则
-        // 自动重算浏览器目录建议值（chrome143→chrome_152、chrome121→chrome_121、
-        // firefox128→flower_100；全局前缀不变，只换尾段目录名），填入 A2 行。
-        // 规则来源：getBrowserPath（win32）+ DATA_FLODER 形态；用户仍可手工改。
-        if ((id == F_KERNEL && (code == CBN_SELCHANGE || code == CBN_SELENDOK)) ||
-            (id == F_BROWSER && (code == CBN_SELCHANGE || code == CBN_SELENDOK))) {
+        // 浏览器类型联动浏览器目录：切 sun/flower 时按尾段目录名规则自动建议
+        // （flower→flower_100、sun→chrome_152；chrome_121 的用户手工改目录即可），填入 A2 行。
+        // 规则来源：getBrowserPath（win32）；内核版本号由目录尾段推导（Collect 处），不再单独下拉。
+        if (id == F_BROWSER && (code == CBN_SELCHANGE || code == CBN_SELENDOK)) {
             FpCollect(w);
-            std::wstring tail;
-            if (w->form.browser == L"flower" || w->form.kernelVer == L"firefox128")
-                tail = L"flower_100";
-            else if (w->form.kernelVer == L"chrome121")
-                tail = L"chrome_121";
-            else
-                tail = L"chrome_152"; // chrome143 默认
+            std::wstring tail = (w->form.browser == L"flower") ? L"flower_100" : L"chrome_152";
             // 取当前 A2 行或全局 browserDir 的父目录前缀，只换尾段
             std::wstring cur = w->form.profBrowserDir.empty()
                 ? EffBrowserDir(w->cfg, w->profile) : w->form.profBrowserDir;
@@ -1618,9 +1572,9 @@ static LRESULT CALLBACK FpWndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
             std::wstring sug = (p == std::wstring::npos) ? tail : (cur.substr(0, p + 1) + tail);
             FpSet(C(F_PBROWSERDIR), sug);
             w->form.profBrowserDir = sug;
-            std::wstring m = L"内核联动：浏览器目录已建议为 " + tail + L"（可手工改，保存进独立目录）";
+            std::wstring m = L"浏览器联动：浏览器目录已建议为 " + tail + L"（可手工改，保存进独立目录）";
             ::SetWindowTextW(w->hStatus, m.c_str());
-            LOG(L"指纹内核联动 kernel=" + w->form.kernelVer + L" browser=" + w->form.browser + L" sugTail=" + tail + L" " + w->profile);
+            LOG(L"指纹浏览器联动 browser=" + w->form.browser + L" sugTail=" + tail + L" " + w->profile);
             return 0;
         }
         if (id == F_SHUFFLEUA) {
