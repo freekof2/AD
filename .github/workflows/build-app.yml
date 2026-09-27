@@ -323,8 +323,8 @@ jobs:
             if ($mcpp -notmatch [regex]::Escape($s)) { throw "main-window rect '$s' missing in main.cpp" }
             Write-Host "mainrect ok: $s"
           }
-          # 右列纵向无重叠：启动78/关闭116/刷新154/指纹192/新建236/输入260/新建按钮292（各高30/26，间隔≥8）
-          foreach ($s in @("494, 78, 100", "494, 116, 100", "494, 154, 100", "494, 192, 100",
+          # 右列纵向：启动92/关闭130/刷新168/指纹206/新建236/输入260/新建按钮292（A2 行后列表区下移 14）
+          foreach ($s in @("494, 92, 100", "494, 130, 100", "494, 168, 100", "494, 206, 100",
                            "494, 260, 212", "494, 292, 100")) {
             if ($mcpp -notmatch [regex]::Escape($s)) { throw "right-col rect '$s' missing in main.cpp" }
             Write-Host "rightcol ok: $s"

@@ -674,8 +674,11 @@ static void FpBuildPages(FpWnd* w, HWND p, HINSTANCE hi) {
     FpComboAdd(w->ctl[F_KERNEL - F_BASE], L"chrome143 - Chrome 143 (SunBrowser 150)");
     FpComboAdd(w->ctl[F_KERNEL - F_BASE], L"chrome121 - Chrome 121 (SunBrowser 121)");
     FpComboAdd(w->ctl[F_KERNEL - F_BASE], L"firefox128 - Firefox 128 (FlowerBrowser)");
-    FpMkLabel(p, w, F_BDIR, L"浏览器目录", 12, 46, 80);
+    // F_BDIR 是历史遗留的“环境目录名”（= profile 名），只读展示，禁止编辑：
+    // 真正的数据目录 / 浏览器目录走下方 A2 行（F_PDATADIR / F_PBROWSERDIR）。
+    FpMkLabel(p, w, F_BDIR, L"环境目录名", 12, 46, 80);
     FpMkEdit(p, w, F_BDIR, 100, 44, 570);
+    ::SendMessageW(w->ctl[F_BDIR - F_BASE], EM_SETREADONLY, TRUE, 0);
     // ---- A2. 本指纹独立目录（y 72..124；空=跟随全局；非官方设置，只存 sunlauncher.json）----
     FpMkLabel(p, w, F_PDATADIR, L"数据目录", 12, 76, 80);
     FpMkEdit(p, w, F_PDATADIR, 100, 74, 570);
@@ -1065,8 +1068,11 @@ static LRESULT CALLBACK FpWndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
         FpMkBtn(h, w, F_OK, L"保存", 636, 564, 100);
         FpMkBtn(h, w, F_CANCEL, L"取消", 744, 564, 100);
         w->hStatus = ::CreateWindowW(L"STATIC", L"", WS_CHILD | WS_VISIBLE, 120, 568, 500, 22, h, (HMENU)(INT_PTR)F_STATUS, hi, NULL);
-        // 初值：ui 侧车 -> static/dynamic 回填 -> 默认
-        std::wstring dd = w->cfg.dataDir + L"\\" + w->profile;
+        // 初值：ui 侧车 -> static/dynamic 回填 -> 默认。
+        // dd 解析：该指纹独立父目录优先（sunlauncher.json profiles 段），否则全局。
+        // 注意：独立目录的 profile 可能住在别处，ui/三件套都从 dd 读。
+        std::wstring effParent0 = EffDataDir(w->cfg, w->profile);
+        std::wstring dd = effParent0 + L"\\" + w->profile;
         std::string ui;
         bool hasUi = FpLoadUiExtra(dd, ui) && !ui.empty();
         if (hasUi) FpFormFromUiJson(ui, w->form);
@@ -1264,6 +1270,7 @@ static LRESULT CALLBACK FpWndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
             }
         }
         FpFill(w);
+        LOG(L"指纹打开回填 profile=" + w->profile + L" dd=" + dd);
         ::SetWindowTextW(w->hStatus, L"已载入，可编辑后保存");
         FpScrollTo(w, 0);
         return 0;
@@ -1316,8 +1323,35 @@ static LRESULT CALLBACK FpWndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
     }
     case WM_COMMAND: {
         int id = LOWORD(wp);
+        int code = HIWORD(wp);
         auto C = [&](int c) { return w->ctl[c - F_BASE]; };
         if (id == F_CANCEL) { ::DestroyWindow(h); return 0; }
+        // 内核联动浏览器目录：内核下拉切换时，按“浏览器类型→内核版本→目录名”规则
+        // 自动重算浏览器目录建议值（chrome143→chrome_152、chrome121→chrome_121、
+        // firefox128→flower_100；全局前缀不变，只换尾段目录名），填入 A2 行。
+        // 规则来源：getBrowserPath（win32）+ DATA_FLODER 形态；用户仍可手工改。
+        if ((id == F_KERNEL && (code == CBN_SELCHANGE || code == CBN_SELENDOK)) ||
+            (id == F_BROWSER && (code == CBN_SELCHANGE || code == CBN_SELENDOK))) {
+            FpCollect(w);
+            std::wstring tail;
+            if (w->form.browser == L"flower" || w->form.kernelVer == L"firefox128")
+                tail = L"flower_100";
+            else if (w->form.kernelVer == L"chrome121")
+                tail = L"chrome_121";
+            else
+                tail = L"chrome_152"; // chrome143 默认
+            // 取当前 A2 行或全局 browserDir 的父目录前缀，只换尾段
+            std::wstring cur = w->form.profBrowserDir.empty()
+                ? EffBrowserDir(w->cfg, w->profile) : w->form.profBrowserDir;
+            size_t p = cur.find_last_of(L"\\/");
+            std::wstring sug = (p == std::wstring::npos) ? tail : (cur.substr(0, p + 1) + tail);
+            FpSet(C(F_PBROWSERDIR), sug);
+            w->form.profBrowserDir = sug;
+            std::wstring m = L"内核联动：浏览器目录已建议为 " + tail + L"（可手工改，保存进独立目录）";
+            ::SetWindowTextW(w->hStatus, m.c_str());
+            LOG(L"指纹内核联动 kernel=" + w->form.kernelVer + L" browser=" + w->form.browser + L" sugTail=" + tail + L" " + w->profile);
+            return 0;
+        }
         if (id == F_SHUFFLEUA) {
             FpCollect(w);
             // UA 大版本号取纯数字，非法/为空回退 152（与 web-ui uaVer 一致）
@@ -1450,7 +1484,82 @@ static LRESULT CALLBACK FpWndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
         }
         if (id == F_IMPORT) {
-            ::SetWindowTextW(w->hStatus, L"当前目录即导入源：三件套已在打开时回填");
+            // 从目录导入指纹：把 A2 行“数据目录”输入框里的父目录 + 环境目录名
+            // 拼成导入源，重读该目录三件套 + ui 侧车回填表单（覆盖当前编辑）。
+            // 为空则用当前生效父目录（跟随全局或已保存的独立目录）。
+            FpCollect(w);
+            std::wstring srcParent = w->form.profDataDir.empty()
+                ? EffDataDir(w->cfg, w->profile) : w->form.profDataDir;
+            std::wstring srcDir = srcParent + L"\\" + w->profile;
+            std::string sj2, dj2, cj2, ui2;
+            int nRD = 0;
+            if (FpLoadStaticJson(srcDir, sj2) && !sj2.empty()) nRD++;
+            if (FpLoadDynamicJson(srcDir, dj2) && !dj2.empty()) nRD++;
+            if (FpLoadCookiesJson(srcDir, cj2) && !cj2.empty()) nRD++;
+            if (nRD == 0) {
+                ::SetWindowTextW(w->hStatus, (L"导入源无三件套: " + srcDir).c_str());
+                return 0;
+            }
+            // 复用打开时回填链：先 ui 侧车（若有），再 static/dynamic/cookies。
+            // 为复用逻辑，把源目录三件套先解码进 form：走 FpFormFromUiJson + 手工字段。
+            // 简单做法：临时把 w->cfg.dataDir 指向源父目录，调回填段——此处直接内联：
+            {
+                // ui 侧车
+                if (FpLoadUiExtra(srcDir, ui2) && !ui2.empty())
+                    FpFormFromUiJson(ui2, w->form);
+                // static 关键字段（与打开回填同表，ui 已有值不覆盖）
+                std::string v;
+                std::string uiLangs = FpJsonGet(ui2, "language");
+                if ((uiLangs.empty() || uiLangs == "\"\"" || uiLangs == "[]")) {
+                    v = FpJsonGet(sj2, "Langs");
+                    if (!v.empty() && v.front() == '"') { w->form.langList = WJ(v); w->form.langMode = L"custom"; }
+                }
+                std::string pc = FpJsonGet(sj2, "ProxyChain");
+                std::string uiH = FpJsonGet(ui2, "proxyHost"), uiP = FpJsonGet(ui2, "proxyPort");
+                if (((uiH.empty() || uiH == "\"\"") || (uiP.empty() || uiP == "\"\"")) && !pc.empty() && pc != "[]") {
+                    std::string h2 = FpJsonGet(pc, "host"), p2 = FpJsonGet(pc, "port"), s2 = FpJsonGet(pc, "scheme");
+                    if ((uiH.empty() || uiH == "\"\"") && h2.size() >= 2 && h2.front() == '"') w->form.proxyHost = WJ(h2);
+                    if ((uiP.empty() || uiP == "\"\"")) {
+                        if (p2.size() >= 2 && p2.front() == '"') w->form.proxyPort = WJ(p2);
+                        else if (!p2.empty()) w->form.proxyPort = W(p2);
+                    }
+                    std::string uiT = FpJsonGet(ui2, "proxyType");
+                    if ((uiT.empty() || uiT == "\"\"") && s2.size() >= 2 && s2.front() == '"') w->form.proxyType = WJ(s2);
+                }
+                // cookies 回填（剥离 CLIENT_HOST + BROWSER_ID 校正，与打开回填一致）
+                if (!cj2.empty()) {
+                    std::string fbcc = FpFbccIdOf(w->profile);
+                    std::string out = "[";
+                    size_t pp = 0; bool first = true;
+                    while ((pp = cj2.find("\"name\"", pp)) != std::string::npos) {
+                        size_t vs = cj2.find(':', pp); if (vs == std::string::npos) break;
+                        size_t q1 = cj2.find('"', vs); if (q1 == std::string::npos) break;
+                        size_t q2 = cj2.find('"', q1 + 1); if (q2 == std::string::npos) break;
+                        std::string nm = cj2.substr(q1 + 1, q2 - q1 - 1);
+                        size_t os = cj2.rfind('{', pp), oe = cj2.find('}', q2);
+                        std::string obj = (os != std::string::npos && oe != std::string::npos) ? cj2.substr(os, oe - os + 1) : "";
+                        pp = q2 + 1;
+                        if (nm == "CLIENT_HOST") continue;
+                        if (nm == "BROWSER_ID" && !obj.empty()) {
+                            size_t vp = obj.find("\"value\"");
+                            if (vp != std::string::npos) {
+                                size_t v1 = obj.find('"', vp + 7), v2 = obj.find('"', v1 + 1);
+                                if (v1 != std::string::npos && v2 != std::string::npos)
+                                    obj = obj.substr(0, v1 + 1) + fbcc + obj.substr(v2);
+                            }
+                        }
+                        if (!obj.empty()) { if (!first) out += ","; first = false; out += obj; }
+                        if (first && obj.empty()) break;
+                    }
+                    out += "]";
+                    if (!first) w->form.cookie = W(out);
+                }
+            }
+            FpFill(w);
+            wchar_t msg2[256]{};
+            swprintf_s(msg2, L"已从目录导入 %d/3 件套: %s", nRD, srcDir.c_str());
+            ::SetWindowTextW(w->hStatus, msg2);
+            LOG(L"指纹导入 F_IMPORT ok n=" + std::to_wstring(nRD) + L" src=" + srcDir + L" " + w->profile);
             return 0;
         }
         if (id == F_PTEST) {
