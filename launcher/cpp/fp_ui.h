@@ -14,6 +14,10 @@ struct FpFormData {
     std::wstring browser;      // sun | flower
     std::wstring kernelVer;    // chrome143 | chrome121 | firefox128
     std::wstring browserDir;   // 缓存目录名（= 环境名）
+    // A2. 本指纹独立目录（非官方设置，只存 sunlauncher.json profiles 段，不进三件套/ext）
+    // 为空=跟随全局；非空=该指纹独立生效（启动/停止/列表都按此解析）。
+    std::wstring profDataDir;      // 该指纹独立数据父目录（profile 的父目录）
+    std::wstring profBrowserDir;   // 该指纹独立浏览器目录（含版本子目录那一级）
     // B. 系统/UA
     std::wstring os;           // win | mac | linux | android | ios
     std::wstring uaPreset;     // UA 大版本号，如 152

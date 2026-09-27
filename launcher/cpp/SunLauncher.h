@@ -40,12 +40,31 @@ static const wchar_t* kDefaultListen     = L"127.0.0.1:18900";
 static const int      kDefaultPortBase   = 19222;
 
 // ---------- 配置 ----------
+// 全局默认 + per-profile 覆盖（profiles.<name>.data_dir / .sun_browser_dir 为空即跟随全局）。
+// 非官方设置（每个指纹独立的数据目录/浏览器目录）只存 sunlauncher.json 本地文件，
+// 不进三件套、不进 --extended-parameters、不做任何网络 IO。
+struct ProfileOverride {
+    std::wstring dataDir;       // 为空=跟随全局 dataDir（profile 父目录）；非空=该指纹独立父目录
+    std::wstring sunBrowserDir; // 为空=跟随全局；非空=该指纹独立浏览器目录
+};
 struct Config {
     std::wstring sunBrowserDir = kDefaultBrowserDir;
     std::wstring dataDir       = kDefaultDataDir;
     std::wstring listen        = kDefaultListen;
     int          portBase      = kDefaultPortBase;
+    std::map<std::wstring, ProfileOverride> profiles; // profile 名 -> 独立目录覆盖
 };
+// 取 profile 实际生效目录：覆盖优先，全局兜底。
+inline std::wstring EffDataDir(const Config& c, const std::wstring& profile) {
+    auto it = c.profiles.find(profile);
+    if (it != c.profiles.end() && !it->second.dataDir.empty()) return it->second.dataDir;
+    return c.dataDir;
+}
+inline std::wstring EffBrowserDir(const Config& c, const std::wstring& profile) {
+    auto it = c.profiles.find(profile);
+    if (it != c.profiles.end() && !it->second.sunBrowserDir.empty()) return it->second.sunBrowserDir;
+    return c.sunBrowserDir;
+}
 
 // ---------- profile 运行状态 ----------
 struct ProfileInfo {

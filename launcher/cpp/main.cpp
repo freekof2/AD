@@ -349,21 +349,25 @@ static bool StartOneLocked(const std::wstring& name) {
         ::CloseHandle(it->second.hProcess);
         g.procs.erase(it);
     }
-    std::wstring exe = g.cfg.sunBrowserDir + L"\\SunBrowser.exe";
+    // 生效目录：该指纹独立覆盖优先（sunlauncher.json profiles 段，指纹窗口 A2 行设置），
+    // 否则全局。dataDir 实际是“父目录”，profile 子目录拼在后面。
+    std::wstring effBrowserDir = EffBrowserDir(g.cfg, name);
+    std::wstring effParent = EffDataDir(g.cfg, name);
+    std::wstring exe = effBrowserDir + L"\\SunBrowser.exe";
     if (::GetFileAttributesW(exe.c_str()) == INVALID_FILE_ATTRIBUTES) {
-        std::wstring m = L"找不到 SunBrowser.exe：" + exe;
+        std::wstring m = L"找不到 SunBrowser.exe：" + exe + L"（该指纹独立浏览器目录或全局目录不对，指纹窗口 A2 行可改）";
         LOG(m); SetStatus(m); return false;
     }
     {
         WIN32_FIND_DATAW fd{};
-        HANDLE fh = ::FindFirstFileW((g.cfg.sunBrowserDir + L"\\*").c_str(), &fd);
+        HANDLE fh = ::FindFirstFileW((effBrowserDir + L"\\*").c_str(), &fd);
         bool found = false;
         if (fh != INVALID_HANDLE_VALUE) {
             do {
                 if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) continue;
                 std::wstring n = fd.cFileName;
                 if (n == L"." || n == L"..") continue;
-                std::wstring cand = g.cfg.sunBrowserDir + L"\\" + n + L"\\chrome.dll";
+                std::wstring cand = effBrowserDir + L"\\" + n + L"\\chrome.dll";
                 WIN32_FILE_ATTRIBUTE_DATA ad{};
                 if (::GetFileAttributesExW(cand.c_str(), GetFileExInfoStandard, &ad)) {
                     ULARGE_INTEGER sz{};
@@ -375,12 +379,14 @@ static bool StartOneLocked(const std::wstring& name) {
             ::FindClose(fh);
         }
         if (!found) {
-            std::wstring m = L"预检失败：浏览器目录下找不到 */chrome.dll（版本子目录缺失或损坏）";
+            std::wstring m = L"预检失败：浏览器目录下找不到 */chrome.dll（版本子目录缺失或损坏）：" + effBrowserDir;
             LOG(m); SetStatus(m); return false;
         }
+        if (effParent != g.cfg.dataDir || effBrowserDir != g.cfg.sunBrowserDir)
+            LOG(L"diag 独立目录生效 " + name + L" dataParent=" + effParent + L" browserDir=" + effBrowserDir);
     }
-    std::wstring dataDir = g.cfg.dataDir + L"\\" + name;
-    ::CreateDirectoryW(g.cfg.dataDir.c_str(), NULL);
+    std::wstring dataDir = effParent + L"\\" + name;
+    ::CreateDirectoryW(effParent.c_str(), NULL);
     ::CreateDirectoryW(dataDir.c_str(), NULL);
     ::CreateDirectoryW((dataDir + L"\\Default").c_str(), NULL);
     // 同一 user-data-dir 已有 SunBrowser 在跑时，Chromium 会把新进程当“唤起旧窗口”的
@@ -425,7 +431,7 @@ static bool StartOneLocked(const std::wstring& name) {
                 L"，上限约24000）。uiExtra 大字段不应进 ext，见 FpBuildCmdline 白名单；" +
                 L"先删该 profile 的 ui_fingerprint.json 重试，ext 应回落到 ~468。";
             LOG(m);
-            LOG(W(FpDiagDumpLaunch(exe, g.cfg.sunBrowserDir, dataDir, port, uiExtra, args, 0)));
+            LOG(W(FpDiagDumpLaunch(exe, effBrowserDir, dataDir, port, uiExtra, args, 0)));
             SetStatus(m);
             return false;
         }
@@ -439,12 +445,12 @@ static bool StartOneLocked(const std::wstring& name) {
         bool hit = FpDiagEnvAuth(envDetail);
         LOG(L"diag env AUTH/ELECTRON_RUN_AS_NODE=" + W(envDetail) + (hit ? L" (HIT)" : L" (none)"));
     }
-    if (!LaunchSunBrowser(exe, g.cfg.sunBrowserDir, args, &hProc, &pid, &err)) {
+    if (!LaunchSunBrowser(exe, effBrowserDir, args, &hProc, &pid, &err)) {
         std::wstring m = L"CreateProcess 失败 err=" + std::to_wstring(err) + L"，见 debug.log";
         LOG(m); SetStatus(m); return false;
     }
     // diag-02: 诊断块（exe/三件套/sp/ext/三键/env/hint/manual，一次启动全部现场）
-    LOG(W(FpDiagDumpLaunch(exe, g.cfg.sunBrowserDir, dataDir, port, uiExtra, args, pid)));
+    LOG(W(FpDiagDumpLaunch(exe, effBrowserDir, dataDir, port, uiExtra, args, pid)));
     // diag-03: 轮询式存活检查（每 500ms 采样一次，共 6 次；记录每次退出码 + 存活态）
     DWORD code = 0;
     bool exitedEarly = false;
@@ -554,17 +560,22 @@ static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
             return ::CreateWindowW(L"EDIT", L"", WS_CHILD | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL,
                 x, y, w, 26, h, (HMENU)(INT_PTR)id, hi, NULL);
         };
-        ::CreateWindowW(L"STATIC", L"数据目录:", WS_CHILD | WS_VISIBLE, 12, 12, 70, 22, h, NULL, hi, NULL);
-        g.hDataDir = mkEdit(IDC_DATADIR, 96, 12, 500);
-        ::CreateWindowW(L"STATIC", L"浏览器目录:", WS_CHILD | WS_VISIBLE, 12, 44, 80, 22, h, NULL, hi, NULL);
-        g.hBrowserDir = mkEdit(IDC_BROWSERDIR, 96, 42, 500);
-        mkBtn(IDC_SAVEDIR, L"保存目录", 606, 10, 100);
-        mkBtn(IDC_OPENDIR, L"打开日志目录", 606, 42, 100);
+        // 全局默认目录（只读展示；修改请进指纹配置 A2 行按指纹独立设置，
+        // 存 sunlauncher.json profiles 段。保留编辑框供查看与复制。）
+        ::CreateWindowW(L"STATIC", L"全局数据目录:", WS_CHILD | WS_VISIBLE, 12, 12, 90, 22, h, NULL, hi, NULL);
+        g.hDataDir = ::CreateWindowW(L"EDIT", L"", WS_CHILD | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL | ES_READONLY,
+            108, 12, 488, 26, h, (HMENU)(INT_PTR)IDC_DATADIR, hi, NULL);
+        ::CreateWindowW(L"STATIC", L"全局浏览器目录:", WS_CHILD | WS_VISIBLE, 12, 44, 100, 22, h, NULL, hi, NULL);
+        g.hBrowserDir = ::CreateWindowW(L"EDIT", L"", WS_CHILD | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL | ES_READONLY,
+            108, 42, 488, 26, h, (HMENU)(INT_PTR)IDC_BROWSERDIR, hi, NULL);
+        ::CreateWindowW(L"STATIC", L"（指纹独立目录在指纹配置顶端设置）", WS_CHILD | WS_VISIBLE, 108, 68, 300, 18, h, NULL, hi, NULL);
+        mkBtn(IDC_OPENDIR, L"打开日志目录", 606, 10, 100);
+        mkBtn(IDC_SAVEDIR, L"保存目录", 606, 42, 100);
         // 环境表：LISTVIEW 三列（环境目录/状态/端口）+ 复选框 + 整行选择（对齐 web-ui 9 列表格）
         LOG(L"probe wmcreate listview-pre");
         g.hList = ::CreateWindowW(WC_LISTVIEWW, NULL,
             WS_CHILD | WS_VISIBLE | WS_BORDER | LVS_REPORT | LVS_SHOWSELALWAYS | LVS_SINGLESEL,
-            12, 78, 470, 300, h, (HMENU)(INT_PTR)IDC_LIST, hi, NULL);
+            12, 92, 470, 286, h, (HMENU)(INT_PTR)IDC_LIST, hi, NULL);
         LOG(std::wstring(L"probe wmcreate listview=") + (g.hList ? L"ok" : (L"fail err=" + std::to_wstring(::GetLastError()))));
         {
             DWORD ex = (DWORD)::SendMessageW(g.hList, LVM_GETEXTENDEDLISTVIEWSTYLE, 0, 0);
@@ -586,10 +597,10 @@ static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
             c2.cx = 96;
             ::SendMessageW(g.hList, LVM_INSERTCOLUMNW, 2, (LPARAM)&c2);
         }
-        mkBtn(IDC_START, L"启动", 494, 78, 100);
-        mkBtn(IDC_STOP, L"关闭", 494, 116, 100);
-        mkBtn(IDC_REFRESH, L"刷新", 494, 154, 100);
-        mkBtn(IDC_FPCONFIG, L"指纹配置", 494, 192, 100);
+        mkBtn(IDC_START, L"启动", 494, 92, 100);
+        mkBtn(IDC_STOP, L"关闭", 494, 130, 100);
+        mkBtn(IDC_REFRESH, L"刷新", 494, 168, 100);
+        mkBtn(IDC_FPCONFIG, L"指纹配置", 494, 206, 100);
         ::CreateWindowW(L"STATIC", L"新建环境:", WS_CHILD | WS_VISIBLE, 494, 236, 100, 22, h, NULL, hi, NULL);
         ::CreateWindowW(L"EDIT", L"", WS_CHILD | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL,
             494, 260, 212, 26, h, (HMENU)(INT_PTR)IDC_NEWNAME, hi, NULL);
@@ -698,31 +709,22 @@ static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
             RefreshList(); SetStatus(L"已新建 " + name);
         }
         else if (id == IDC_SAVEDIR) {
-            // 保存目录：不得持有 g.mu 调 RefreshList（锁内发 LVM 消息会经
-            // LVN_ITEMCHANGED/NM_CUSTOMDRAW 回调重入取锁，MSVC /GS 熔断即闪退，
-            // 表现为“点保存目录就退出”）。先无锁取编辑框文本、快照写盘，再无锁刷新。
-            // 另：SaveConfig 系 wofstream+codecvt（可能抛异常/熔断），异常转状态条，
-            // 写盘动作放锁外，避免异常穿越持锁区。
+            // 保存目录（全局默认）：编辑框为只读展示，点保存仅将当前全局值回写文件
+            // （实际修改请进指纹配置 A2 行按指纹独立设置）。快照写盘放锁外，
+            // try/catch 包住，异常转状态条，不穿越持锁区。
             LOG(L"diag savedir begin");
-            std::wstring dd = GetEdit(g.hDataDir);
-            std::wstring bd = GetEdit(g.hBrowserDir);
             Config snap;
             {
                 std::lock_guard<std::mutex> lk(g.mu);
                 snap = g.cfg;
             }
-            snap.dataDir = dd;
-            snap.sunBrowserDir = bd;
             bool ok = false;
             try { ok = SaveConfig(snap); }
             catch (...) { ok = false; }
             if (ok) {
-                {
-                    std::lock_guard<std::mutex> lk(g.mu);
-                    g.cfg = snap;
-                }
-                LOG(L"目录已保存 data=" + dd + L" browser=" + bd);
-                SetStatus(L"目录已保存");
+                LOG(L"全局目录已回写 data=" + snap.dataDir + L" browser=" + snap.sunBrowserDir +
+                    L"（独立目录请进指纹配置顶端 A2 行设置）");
+                SetStatus(L"全局目录已回写（独立目录在指纹配置中设置）");
             } else {
                 LOG(L"diag savedir FAIL（写 sunlauncher.json 失败，看目录权限）");
                 SetStatus(L"保存 sunlauncher.json 失败");

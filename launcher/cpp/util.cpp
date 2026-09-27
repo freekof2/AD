@@ -66,6 +66,38 @@ Config LoadConfig() {
     if (!(v = JsonGet(txt, L"listen")).empty())          c.listen = v;
     if (!(v = JsonGet(txt, L"port_base")).empty())       c.portBase = _wtoi(v.c_str());
     if (c.portBase <= 0) c.portBase = kDefaultPortBase;
+    // per-profile 覆盖：profiles: { "<name>": { "data_dir": "...", "sun_browser_dir": "..." } }
+    // 极简解析：逐 profile 块取二键（空=跟随全局；兼容旧文件无 profiles 段）。
+    {
+        size_t pp = txt.find(L"\"profiles\"");
+        if (pp != std::wstring::npos) {
+            size_t b = txt.find(L"{", pp);
+            size_t e = txt.find_last_of(L"}");
+            // 外层最后一个 } 是根结束；逐个找 "<name>" : { ... } 内块
+            size_t p = (b == std::wstring::npos) ? std::wstring::npos : b + 1;
+            while (p != std::wstring::npos && p < txt.size()) {
+                size_t q1 = txt.find(L'"', p);
+                if (q1 == std::wstring::npos) break;
+                size_t q2 = txt.find(L'"', q1 + 1);
+                if (q2 == std::wstring::npos) break;
+                std::wstring nm = txt.substr(q1 + 1, q2 - q1 - 1);
+                size_t cb = txt.find(L'{', q2);
+                size_t ce = (cb == std::wstring::npos) ? std::wstring::npos : txt.find(L'}', cb);
+                if (cb == std::wstring::npos || ce == std::wstring::npos) break;
+                if (nm == L"profiles" || nm == L"ports") { p = ce + 1; continue; }
+                std::wstring blk = txt.substr(cb, ce - cb + 1);
+                ProfileOverride o;
+                std::wstring d = JsonGet(blk, L"data_dir");
+                std::wstring s = JsonGet(blk, L"sun_browser_dir");
+                if (!d.empty()) o.dataDir = d;
+                if (!s.empty()) o.sunBrowserDir = s;
+                if (!o.dataDir.empty() || !o.sunBrowserDir.empty())
+                    c.profiles[nm] = o;
+                p = ce + 1;
+                if (e != std::wstring::npos && p >= e) break;
+            }
+        }
+    }
     return c;
 }
 
@@ -86,7 +118,29 @@ bool SaveConfig(const Config& c) {
         std::wstring j = L"{\r\n  \"sun_browser_dir\": \"" + Esc(c.sunBrowserDir) +
             L"\",\r\n  \"data_dir\": \"" + Esc(c.dataDir) +
             L"\",\r\n  \"listen\": \"" + Esc(c.listen) +
-            L"\",\r\n  \"port_base\": " + std::to_wstring(c.portBase) + L"\r\n}\r\n";
+            L"\",\r\n  \"port_base\": " + std::to_wstring(c.portBase);
+        if (!c.profiles.empty()) {
+            j += L",\r\n  \"profiles\": {\r\n";
+            bool first = true;
+            for (auto& kv : c.profiles) {
+                if (kv.second.dataDir.empty() && kv.second.sunBrowserDir.empty()) continue;
+                if (!first) j += L",\r\n";
+                first = false;
+                j += L"    \"" + Esc(kv.first) + L"\": {";
+                bool needComma = false;
+                if (!kv.second.dataDir.empty()) {
+                    j += L"\"data_dir\": \"" + Esc(kv.second.dataDir) + L"\"";
+                    needComma = true;
+                }
+                if (!kv.second.sunBrowserDir.empty()) {
+                    if (needComma) j += L", ";
+                    j += L"\"sun_browser_dir\": \"" + Esc(kv.second.sunBrowserDir) + L"\"";
+                }
+                j += L"}";
+            }
+            j += L"\r\n  }";
+        }
+        j += L"\r\n}\r\n";
         std::wofstream f(ExeDir() + L"\\sunlauncher.json");
         if (!f) return false;
         f.imbue(std::locale(f.getloc(), new std::codecvt_utf8<wchar_t>));

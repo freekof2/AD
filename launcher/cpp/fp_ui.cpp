@@ -60,7 +60,9 @@ static std::wstring WJ(const std::string& raw) {
 std::string FpFormToUiJson(const FpFormData& f) {
     std::string o = "{";
     o += "\"browser\":\"" + JEsc(f.browser) + "\",\"kernelVer\":\"" + JEsc(f.kernelVer) + "\"";
-    o += ",\"browserDir\":\"" + JEsc(f.browserDir) + "\",\"os\":\"" + JEsc(f.os) + "\"";
+    o += ",\"browserDir\":\"" + JEsc(f.browserDir) + "\"";
+    o += ",\"profDataDir\":\"" + JEsc(f.profDataDir) + "\",\"profBrowserDir\":\"" + JEsc(f.profBrowserDir) + "\"";
+    o += ",\"os\":\"" + JEsc(f.os) + "\"";
     o += ",\"uaPreset\":\"" + JEsc(f.uaPreset) + "\",\"ua\":\"" + JEsc(f.ua) + "\"";
     o += ",\"proxyType\":\"" + JEsc(f.proxyType) + "\",\"proxyHost\":\"" + JEsc(f.proxyHost) + "\"";
     o += ",\"proxyPort\":\"" + JEsc(f.proxyPort) + "\",\"proxyUser\":\"" + JEsc(f.proxyUser) + "\"";
@@ -101,6 +103,8 @@ bool FpFormFromUiJson(const std::string& json, FpFormData& f) {
     FJSet(&FpFormData::browser, json, "browser", f);
     FJSet(&FpFormData::kernelVer, json, "kernelVer", f);
     FJSet(&FpFormData::browserDir, json, "browserDir", f);
+    FJSet(&FpFormData::profDataDir, json, "profDataDir", f);
+    FJSet(&FpFormData::profBrowserDir, json, "profBrowserDir", f);
     FJSet(&FpFormData::os, json, "os", f);
     FJSet(&FpFormData::uaPreset, json, "uaPreset", f);
     FJSet(&FpFormData::ua, json, "ua", f);
@@ -356,6 +360,7 @@ std::string FpFormToFpConfig(const FpFormData& f) {
 enum FpCtl {
     F_BASE = 2000,
     F_BROWSER, F_KERNEL, F_BDIR, F_OS, F_UAPRESET, F_UA, F_SHUFFLEUA,
+    F_PDATADIR, F_PBROWSERDIR, // 本指纹独立目录（顶端 A2 行；空=跟随全局）
     F_PTYPE, F_PHOST, F_PPORT, F_PUSER, F_PPASS, F_PTEST, F_PSAVE, F_PSTATUS,
     F_COOKIE, F_MERGECOOKIE, F_REMARK,
     F_WEBRTC, F_TZM, F_TZ, F_GEOM, F_GEOIP, F_LAT, F_LNG, F_ACC,
@@ -529,6 +534,7 @@ static std::wstring FpBuildUA(const std::wstring& os, const std::wstring& ver) {
 
 static void FpFormDefaults(FpFormData& f, const std::wstring& profileName) {
     f.browser = L"sun"; f.kernelVer = L"chrome143"; f.browserDir = profileName;
+    f.profDataDir.clear(); f.profBrowserDir.clear(); // 默认跟随全局，留空
     f.os = L"win"; f.uaPreset = L"152"; f.ua = FpBuildUA(L"win", L"152");
     f.proxyType = L"socks5";
     f.webrtc = L"proxy"; f.timezoneMode = L"custom"; f.timezone = L"Asia/Shanghai";
@@ -556,7 +562,7 @@ static void FpFormDefaults(FpFormData& f, const std::wstring& profileName) {
 static const int kFpWinW = 860;
 static const int kFpWinH = 640;
 static const int kFpContentW = 828;   // 内容区宽（窗口 860 - 边距 2*16）
-static const int kFpContentH = 1720;  // 内容总高（底 1564+110=1674 + 46 边距，24 行单页）
+static const int kFpContentH = 1770;  // 内容总高（A2 新增 52 + 整体下移 48：1674+96=1770）
 
 // 单页窗口状态（滚动位置 + 内容容器；Tab 相关已删除，见 git 历史）
 struct FpWnd {
@@ -654,10 +660,8 @@ static void FpScrollInit(FpWnd* w) {
     w->scrollY = 0;
 }
 // fp_ui.cpp — 单页控件排布（对齐 web-ui/index.html fp-row 顺序，无 Tab）
-// 行高：A(浏览器/内核/目录 64)+B(系统/UA 64)+C(代理 96)+D(Cookie 132/备注 32)
-// +WebRTC(36)+时区(64)+地理(120)+语言(96)+界面语言(36)+分辨率(96)+字体(80)
-// +噪音(96)+WebGL(108)+WebGPU(64)+CPU(36)+RAM(36)+设备名(36)+MAC(36)
-// +DNT(36)+端口(64)+加速(36)+TLS(64)+启动参数(120) ≈ 2050
+// 行高：A(浏览器/内核/目录 64)+A2(独立目录 52)+B(系统/UA 112)+Cookie/备注/代理/WebRTC/时区/地理/语言/界面语言/分辨率/字体
+// +噪音+WebGL+WebGPU+CPU+RAM+设备名+MAC+DNT+端口+加速+TLS+启动参数 ≈ 1770
 static void FpBuildPages(FpWnd* w, HWND p, HINSTANCE hi) {
     (void)hi;
     // ---- A. 浏览器 / 内核 / 目录（y 8..72）----
@@ -672,187 +676,193 @@ static void FpBuildPages(FpWnd* w, HWND p, HINSTANCE hi) {
     FpComboAdd(w->ctl[F_KERNEL - F_BASE], L"firefox128 - Firefox 128 (FlowerBrowser)");
     FpMkLabel(p, w, F_BDIR, L"浏览器目录", 12, 46, 80);
     FpMkEdit(p, w, F_BDIR, 100, 44, 570);
-    FpMkLabel(p, w, F_OS, L"系统", 12, 80, 80);
-    FpMkCombo(p, w, F_OS, 100, 78, 200);
+    // ---- A2. 本指纹独立目录（y 72..124；空=跟随全局；非官方设置，只存 sunlauncher.json）----
+    FpMkLabel(p, w, F_PDATADIR, L"数据目录", 12, 76, 80);
+    FpMkEdit(p, w, F_PDATADIR, 100, 74, 570);
+    FpMkLabel(p, w, F_PBROWSERDIR, L"浏览器目录", 12, 102, 80);
+    FpMkEdit(p, w, F_PBROWSERDIR, 100, 100, 570);
+    // ---- B. 系统/UA（y 128..170；整体下移 48）----
+    FpMkLabel(p, w, F_OS, L"系统", 12, 128, 80);
+    FpMkCombo(p, w, F_OS, 100, 126, 200);
     FpComboAdd(w->ctl[F_OS - F_BASE], L"win - Windows");
     FpComboAdd(w->ctl[F_OS - F_BASE], L"mac - macOS");
     FpComboAdd(w->ctl[F_OS - F_BASE], L"linux - Linux");
     FpComboAdd(w->ctl[F_OS - F_BASE], L"android - Android");
     FpComboAdd(w->ctl[F_OS - F_BASE], L"ios - iOS");
-    FpMkLabel(p, w, F_UAPRESET, L"UA版本", 320, 80, 60);
-    FpMkEdit(p, w, F_UAPRESET, 380, 78, 80);
-    FpMkBtn(p, w, F_SHUFFLEUA, L"换UA", 470, 76, 80);
-    FpMkLabel(p, w, F_UA, L"User-Agent", 12, 112, 80);
-    FpMkEdit(p, w, F_UA, 100, 110, 570);
-    FpMkLabel(p, w, F_COOKIE, L"Cookie", 12, 146, 80);
-    FpMkEdit(p, w, F_COOKIE, 100, 144, 570, 100);
-    FpMkBtn(p, w, F_MERGECOOKIE, L"合并Cookie", 100, 250, 110);
-    FpMkBtn(p, w, F_IMPORT, L"从目录导入指纹", 220, 250, 140);
-    FpMkLabel(p, w, F_REMARK, L"备注", 12, 290, 80);
-    FpMkEdit(p, w, F_REMARK, 100, 288, 640);
-    // ---- C. 代理（y 330..426，h=96；网页 C 行两行输入+状态）----
-    FpMkLabel(p, w, F_PTYPE, L"代理", 12, 336, 80);
-    FpMkCombo(p, w, F_PTYPE, 100, 332, 120);
+    FpMkLabel(p, w, F_UAPRESET, L"UA版本", 320, 128, 60);
+    FpMkEdit(p, w, F_UAPRESET, 380, 126, 80);
+    FpMkBtn(p, w, F_SHUFFLEUA, L"换UA", 470, 124, 80);
+    FpMkLabel(p, w, F_UA, L"User-Agent", 12, 160, 80);
+    FpMkEdit(p, w, F_UA, 100, 158, 570);
+    FpMkLabel(p, w, F_COOKIE, L"Cookie", 12, 194, 80);
+    FpMkEdit(p, w, F_COOKIE, 100, 192, 570, 100);
+    FpMkBtn(p, w, F_MERGECOOKIE, L"合并Cookie", 100, 298, 110);
+    FpMkBtn(p, w, F_IMPORT, L"从目录导入指纹", 220, 298, 140);
+    FpMkLabel(p, w, F_REMARK, L"备注", 12, 338, 80);
+    FpMkEdit(p, w, F_REMARK, 100, 336, 640);
+    // ---- C. 代理（y 378..474；整体下移 48）----
+    FpMkLabel(p, w, F_PTYPE, L"代理", 12, 384, 80);
+    FpMkCombo(p, w, F_PTYPE, 100, 380, 120);
     FpComboAdd(w->ctl[F_PTYPE - F_BASE], L"socks5");
     FpComboAdd(w->ctl[F_PTYPE - F_BASE], L"http");
     FpComboAdd(w->ctl[F_PTYPE - F_BASE], L"https");
-    FpMkLabel(p, w, F_PHOST, L"主机", 230, 334, 50);
-    FpMkEdit(p, w, F_PHOST, 280, 332, 180);
-    FpMkLabel(p, w, F_PPORT, L"端口", 470, 334, 40);
-    FpMkEdit(p, w, F_PPORT, 510, 332, 80);
-    FpMkLabel(p, w, F_PUSER, L"账号", 12, 368, 80);
-    FpMkEdit(p, w, F_PUSER, 100, 366, 180);
-    FpMkLabel(p, w, F_PPASS, L"密码", 290, 368, 40);
-    FpMkEdit(p, w, F_PPASS, 330, 366, 150);
-    FpMkBtn(p, w, F_PTEST, L"测速/检测", 490, 364, 90);
-    FpMkBtn(p, w, F_PSAVE, L"保存为代理", 590, 364, 110);
-    FpMkLabel(p, w, F_PSTATUS, L"未检测", 12, 400, 400);
-    // ---- 1. WebRTC（y 432..468，h=36）----
-    FpMkLabel(p, w, F_WEBRTC, L"WebRTC", 12, 434, 80);
-    FpMkCombo(p, w, F_WEBRTC, 100, 432, 260);
+    FpMkLabel(p, w, F_PHOST, L"主机", 230, 382, 50);
+    FpMkEdit(p, w, F_PHOST, 280, 380, 180);
+    FpMkLabel(p, w, F_PPORT, L"端口", 470, 382, 40);
+    FpMkEdit(p, w, F_PPORT, 510, 380, 80);
+    FpMkLabel(p, w, F_PUSER, L"账号", 12, 416, 80);
+    FpMkEdit(p, w, F_PUSER, 100, 414, 180);
+    FpMkLabel(p, w, F_PPASS, L"密码", 290, 416, 40);
+    FpMkEdit(p, w, F_PPASS, 330, 414, 150);
+    FpMkBtn(p, w, F_PTEST, L"测速/检测", 490, 412, 90);
+    FpMkBtn(p, w, F_PSAVE, L"保存为代理", 590, 412, 110);
+    FpMkLabel(p, w, F_PSTATUS, L"未检测", 12, 448, 400);
+    // ---- 1. WebRTC（y 480..；整体下移 48）----
+    FpMkLabel(p, w, F_WEBRTC, L"WebRTC", 12, 482, 80);
+    FpMkCombo(p, w, F_WEBRTC, 100, 480, 260);
     FpComboAdd(w->ctl[F_WEBRTC - F_BASE], L"forward - 转发");
     FpComboAdd(w->ctl[F_WEBRTC - F_BASE], L"proxy - 替换");
     FpComboAdd(w->ctl[F_WEBRTC - F_BASE], L"disabled - 禁用");
     FpComboAdd(w->ctl[F_WEBRTC - F_BASE], L"disable_udp - 禁用UDP");
-    FpMkLabel(p, w, F_TZM, L"时区模式", 12, 476, 80);
-    FpMkCombo(p, w, F_TZM, 100, 474, 150);
+    FpMkLabel(p, w, F_TZM, L"时区模式", 12, 524, 80);
+    FpMkCombo(p, w, F_TZM, 100, 522, 150);
     FpComboAdd(w->ctl[F_TZM - F_BASE], L"ip - 基于IP");
     FpComboAdd(w->ctl[F_TZM - F_BASE], L"custom - 自定义");
-    FpMkCombo(p, w, F_TZ, 260, 474, 320);
+    FpMkCombo(p, w, F_TZ, 260, 522, 320);
     for (auto t : kTz) FpComboAdd(w->ctl[F_TZ - F_BASE], t);
-    FpMkLabel(p, w, F_GEOM, L"地理", 12, 546, 80);
-    FpMkCombo(p, w, F_GEOM, 100, 544, 150);
+    FpMkLabel(p, w, F_GEOM, L"地理", 12, 594, 80);
+    FpMkCombo(p, w, F_GEOM, 100, 592, 150);
     FpComboAdd(w->ctl[F_GEOM - F_BASE], L"ask - 询问");
     FpComboAdd(w->ctl[F_GEOM - F_BASE], L"allow - 允许");
     FpComboAdd(w->ctl[F_GEOM - F_BASE], L"block - 禁止");
-    FpMkCombo(p, w, F_GEOIP, 260, 544, 150);
+    FpMkCombo(p, w, F_GEOIP, 260, 592, 150);
     FpComboAdd(w->ctl[F_GEOIP - F_BASE], L"ip - 基于IP");
     FpComboAdd(w->ctl[F_GEOIP - F_BASE], L"custom - 自定义");
-    FpMkLabel(p, w, F_LAT, L"纬/经/精度", 12, 580, 80);
-    FpMkEdit(p, w, F_LAT, 100, 578, 120);
-    FpMkEdit(p, w, F_LNG, 230, 578, 120);
-    FpMkEdit(p, w, F_ACC, 360, 578, 100);
-    FpMkLabel(p, w, F_LANGM, L"语言模式", 12, 672, 80);
-    FpMkCombo(p, w, F_LANGM, 100, 670, 150);
+    FpMkLabel(p, w, F_LAT, L"纬/经/精度", 12, 628, 80);
+    FpMkEdit(p, w, F_LAT, 100, 626, 120);
+    FpMkEdit(p, w, F_LNG, 230, 626, 120);
+    FpMkEdit(p, w, F_ACC, 360, 626, 100);
+    FpMkLabel(p, w, F_LANGM, L"语言模式", 12, 720, 80);
+    FpMkCombo(p, w, F_LANGM, 100, 718, 150);
     FpComboAdd(w->ctl[F_LANGM - F_BASE], L"ip - 基于IP");
     FpComboAdd(w->ctl[F_LANGM - F_BASE], L"custom - 自定义");
-    FpMkEdit(p, w, F_LANGLIST, 260, 670, 260, 48);
-    FpMkLabel(p, w, F_UILANG, L"界面语言", 12, 774, 80);
-    FpMkCombo(p, w, F_UILANG, 100, 772, 180);
+    FpMkEdit(p, w, F_LANGLIST, 260, 718, 260, 48);
+    FpMkLabel(p, w, F_UILANG, L"界面语言", 12, 822, 80);
+    FpMkCombo(p, w, F_UILANG, 100, 820, 180);
     FpComboAdd(w->ctl[F_UILANG - F_BASE], L"follow_lang - 基于语言");
     FpComboAdd(w->ctl[F_UILANG - F_BASE], L"custom - 自定义");
-    FpMkEdit(p, w, F_PAGELANG, 290, 772, 220);
-        // ---- 6. 分辨率（y 814..910，h=96）----
-    FpMkLabel(p, w, F_RESM, L"分辨率", 12, 816, 80);
-    FpMkCombo(p, w, F_RESM, 100, 814, 140);
+    FpMkEdit(p, w, F_PAGELANG, 290, 820, 220);
+        // ---- 6. 分辨率（y 862..；整体下移 48）----
+    FpMkLabel(p, w, F_RESM, L"分辨率", 12, 864, 80);
+    FpMkCombo(p, w, F_RESM, 100, 862, 140);
     FpComboAdd(w->ctl[F_RESM - F_BASE], L"preset - 预定义");
     FpComboAdd(w->ctl[F_RESM - F_BASE], L"custom - 自定义");
-    FpMkCombo(p, w, F_RES, 250, 814, 170);
+    FpMkCombo(p, w, F_RES, 250, 862, 170);
     FpComboAdd(w->ctl[F_RES - F_BASE], L"none");
     FpComboAdd(w->ctl[F_RES - F_BASE], L"1920_1080");
     FpComboAdd(w->ctl[F_RES - F_BASE], L"2560_1440");
     FpComboAdd(w->ctl[F_RES - F_BASE], L"1440_900");
     FpComboAdd(w->ctl[F_RES - F_BASE], L"1366_768");
-    FpMkEdit(p, w, F_RESW, 430, 814, 70);
-    FpMkEdit(p, w, F_RESH, 510, 814, 70);
-    FpMkLabel(p, w, F_FONTM, L"字体", 12, 858, 80);
-    FpMkCombo(p, w, F_FONTM, 100, 856, 150);
+    FpMkEdit(p, w, F_RESW, 430, 862, 70);
+    FpMkEdit(p, w, F_RESH, 510, 862, 70);
+    FpMkLabel(p, w, F_FONTM, L"字体", 12, 906, 80);
+    FpMkCombo(p, w, F_FONTM, 100, 904, 150);
     FpComboAdd(w->ctl[F_FONTM - F_BASE], L"all - 默认");
     FpComboAdd(w->ctl[F_FONTM - F_BASE], L"custom - 自定义");
-    FpMkBtn(p, w, F_SHUFFLEFONTS, L"换一换", 260, 856, 80);
-    FpMkEdit(p, w, F_FONTS, 100, 888, 560, 44);
-    // ---- 8. 硬件噪音开关（y 940..990：两行复选框，避开字体区 888..932 与媒体行 970）----
-    FpMkCheck(p, w, F_SWCVS, L"Canvas(=1)", 12, 940, 130);
-    FpMkCheck(p, w, F_SWWGL, L"WebGL图像(=1)", 150, 940, 150);
-    FpMkCheck(p, w, F_SWAUD, L"Audio(=1)", 310, 940, 120);
-    FpMkCheck(p, w, F_SWRECT, L"ClientRects(=1)", 440, 940, 150);
-    FpMkCheck(p, w, F_SWSPEECH, L"Speech(=1)", 12, 964, 130);
-    FpMkLabel(p, w, F_MEDIA, L"媒体设备", 150, 966, 80);
-    FpMkCombo(p, w, F_MEDIA, 100, 992, 150);
+    FpMkBtn(p, w, F_SHUFFLEFONTS, L"换一换", 260, 904, 80);
+    FpMkEdit(p, w, F_FONTS, 100, 936, 560, 44);
+    // ---- 8. 硬件噪音开关（y 988..；整体下移 48）----
+    FpMkCheck(p, w, F_SWCVS, L"Canvas(=1)", 12, 988, 130);
+    FpMkCheck(p, w, F_SWWGL, L"WebGL图像(=1)", 150, 988, 150);
+    FpMkCheck(p, w, F_SWAUD, L"Audio(=1)", 310, 988, 120);
+    FpMkCheck(p, w, F_SWRECT, L"ClientRects(=1)", 440, 988, 150);
+    FpMkCheck(p, w, F_SWSPEECH, L"Speech(=1)", 12, 1012, 130);
+    FpMkLabel(p, w, F_MEDIA, L"媒体设备", 150, 1014, 80);
+    FpMkCombo(p, w, F_MEDIA, 100, 1040, 150);
     FpComboAdd(w->ctl[F_MEDIA - F_BASE], L"0 - 真实/关闭");
     FpComboAdd(w->ctl[F_MEDIA - F_BASE], L"1 - 随机");
     FpComboAdd(w->ctl[F_MEDIA - F_BASE], L"2 - 自定义");
-    FpMkEdit(p, w, F_MIN, 260, 992, 60);
-    FpMkEdit(p, w, F_MVID, 330, 992, 60);
-    FpMkEdit(p, w, F_MOUT, 400, 992, 60);
-    // ---- 9. WebGL元数据（y 1044..1152，h=108）----
-    FpMkLabel(p, w, F_WGLM, L"WebGL元数据", 12, 1046, 90);
-    FpMkCombo(p, w, F_WGLM, 110, 1044, 150);
+    FpMkEdit(p, w, F_MIN, 260, 1040, 60);
+    FpMkEdit(p, w, F_MVID, 330, 1040, 60);
+    FpMkEdit(p, w, F_MOUT, 400, 1040, 60);
+    // ---- 9. WebGL元数据（y 1092..；整体下移 48）----
+    FpMkLabel(p, w, F_WGLM, L"WebGL元数据", 12, 1094, 90);
+    FpMkCombo(p, w, F_WGLM, 110, 1092, 150);
     FpComboAdd(w->ctl[F_WGLM - F_BASE], L"real - 真实(0)");
     FpComboAdd(w->ctl[F_WGLM - F_BASE], L"custom - 自定义(2)");
-    FpMkCombo(p, w, F_VENDOR, 270, 1044, 220);
+    FpMkCombo(p, w, F_VENDOR, 270, 1092, 220);
     FpComboAdd(w->ctl[F_VENDOR - F_BASE], L"Google Inc. (Intel)");
     FpComboAdd(w->ctl[F_VENDOR - F_BASE], L"Google Inc. (NVIDIA)");
     FpComboAdd(w->ctl[F_VENDOR - F_BASE], L"Google Inc. (AMD)");
     FpComboAdd(w->ctl[F_VENDOR - F_BASE], L"Apple Inc.");
-    FpMkEdit(p, w, F_RENDERER, 110, 1078, 440);
-    FpMkBtn(p, w, F_SHUFFLERDR, L"随机", 560, 1076, 70);
-    // ---- 10. WebGPU（y 1158..1222，h=64）----
-    FpMkLabel(p, w, F_WGPU, L"WebGPU", 12, 1160, 80);
-    FpMkCombo(p, w, F_WGPU, 110, 1158, 200);
+    FpMkEdit(p, w, F_RENDERER, 110, 1126, 440);
+    FpMkBtn(p, w, F_SHUFFLERDR, L"随机", 560, 1124, 70);
+    // ---- 10. WebGPU（y 1206..；整体下移 48）----
+    FpMkLabel(p, w, F_WGPU, L"WebGPU", 12, 1208, 80);
+    FpMkCombo(p, w, F_WGPU, 110, 1206, 200);
     FpComboAdd(w->ctl[F_WGPU - F_BASE], L"follow_webgl - 跟随(1)");
     FpComboAdd(w->ctl[F_WGPU - F_BASE], L"disabled - 禁用(0)");
     FpComboAdd(w->ctl[F_WGPU - F_BASE], L"custom - 自定义适配器(2)");
-    FpMkLabel(p, w, F_GVENDOR, L"厂商", 320, 1160, 44);
-    FpMkEdit(p, w, F_GVENDOR, 368, 1158, 150);
-    FpMkLabel(p, w, F_GARCH, L"架构", 528, 1160, 44);
-    FpMkEdit(p, w, F_GARCH, 576, 1158, 150);
-    // ---- 页3 设备伪装：CPU/RAM/设备名/MAC ----
-    // ---- 11. CPU（y 1228..1264，h=36）----
-    FpMkLabel(p, w, F_CPUM, L"CPU模式", 12, 1230, 80);
-    FpMkCombo(p, w, F_CPUM, 100, 1228, 150);
+    FpMkLabel(p, w, F_GVENDOR, L"厂商", 320, 1208, 44);
+    FpMkEdit(p, w, F_GVENDOR, 368, 1206, 150);
+    FpMkLabel(p, w, F_GARCH, L"架构", 528, 1208, 44);
+    FpMkEdit(p, w, F_GARCH, 576, 1206, 150);
+    // ---- 页3 设备伪装：CPU/RAM/设备名/MAC（整体下移 48）----
+    // ---- 11. CPU（y 1276..）----
+    FpMkLabel(p, w, F_CPUM, L"CPU模式", 12, 1278, 80);
+    FpMkCombo(p, w, F_CPUM, 100, 1276, 150);
     FpComboAdd(w->ctl[F_CPUM - F_BASE], L"real - 真实");
     FpComboAdd(w->ctl[F_CPUM - F_BASE], L"custom - 自定义");
-    FpMkCombo(p, w, F_CPU, 260, 1228, 180);
+    FpMkCombo(p, w, F_CPU, 260, 1276, 180);
     for (auto c : { L"default", L"2", L"4", L"6", L"8", L"10", L"12", L"16", L"20", L"24" }) FpComboAdd(w->ctl[F_CPU - F_BASE], c);
-    FpMkLabel(p, w, F_RAMM, L"RAM模式", 12, 1272, 80);
-    FpMkCombo(p, w, F_RAMM, 100, 1270, 150);
+    FpMkLabel(p, w, F_RAMM, L"RAM模式", 12, 1320, 80);
+    FpMkCombo(p, w, F_RAMM, 100, 1318, 150);
     FpComboAdd(w->ctl[F_RAMM - F_BASE], L"real - 真实");
     FpComboAdd(w->ctl[F_RAMM - F_BASE], L"custom - 自定义");
-    FpMkCombo(p, w, F_RAM, 260, 1270, 180);
+    FpMkCombo(p, w, F_RAM, 260, 1318, 180);
     for (auto c : { L"default", L"2", L"4", L"6", L"8", L"16", L"32", L"64", L"128" }) FpComboAdd(w->ctl[F_RAM - F_BASE], c);
-    // ---- 13. 设备名称（y 1312..1348，h=36）----
-    FpMkLabel(p, w, F_DEVM, L"设备名", 12, 1314, 80);
-    FpMkCombo(p, w, F_DEVM, 100, 1312, 150);
+    // ---- 13. 设备名称（y 1360..；整体下移 48）----
+    FpMkLabel(p, w, F_DEVM, L"设备名", 12, 1362, 80);
+    FpMkCombo(p, w, F_DEVM, 100, 1360, 150);
     FpComboAdd(w->ctl[F_DEVM - F_BASE], L"off - 关闭(0)");
     FpComboAdd(w->ctl[F_DEVM - F_BASE], L"random - 随机(1)");
     FpComboAdd(w->ctl[F_DEVM - F_BASE], L"custom - 自定义(2)");
-    FpMkEdit(p, w, F_DEVNAME, 260, 1312, 220);
-    FpMkBtn(p, w, F_SHUFFLEDEV, L"随机", 490, 1310, 70);
-    FpMkLabel(p, w, F_MACM, L"MAC", 12, 1356, 80);
-    FpMkCombo(p, w, F_MACM, 100, 1354, 150);
+    FpMkEdit(p, w, F_DEVNAME, 260, 1360, 220);
+    FpMkBtn(p, w, F_SHUFFLEDEV, L"随机", 490, 1358, 70);
+    FpMkLabel(p, w, F_MACM, L"MAC", 12, 1404, 80);
+    FpMkCombo(p, w, F_MACM, 100, 1402, 150);
     FpComboAdd(w->ctl[F_MACM - F_BASE], L"off - 关闭(0)");
     FpComboAdd(w->ctl[F_MACM - F_BASE], L"custom - 自定义(2)");
-    FpMkEdit(p, w, F_MAC, 260, 1354, 220);
-    FpMkBtn(p, w, F_SHUFFLEMAC, L"随机", 490, 1352, 70);
-    // ---- 页4 高级：DNT/端口/加速/TLS/启动参数 ----
-    // ---- 15. Do Not Track（y 1396..1432，h=36）----
-    FpMkLabel(p, w, F_DNT, L"DoNotTrack", 12, 1398, 90);
-    FpMkCombo(p, w, F_DNT, 110, 1396, 170);
+    FpMkEdit(p, w, F_MAC, 260, 1402, 220);
+    FpMkBtn(p, w, F_SHUFFLEMAC, L"随机", 490, 1400, 70);
+    // ---- 页4 高级：DNT/端口/加速/TLS/启动参数（整体下移 48）----
+    // ---- 15. Do Not Track（y 1444..）----
+    FpMkLabel(p, w, F_DNT, L"DoNotTrack", 12, 1446, 90);
+    FpMkCombo(p, w, F_DNT, 110, 1444, 170);
     FpComboAdd(w->ctl[F_DNT - F_BASE], L"default - 默认");
     FpComboAdd(w->ctl[F_DNT - F_BASE], L"open - 开启");
     FpComboAdd(w->ctl[F_DNT - F_BASE], L"close - 关闭");
-    FpMkLabel(p, w, F_PORTSCAN, L"端口扫描", 300, 1398, 100);
-    FpMkCombo(p, w, F_PORTSCAN, 410, 1396, 150);
+    FpMkLabel(p, w, F_PORTSCAN, L"端口扫描", 300, 1446, 100);
+    FpMkCombo(p, w, F_PORTSCAN, 410, 1444, 150);
     FpComboAdd(w->ctl[F_PORTSCAN - F_BASE], L"default - 默认");
     FpComboAdd(w->ctl[F_PORTSCAN - F_BASE], L"open - 启用(1)");
     FpComboAdd(w->ctl[F_PORTSCAN - F_BASE], L"close - 关闭(0)");
-    FpMkLabel(p, w, F_WPORTS, L"白名单端口", 12, 1440, 90);
-    FpMkEdit(p, w, F_WPORTS, 110, 1438, 420);
-    // ---- 17. 硬件加速（y 1480..1516，h=36）----
-    FpMkLabel(p, w, F_HWACC, L"硬件加速", 12, 1482, 90);
-    FpMkCombo(p, w, F_HWACC, 110, 1480, 170);
+    FpMkLabel(p, w, F_WPORTS, L"白名单端口", 12, 1488, 90);
+    FpMkEdit(p, w, F_WPORTS, 110, 1486, 420);
+    // ---- 17. 硬件加速（y 1528..；整体下移 48）----
+    FpMkLabel(p, w, F_HWACC, L"硬件加速", 12, 1530, 90);
+    FpMkCombo(p, w, F_HWACC, 110, 1528, 170);
     FpComboAdd(w->ctl[F_HWACC - F_BASE], L"default - 默认");
     FpComboAdd(w->ctl[F_HWACC - F_BASE], L"open - 开启");
     FpComboAdd(w->ctl[F_HWACC - F_BASE], L"close - 关闭");
-    FpMkLabel(p, w, F_TLSM, L"TLS", 300, 1482, 80);
-    FpMkCombo(p, w, F_TLSM, 390, 1480, 150);
+    FpMkLabel(p, w, F_TLSM, L"TLS", 300, 1530, 80);
+    FpMkCombo(p, w, F_TLSM, 390, 1528, 150);
     FpComboAdd(w->ctl[F_TLSM - F_BASE], L"close - 默认");
     FpComboAdd(w->ctl[F_TLSM - F_BASE], L"open - 自定义(1)");
-    FpMkEdit(p, w, F_TLS, 110, 1522, 460);
-    // ---- 19. 启动参数（y 1564..1684，h=120）----
-    FpMkLabel(p, w, F_ARGS, L"启动参数", 12, 1566, 90);
-    FpMkEdit(p, w, F_ARGS, 110, 1564, 560, 110);
+    FpMkEdit(p, w, F_TLS, 110, 1570, 460);
+    // ---- 19. 启动参数（y 1612..；整体下移 48）----
+    FpMkLabel(p, w, F_ARGS, L"启动参数", 12, 1614, 90);
+    FpMkEdit(p, w, F_ARGS, 110, 1612, 560, 110);
 }
 // fp_ui.cpp — part 5/6：回填 + 收集
 static std::wstring FpFirstTok(const std::wstring& s) {
@@ -877,6 +887,22 @@ static void FpFill(FpWnd* w) {
     selByVal(F_BROWSER, f.browser.empty() ? L"sun" : f.browser);
     selByVal(F_KERNEL, f.kernelVer.empty() ? L"chrome143" : f.kernelVer);
     FpSet(C(F_BDIR), f.browserDir);
+    // A2 独立目录回填：空=跟随全局（显示全局值+“（跟随全局）”后缀提示，不写回表单）
+    {
+        Config ccfg = w->cfg;
+        std::wstring gdd = EffDataDir(ccfg, L""), gbd = EffBrowserDir(ccfg, L"");
+        (void)gdd; (void)gbd;
+        std::wstring effD = EffDataDir(w->cfg, w->profile);
+        std::wstring effB = EffBrowserDir(w->cfg, w->profile);
+        auto it = w->cfg.profiles.find(w->profile);
+        bool hasD = (it != w->cfg.profiles.end() && !it->second.dataDir.empty());
+        bool hasB = (it != w->cfg.profiles.end() && !it->second.sunBrowserDir.empty());
+        FpSet(C(F_PDATADIR), effD + (hasD ? L"" : L"（跟随全局）"));
+        FpSet(C(F_PBROWSERDIR), effB + (hasB ? L"" : L"（跟随全局）"));
+        // 表单存有效值（Collect 时去后缀回写覆盖；空输入即清覆盖回全局）
+        f.profDataDir = hasD ? it->second.dataDir : L"";
+        f.profBrowserDir = hasB ? it->second.sunBrowserDir : L"";
+    }
     selByVal(F_OS, f.os.empty() ? L"win" : f.os);
     // UA 版本号回填：空则从 UA 文本反解析 Chrome/CriOS/Firefox 后 2-3 位数字（与 web-ui syncUaPresetFromUA 一致）
     if (f.uaPreset.empty() && !f.ua.empty()) {
@@ -952,6 +978,19 @@ static void FpCollect(FpWnd* w) {
     f.browser = FpFirstTok(FpComboGet(C(F_BROWSER)));
     f.kernelVer = FpFirstTok(FpComboGet(C(F_KERNEL)));
     f.browserDir = FpGet(C(F_BDIR));
+    // A2 独立目录收集：去“（跟随全局）”后缀；空=清覆盖回全局
+    {
+        auto stripTag = [](std::wstring s) -> std::wstring {
+            size_t p = s.find(L"（跟随全局）");
+            if (p != std::wstring::npos) s = s.substr(0, p);
+            // 去首尾空格
+            s.erase(0, s.find_first_not_of(L" \t"));
+            if (!s.empty()) s.erase(s.find_last_not_of(L" \t") + 1);
+            return s;
+        };
+        f.profDataDir = stripTag(FpGet(C(F_PDATADIR)));
+        f.profBrowserDir = stripTag(FpGet(C(F_PBROWSERDIR)));
+    }
     f.os = FpFirstTok(FpComboGet(C(F_OS)));
     f.uaPreset = FpGet(C(F_UAPRESET));
     f.ua = FpGet(C(F_UA));
@@ -1471,8 +1510,37 @@ static LRESULT CALLBACK FpWndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
         }
         if (id == F_OK) {
             FpCollect(w);
-            std::wstring dd = w->cfg.dataDir + L"\\" + w->profile;
-            ::CreateDirectoryW(w->cfg.dataDir.c_str(), NULL);
+            // A2 独立目录落盘：只写 sunlauncher.json profiles 段（非官方设置，
+            // 不进三件套/ext）。空=清覆盖回全局。写盘失败记日志，不阻断指纹保存。
+            {
+                Config ccfg = w->cfg;
+                ProfileOverride o;
+                if (!w->form.profDataDir.empty()) o.dataDir = w->form.profDataDir;
+                if (!w->form.profBrowserDir.empty()) o.sunBrowserDir = w->form.profBrowserDir;
+                auto it0 = ccfg.profiles.find(w->profile);
+                ProfileOverride old = (it0 == ccfg.profiles.end()) ? ProfileOverride() : it0->second;
+                bool changed = (old.dataDir != o.dataDir || old.sunBrowserDir != o.sunBrowserDir);
+                if (changed) {
+                    if (o.dataDir.empty() && o.sunBrowserDir.empty())
+                        ccfg.profiles.erase(w->profile);
+                    else
+                        ccfg.profiles[w->profile] = o;
+                    bool okp = false;
+                    try { okp = SaveConfig(ccfg); } catch (...) { okp = false; }
+                    if (okp) {
+                        w->cfg = ccfg;
+                        LOG(L"指纹保存 profiles目录 OK " + w->profile +
+                            L" dataDir=" + (o.dataDir.empty() ? L"(跟随全局)" : o.dataDir) +
+                            L" browserDir=" + (o.sunBrowserDir.empty() ? L"(跟随全局)" : o.sunBrowserDir));
+                    } else {
+                        LOG(L"指纹保存 profiles目录 FAIL（sunlauncher.json 写盘失败） " + w->profile);
+                    }
+                }
+            }
+            // dataDir 解析：该指纹独立父目录优先（刚保存的覆盖值），否则全局。
+            std::wstring effParent = w->form.profDataDir.empty() ? w->cfg.dataDir : w->form.profDataDir;
+            std::wstring dd = effParent + L"\\" + w->profile;
+            ::CreateDirectoryW(effParent.c_str(), NULL);
             ::CreateDirectoryW(dd.c_str(), NULL);
             // 1. ui 侧车全量存档（字段名与 web-ui collectFp 一致，含派生字段，双向可读）
             {
