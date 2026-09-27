@@ -211,19 +211,39 @@ bool PortFree(int port) {
 std::vector<ProfileInfo> ScanProfiles(const Config& cfg,
     const std::map<std::wstring, ProcHandle>& procs,
     const std::map<std::wstring, int>& ports) {
+    // 多父目录扫描：全局 dataDir + 各 profile 独立父目录（profiles 段），按名去重合并。
+    // 指纹页 A2 行设置的独立数据目录是 profile 的真实住所，列表必须从那里读。
+    std::vector<std::wstring> parents;
+    parents.push_back(cfg.dataDir);
+    for (auto& kv : cfg.profiles) {
+        if (kv.second.dataDir.empty()) continue;
+        bool dup = false;
+        for (auto& p : parents) { if (p == kv.second.dataDir) { dup = true; break; } }
+        if (!dup) parents.push_back(kv.second.dataDir);
+    }
+    std::map<std::wstring, ProfileInfo> merged;
+    for (auto& parent : parents) {
+        if (parent.empty()) continue;
+        WIN32_FIND_DATAW fd{};
+        HANDLE h = ::FindFirstFileW((parent + L"\\*").c_str(), &fd);
+        if (h == INVALID_HANDLE_VALUE) continue;
+        do {
+            if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) continue;
+            std::wstring n = fd.cFileName;
+            if (n == L"." || n == L"..") continue;
+            if (!n.empty() && (n[0] == L'.' || n[0] == L'_')) continue;
+            if (merged.find(n) != merged.end()) continue;
+            ProfileInfo p;
+            p.name = n;
+            p.path = parent + L"\\" + n;
+            merged[n] = p;
+        } while (::FindNextFileW(h, &fd));
+        ::FindClose(h);
+    }
     std::vector<ProfileInfo> out;
-    WIN32_FIND_DATAW fd{};
-    HANDLE h = ::FindFirstFileW((cfg.dataDir + L"\\*").c_str(), &fd);
-    if (h == INVALID_HANDLE_VALUE) return out;
-    do {
-        if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) continue;
-        std::wstring n = fd.cFileName;
-        if (n == L"." || n == L"..") continue;
-        if (!n.empty() && (n[0] == L'.' || n[0] == L'_')) continue;
-        ProfileInfo p;
-        p.name = n;
-        p.path = cfg.dataDir + L"\\" + n;
-        auto it = procs.find(n);
+    for (auto& kv : merged) {
+        ProfileInfo p = kv.second;
+        auto it = procs.find(p.name);
         if (it != procs.end() && it->second.hProcess) {
             DWORD code = 0;
             if (::GetExitCodeProcess(it->second.hProcess, &code) && code == STILL_ACTIVE) {
@@ -231,11 +251,10 @@ std::vector<ProfileInfo> ScanProfiles(const Config& cfg,
                 p.pid = it->second.pid;
             }
         }
-        auto ip = ports.find(n);
+        auto ip = ports.find(p.name);
         if (ip != ports.end()) p.port = ip->second;
         out.push_back(p);
-    } while (::FindNextFileW(h, &fd));
-    ::FindClose(h);
+    }
     std::sort(out.begin(), out.end(),
         [](const ProfileInfo& a, const ProfileInfo& b) { return a.name < b.name; });
     return out;

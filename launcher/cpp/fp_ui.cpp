@@ -890,21 +890,19 @@ static void FpFill(FpWnd* w) {
     selByVal(F_BROWSER, f.browser.empty() ? L"sun" : f.browser);
     selByVal(F_KERNEL, f.kernelVer.empty() ? L"chrome143" : f.kernelVer);
     FpSet(C(F_BDIR), f.browserDir);
-    // A2 独立目录回填：空=跟随全局（显示全局值+“（跟随全局）”后缀提示，不写回表单）
+    // A2 独立目录回填：必填（无全局兜底）。显示已保存的独立值；从未保存过则
+    // 显示全局值作参考（带“（默认全局，可改）”后缀），保存时以前缀判断落盘。
     {
-        Config ccfg = w->cfg;
-        std::wstring gdd = EffDataDir(ccfg, L""), gbd = EffBrowserDir(ccfg, L"");
-        (void)gdd; (void)gbd;
         std::wstring effD = EffDataDir(w->cfg, w->profile);
         std::wstring effB = EffBrowserDir(w->cfg, w->profile);
         auto it = w->cfg.profiles.find(w->profile);
         bool hasD = (it != w->cfg.profiles.end() && !it->second.dataDir.empty());
         bool hasB = (it != w->cfg.profiles.end() && !it->second.sunBrowserDir.empty());
-        FpSet(C(F_PDATADIR), effD + (hasD ? L"" : L"（跟随全局）"));
-        FpSet(C(F_PBROWSERDIR), effB + (hasB ? L"" : L"（跟随全局）"));
-        // 表单存有效值（Collect 时去后缀回写覆盖；空输入即清覆盖回全局）
-        f.profDataDir = hasD ? it->second.dataDir : L"";
-        f.profBrowserDir = hasB ? it->second.sunBrowserDir : L"";
+        FpSet(C(F_PDATADIR), effD + (hasD ? L"" : L"（默认全局，可改）"));
+        FpSet(C(F_PBROWSERDIR), effB + (hasB ? L"" : L"（默认全局，可改）"));
+        // 表单存有效值（Collect 时去后缀回写覆盖）
+        f.profDataDir = effD;
+        f.profBrowserDir = effB;
     }
     selByVal(F_OS, f.os.empty() ? L"win" : f.os);
     // UA 版本号回填：空则从 UA 文本反解析 Chrome/CriOS/Firefox 后 2-3 位数字（与 web-ui syncUaPresetFromUA 一致）
@@ -981,10 +979,12 @@ static void FpCollect(FpWnd* w) {
     f.browser = FpFirstTok(FpComboGet(C(F_BROWSER)));
     f.kernelVer = FpFirstTok(FpComboGet(C(F_KERNEL)));
     f.browserDir = FpGet(C(F_BDIR));
-    // A2 独立目录收集：去“（跟随全局）”后缀；空=清覆盖回全局
+    // A2 独立目录收集：必填。去“（默认全局，可改）”后缀；为空弹窗阻断保存。
     {
         auto stripTag = [](std::wstring s) -> std::wstring {
-            size_t p = s.find(L"（跟随全局）");
+            size_t p = s.find(L"（默认全局，可改）");
+            if (p != std::wstring::npos) s = s.substr(0, p);
+            p = s.find(L"（跟随全局）"); // 兼容旧版后缀
             if (p != std::wstring::npos) s = s.substr(0, p);
             // 去首尾空格
             s.erase(0, s.find_first_not_of(L" \t"));
@@ -1484,13 +1484,24 @@ static LRESULT CALLBACK FpWndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
         }
         if (id == F_IMPORT) {
-            // 从目录导入指纹：把 A2 行“数据目录”输入框里的父目录 + 环境目录名
-            // 拼成导入源，重读该目录三件套 + ui 侧车回填表单（覆盖当前编辑）。
-            // 为空则用当前生效父目录（跟随全局或已保存的独立目录）。
+            // 从目录导入指纹：导入源 = A2 行“数据目录”输入框里的父目录 + 环境目录名。
+            // 逻辑：A2 必填（F_OK 同规则），先 FpCollect 取 A2 当前输入，源目录不存在/
+            // 无三件套则状态条报错并记日志；导入成功回填表单（覆盖当前编辑）+ FpFill。
+            // 注意：改了 A2 再点导入 = 换源目录导入；导入不改 A2 本身，不写盘。
             FpCollect(w);
-            std::wstring srcParent = w->form.profDataDir.empty()
-                ? EffDataDir(w->cfg, w->profile) : w->form.profDataDir;
+            if (w->form.profDataDir.empty()) {
+                ::MessageBoxW(h, L"请先在顶端 A2 行填写数据目录（导入源父目录），再点导入。", L"从目录导入指纹", MB_OK | MB_ICONWARNING);
+                ::SetWindowTextW(w->hStatus, L"导入已阻断：A2 数据目录为空");
+                LOG(L"指纹导入 F_IMPORT BLOCKED(A2空) " + w->profile);
+                return 0;
+            }
+            std::wstring srcParent = w->form.profDataDir;
             std::wstring srcDir = srcParent + L"\\" + w->profile;
+            if (::GetFileAttributesW(srcDir.c_str()) == INVALID_FILE_ATTRIBUTES) {
+                ::SetWindowTextW(w->hStatus, (L"导入源目录不存在: " + srcDir).c_str());
+                LOG(L"指纹导入 F_IMPORT 无目录 src=" + srcDir + L" " + w->profile);
+                return 0;
+            }
             std::string sj2, dj2, cj2, ui2;
             int nRD = 0;
             if (FpLoadStaticJson(srcDir, sj2) && !sj2.empty()) nRD++;
@@ -1619,35 +1630,39 @@ static LRESULT CALLBACK FpWndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
         }
         if (id == F_OK) {
             FpCollect(w);
+            // A2 独立目录必填：两行都不能为空（无全局兜底），空则弹窗阻断保存。
+            if (w->form.profDataDir.empty() || w->form.profBrowserDir.empty()) {
+                ::MessageBoxW(h, L"数据目录 / 浏览器目录不能为空。\r\n请在顶端 A2 行填写该指纹的独立目录后再保存。", L"指纹配置", MB_OK | MB_ICONWARNING);
+                ::SetWindowTextW(w->hStatus, L"保存已阻断：A2 独立目录必填");
+                LOG(L"指纹保存 BLOCKED(A2目录空) " + w->profile);
+                return 0;
+            }
             // A2 独立目录落盘：只写 sunlauncher.json profiles 段（非官方设置，
-            // 不进三件套/ext）。空=清覆盖回全局。写盘失败记日志，不阻断指纹保存。
+            // 不进三件套/ext）。写盘失败记日志，不阻断指纹保存。
             {
                 Config ccfg = w->cfg;
                 ProfileOverride o;
-                if (!w->form.profDataDir.empty()) o.dataDir = w->form.profDataDir;
-                if (!w->form.profBrowserDir.empty()) o.sunBrowserDir = w->form.profBrowserDir;
+                o.dataDir = w->form.profDataDir;
+                o.sunBrowserDir = w->form.profBrowserDir;
                 auto it0 = ccfg.profiles.find(w->profile);
                 ProfileOverride old = (it0 == ccfg.profiles.end()) ? ProfileOverride() : it0->second;
                 bool changed = (old.dataDir != o.dataDir || old.sunBrowserDir != o.sunBrowserDir);
                 if (changed) {
-                    if (o.dataDir.empty() && o.sunBrowserDir.empty())
-                        ccfg.profiles.erase(w->profile);
-                    else
-                        ccfg.profiles[w->profile] = o;
+                    ccfg.profiles[w->profile] = o;
                     bool okp = false;
                     try { okp = SaveConfig(ccfg); } catch (...) { okp = false; }
                     if (okp) {
                         w->cfg = ccfg;
                         LOG(L"指纹保存 profiles目录 OK " + w->profile +
-                            L" dataDir=" + (o.dataDir.empty() ? L"(跟随全局)" : o.dataDir) +
-                            L" browserDir=" + (o.sunBrowserDir.empty() ? L"(跟随全局)" : o.sunBrowserDir));
+                            L" dataDir=" + o.dataDir +
+                            L" browserDir=" + o.sunBrowserDir);
                     } else {
                         LOG(L"指纹保存 profiles目录 FAIL（sunlauncher.json 写盘失败） " + w->profile);
                     }
                 }
             }
-            // dataDir 解析：该指纹独立父目录优先（刚保存的覆盖值），否则全局。
-            std::wstring effParent = w->form.profDataDir.empty() ? w->cfg.dataDir : w->form.profDataDir;
+            // dataDir 解析：A2 独立父目录（必填，已校验非空）。
+            std::wstring effParent = w->form.profDataDir;
             std::wstring dd = effParent + L"\\" + w->profile;
             ::CreateDirectoryW(effParent.c_str(), NULL);
             ::CreateDirectoryW(dd.c_str(), NULL);

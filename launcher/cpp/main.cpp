@@ -11,7 +11,7 @@ static AppState g;
 
 enum {
     IDC_LIST = 100, IDC_START, IDC_STOP, IDC_REFRESH, IDC_NEWNAME, IDC_CREATE,
-    IDC_DATADIR, IDC_BROWSERDIR, IDC_SAVEDIR, IDC_LOG, IDC_CLEARLOG, IDC_OPENDIR,
+    IDC_LOG, IDC_CLEARLOG, IDC_OPENDIR,
     IDC_SEARCH, IDC_CHECKALL, IDC_BSTART, IDC_BSTOP, IDC_BDEL, IDC_FPCONFIG,
     IDC_GROUPLBL,
     TIMER_POLL = 1,
@@ -264,7 +264,10 @@ static void OnBatchDel() {
     }
     int del = 0;
     for (auto& n : names) {
-        std::wstring dd = g.cfg.dataDir + L"\\" + n;
+        // 删除按该指纹生效父目录解析（独立目录的 profile 住在别处）
+        std::wstring parentDel;
+        { std::lock_guard<std::mutex> lk(g.mu); parentDel = EffDataDir(g.cfg, n); }
+        std::wstring dd = parentDel + L"\\" + n;
         // 递归删目录（与 /api/deleteCacheById 同逻辑的本地版）
         std::vector<std::wstring> stack;
         stack.push_back(dd);
@@ -534,7 +537,8 @@ static void OnStop() {
 static void OnStopOneLocked(const std::wstring& name, std::vector<DWORD>& killedOut) {
     // 优先按 user-data-dir 树杀（覆盖 AdsPower 客户端起的、launcher 句柄之外的进程），
     // 再结束 launcher 自己拉起的句柄。纯本地操作，不通知任何远端。
-    std::wstring dataDir = g.cfg.dataDir + L"\\" + name;
+    // dataDir 按该指纹生效父目录解析（独立目录住在别处也要杀到）。
+    std::wstring dataDir = EffDataDir(g.cfg, name) + L"\\" + name;
     auto killed = FpKillProfileTree(dataDir);
     auto it = g.procs.find(name);
     if (it != g.procs.end()) {
@@ -560,22 +564,13 @@ static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
             return ::CreateWindowW(L"EDIT", L"", WS_CHILD | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL,
                 x, y, w, 26, h, (HMENU)(INT_PTR)id, hi, NULL);
         };
-        // 全局默认目录（只读展示；修改请进指纹配置 A2 行按指纹独立设置，
-        // 存 sunlauncher.json profiles 段。保留编辑框供查看与复制。）
-        ::CreateWindowW(L"STATIC", L"全局数据目录:", WS_CHILD | WS_VISIBLE, 12, 12, 90, 22, h, NULL, hi, NULL);
-        g.hDataDir = ::CreateWindowW(L"EDIT", L"", WS_CHILD | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL | ES_READONLY,
-            108, 12, 488, 26, h, (HMENU)(INT_PTR)IDC_DATADIR, hi, NULL);
-        ::CreateWindowW(L"STATIC", L"全局浏览器目录:", WS_CHILD | WS_VISIBLE, 12, 44, 100, 22, h, NULL, hi, NULL);
-        g.hBrowserDir = ::CreateWindowW(L"EDIT", L"", WS_CHILD | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL | ES_READONLY,
-            108, 42, 488, 26, h, (HMENU)(INT_PTR)IDC_BROWSERDIR, hi, NULL);
-        ::CreateWindowW(L"STATIC", L"（指纹独立目录在指纹配置顶端设置）", WS_CHILD | WS_VISIBLE, 108, 68, 300, 18, h, NULL, hi, NULL);
-        mkBtn(IDC_OPENDIR, L"打开日志目录", 606, 10, 100);
-        mkBtn(IDC_SAVEDIR, L"保存目录", 606, 42, 100);
-        // 环境表：LISTVIEW 三列（环境目录/状态/端口）+ 复选框 + 整行选择（对齐 web-ui 9 列表格）
+        // 主窗口无全局目录区：数据/浏览器路径只在指纹配置 A2 行按指纹独立设置，
+        // 存 sunlauncher.json profiles 段（EffDataDir/EffBrowserDir 解析）。
+        // 环境表上移：LISTVIEW (12,12,470x330)。
         LOG(L"probe wmcreate listview-pre");
         g.hList = ::CreateWindowW(WC_LISTVIEWW, NULL,
             WS_CHILD | WS_VISIBLE | WS_BORDER | LVS_REPORT | LVS_SHOWSELALWAYS | LVS_SINGLESEL,
-            12, 92, 470, 286, h, (HMENU)(INT_PTR)IDC_LIST, hi, NULL);
+            12, 12, 470, 330, h, (HMENU)(INT_PTR)IDC_LIST, hi, NULL);
         LOG(std::wstring(L"probe wmcreate listview=") + (g.hList ? L"ok" : (L"fail err=" + std::to_wstring(::GetLastError()))));
         {
             DWORD ex = (DWORD)::SendMessageW(g.hList, LVM_GETEXTENDEDLISTVIEWSTYLE, 0, 0);
@@ -597,10 +592,11 @@ static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
             c2.cx = 96;
             ::SendMessageW(g.hList, LVM_INSERTCOLUMNW, 2, (LPARAM)&c2);
         }
-        mkBtn(IDC_START, L"启动", 494, 92, 100);
-        mkBtn(IDC_STOP, L"关闭", 494, 130, 100);
-        mkBtn(IDC_REFRESH, L"刷新", 494, 168, 100);
-        mkBtn(IDC_FPCONFIG, L"指纹配置", 494, 206, 100);
+        mkBtn(IDC_START, L"启动", 494, 12, 100);
+        mkBtn(IDC_STOP, L"关闭", 494, 50, 100);
+        mkBtn(IDC_REFRESH, L"刷新", 494, 88, 100);
+        mkBtn(IDC_FPCONFIG, L"指纹配置", 494, 126, 100);
+        mkBtn(IDC_OPENDIR, L"打开日志目录", 606, 12, 100);
         ::CreateWindowW(L"STATIC", L"新建环境:", WS_CHILD | WS_VISIBLE, 494, 236, 100, 22, h, NULL, hi, NULL);
         ::CreateWindowW(L"EDIT", L"", WS_CHILD | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL,
             494, 260, 212, 26, h, (HMENU)(INT_PTR)IDC_NEWNAME, hi, NULL);
@@ -620,8 +616,6 @@ static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
             12, 440, 694, 150, h, (HMENU)(INT_PTR)IDC_LOG, hi, NULL);
         g.hStatus = ::CreateWindowW(L"STATIC", L"就绪", WS_CHILD | WS_VISIBLE, 12, 598, 694, 22, h, NULL, hi, NULL);
         LOG(L"probe wmcreate ctrls-done");
-        ::SetWindowTextW(g.hDataDir, g.cfg.dataDir.c_str());
-        ::SetWindowTextW(g.hBrowserDir, g.cfg.sunBrowserDir.c_str());
         ::SetTimer(h, TIMER_POLL, 2000, NULL);
         LOG(L"probe wmcreate timer-ok");
         LOG(L"probe wmcreate refresh-pre");
@@ -697,40 +691,19 @@ static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
                 name += L"_local";
                 LOG(L"新建 profile 名补 _local 后缀：remark=" + remark + L" dir=" + name);
             }
-            // 已存在直接提示，不重复建
-            if (::GetFileAttributesW((g.cfg.dataDir + L"\\" + name).c_str()) != INVALID_FILE_ATTRIBUTES) {
+            // 新建落到全局 dataDir 父目录；建完提示进指纹配置 A2 行改独立目录。
+            // 已存在直接提示，不重复建。
+            std::wstring parentNew;
+            { std::lock_guard<std::mutex> lk(g.mu); parentNew = g.cfg.dataDir; }
+            if (::GetFileAttributesW((parentNew + L"\\" + name).c_str()) != INVALID_FILE_ATTRIBUTES) {
                 SetStatus(L"已存在 " + name); break;
             }
-            ::CreateDirectoryW(g.cfg.dataDir.c_str(), NULL);
-            ::CreateDirectoryW((g.cfg.dataDir + L"\\" + name).c_str(), NULL);
-            ::CreateDirectoryW((g.cfg.dataDir + L"\\" + name + L"\\Default").c_str(), NULL);
-            LOG(L"新建 profile " + name);
+            ::CreateDirectoryW(parentNew.c_str(), NULL);
+            ::CreateDirectoryW((parentNew + L"\\" + name).c_str(), NULL);
+            ::CreateDirectoryW((parentNew + L"\\" + name + L"\\Default").c_str(), NULL);
+            LOG(L"新建 profile " + name + L" parent=" + parentNew + L"（独立目录请进指纹配置 A2 行设置）");
             ::SetWindowTextW(::GetDlgItem(h, IDC_NEWNAME), L"");
             RefreshList(); SetStatus(L"已新建 " + name);
-        }
-        else if (id == IDC_SAVEDIR) {
-            // 保存目录（全局默认）：编辑框为只读展示，点保存仅将当前全局值回写文件
-            // （实际修改请进指纹配置 A2 行按指纹独立设置）。快照写盘放锁外，
-            // try/catch 包住，异常转状态条，不穿越持锁区。
-            LOG(L"diag savedir begin");
-            Config snap;
-            {
-                std::lock_guard<std::mutex> lk(g.mu);
-                snap = g.cfg;
-            }
-            bool ok = false;
-            try { ok = SaveConfig(snap); }
-            catch (...) { ok = false; }
-            if (ok) {
-                LOG(L"全局目录已回写 data=" + snap.dataDir + L" browser=" + snap.sunBrowserDir +
-                    L"（独立目录请进指纹配置顶端 A2 行设置）");
-                SetStatus(L"全局目录已回写（独立目录在指纹配置中设置）");
-            } else {
-                LOG(L"diag savedir FAIL（写 sunlauncher.json 失败，看目录权限）");
-                SetStatus(L"保存 sunlauncher.json 失败");
-            }
-            LOG(L"diag savedir end ok=" + std::wstring(ok ? L"1" : L"0"));
-            RefreshList();
         }
         else if (id == IDC_CLEARLOG) { ::SetWindowTextW(g.hLog, L""); }
         else if (id == IDC_OPENDIR) {
@@ -1002,7 +975,7 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE, LPWSTR, int show) {
                     body += "]";
                 } else if (target == "/api/start" && isPost) {
                     std::wstring wname = W(jsonStr(rbody, "name"));
-                    std::wstring dataDir = g.cfg.dataDir + L"\\" + wname;
+                    std::wstring dataDir = EffDataDir(g.cfg, wname) + L"\\" + wname;
                     if (wname.empty() || ::GetFileAttributesW(dataDir.c_str()) == INVALID_FILE_ATTRIBUTES) {
                         code = 404; body = "{\"ok\":false,\"err\":\"profile not found\"}";
                     } else {
@@ -1032,9 +1005,9 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE, LPWSTR, int show) {
                                 std::string uiExtra;
                                 FpLoadUiExtra(dataDir, uiExtra);
                                 std::wstring cmd = FpBuildCmdline(dataDir, p2, uiExtra);
-                                std::wstring exe = g.cfg.sunBrowserDir + L"\\SunBrowser.exe";
+                                std::wstring exe = EffBrowserDir(g.cfg, wname) + L"\\SunBrowser.exe";
                                 HANDLE hp = NULL; DWORD pid = 0, err = 0;
-                                if (!LaunchSunBrowser(exe, g.cfg.sunBrowserDir, cmd, &hp, &pid, &err)) {
+                                if (!LaunchSunBrowser(exe, EffBrowserDir(g.cfg, wname), cmd, &hp, &pid, &err)) {
                                     code = 500; body = "{\"ok\":false,\"err\":\"CreateProcess failed\"}";
                                 } else {
                                     g.procs[wname] = { hp, pid };
@@ -1046,26 +1019,7 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE, LPWSTR, int show) {
                     }
                 } else if (target == "/api/stop" && isPost) {
                     std::wstring wname = W(jsonStr(rbody, "name"));
-                    std::wstring dataDir = g.cfg.dataDir + L"\\" + wname;
-                    auto killed = FpKillProfileTree(dataDir);
-                    auto it = g.procs.find(wname);
-                    if (it != g.procs.end()) {
-                        if (std::find(killed.begin(), killed.end(), it->second.pid) == killed.end()) {
-                            ::TerminateProcess(it->second.hProcess, 0);
-                            killed.push_back(it->second.pid);
-                        }
-                        ::CloseHandle(it->second.hProcess);
-                        g.procs.erase(it);
-                    }
-                    body = "{\"ok\":true,\"killed\":[";
-                    for (size_t i = 0; i < killed.size(); i++) {
-                        if (i) body += ",";
-                        body += std::to_string(killed[i]);
-                    }
-                    body += "]}";
-                } else if (target == "/api/stop" && isPost) {
-                    std::wstring wname = W(jsonStr(rbody, "name"));
-                    std::wstring dataDir = g.cfg.dataDir + L"\\" + wname;
+                    std::wstring dataDir = EffDataDir(g.cfg, wname) + L"\\" + wname;
                     auto killed = FpKillProfileTree(dataDir);
                     auto it = g.procs.find(wname);
                     if (it != g.procs.end()) {
@@ -1090,7 +1044,7 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE, LPWSTR, int show) {
                     if (pid.empty()) pid = jsonStr(rbody, "id");
                     if (pid.empty()) pid = jsonStr(rbody, "name");
                     std::wstring wname = W(pid);
-                    std::wstring dataDir = g.cfg.dataDir + L"\\" + wname;
+                    std::wstring dataDir = EffDataDir(g.cfg, wname) + L"\\" + wname;
                     if (wname.empty() || ::GetFileAttributesW(dataDir.c_str()) == INVALID_FILE_ATTRIBUTES) {
                         code = 404; body = "{\"code\":100001,\"msg\":\"profile not found\",\"data\":{},\"debugUrl\":\"\"}";
                     } else {
@@ -1111,9 +1065,9 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE, LPWSTR, int show) {
                             std::string uiExtra;
                             FpLoadUiExtra(dataDir, uiExtra);
                             std::wstring cmd = FpBuildCmdline(dataDir, p2, uiExtra);
-                            std::wstring exe = g.cfg.sunBrowserDir + L"\\SunBrowser.exe";
+                            std::wstring exe = EffBrowserDir(g.cfg, wname) + L"\\SunBrowser.exe";
                             HANDLE hp = NULL; DWORD cpid = 0, cerr = 0;
-                            if (!LaunchSunBrowser(exe, g.cfg.sunBrowserDir, cmd, &hp, &cpid, &cerr)) {
+                            if (!LaunchSunBrowser(exe, EffBrowserDir(g.cfg, wname), cmd, &hp, &cpid, &cerr)) {
                                 code = 500; body = "{\"code\":100001,\"msg\":\"CreateProcess failed\",\"data\":{}}";
                             } else {
                                 g.procs[wname] = { hp, cpid };
@@ -1132,7 +1086,7 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE, LPWSTR, int show) {
                     if (pid.empty()) pid = jsonStr(rbody, "id");
                     if (pid.empty()) pid = jsonStr(rbody, "name");
                     std::wstring wname = W(pid);
-                    std::wstring dataDir = g.cfg.dataDir + L"\\" + wname;
+                    std::wstring dataDir = EffDataDir(g.cfg, wname) + L"\\" + wname;
                     if (wname.empty() || ::GetFileAttributesW(dataDir.c_str()) == INVALID_FILE_ATTRIBUTES) {
                         code = 404; body = "{\"code\":900001,\"msg\":\"\",\"data\":{},\"debugUrl\":\"\"}";
                     } else {
@@ -1153,9 +1107,9 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE, LPWSTR, int show) {
                             std::string uiExtra;
                             FpLoadUiExtra(dataDir, uiExtra);
                             std::wstring cmd = FpBuildCmdline(dataDir, p2, uiExtra);
-                            std::wstring exe = g.cfg.sunBrowserDir + L"\\SunBrowser.exe";
+                            std::wstring exe = EffBrowserDir(g.cfg, wname) + L"\\SunBrowser.exe";
                             HANDLE hp = NULL; DWORD cpid = 0, cerr = 0;
-                            if (!LaunchSunBrowser(exe, g.cfg.sunBrowserDir, cmd, &hp, &cpid, &cerr)) {
+                            if (!LaunchSunBrowser(exe, EffBrowserDir(g.cfg, wname), cmd, &hp, &cpid, &cerr)) {
                                 code = 500; body = "{\"code\":100001,\"msg\":\"CreateProcess failed\",\"data\":{}}";
                             } else {
                                 g.procs[wname] = { hp, cpid };
@@ -1174,7 +1128,7 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE, LPWSTR, int show) {
                     {
                         auto ps = ScanProfiles(g.cfg, g.procs, g.ports);
                         for (auto& p : ps) {
-                            std::wstring dd = g.cfg.dataDir + L"\\" + p.name;
+                            std::wstring dd = p.path;
                             auto k = FpKillProfileTree(dd);
                             all.insert(all.end(), k.begin(), k.end());
                         }
@@ -1201,7 +1155,7 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE, LPWSTR, int show) {
                         size_t b = one.find_last_not_of(" \t\r\n");
                         if (a != std::string::npos) {
                             one = one.substr(a, b - a + 1);
-                            std::wstring dd = g.cfg.dataDir + L"\\" + W(one);
+                            std::wstring dd = EffDataDir(g.cfg, W(one)) + L"\\" + W(one);
                             auto k = FpKillProfileTree(dd);
                             all.insert(all.end(), k.begin(), k.end());
                             auto it = g.procs.find(W(one));
@@ -1223,7 +1177,7 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE, LPWSTR, int show) {
                     std::string info = jsonStr(rbody, "info");
                     std::string pid = FpJsonGet(info, "id");
                     if (pid.empty()) pid = jsonStr(rbody, "id");
-                    std::wstring dd = g.cfg.dataDir + L"\\" + W(pid);
+                    std::wstring dd = EffDataDir(g.cfg, W(pid)) + L"\\" + W(pid);
                     if (pid.empty() || ::GetFileAttributesW(dd.c_str()) == INVALID_FILE_ATTRIBUTES)
                         body = "{\"code\":100001,\"msg\":\"profile not found\",\"data\":{}}";
                     else
@@ -1275,7 +1229,7 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE, LPWSTR, int show) {
                     // asar: GET ?id= -> 环境信息。离线：目录名+运行态+static 顶层回填。
                     std::string pid = qp("name");
                     if (pid.empty()) pid = qp("id");
-                    std::wstring dd = g.cfg.dataDir + L"\\" + W(pid);
+                    std::wstring dd = EffDataDir(g.cfg, W(pid)) + L"\\" + W(pid);
                     if (pid.empty() || ::GetFileAttributesW(dd.c_str()) == INVALID_FILE_ATTRIBUTES) {
                         code = 404; body = "{\"code\":100001,\"msg\":\"profile not found\",\"data\":{}}";
                     } else {
@@ -1299,7 +1253,7 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE, LPWSTR, int show) {
                     // asar: GET ?id= -> {code:0,data:[urls]}；离线读 sf_tabs.txt。
                     std::string pid = qp("name");
                     if (pid.empty()) pid = qp("id");
-                    std::wstring dd = g.cfg.dataDir + L"\\" + W(pid);
+                    std::wstring dd = EffDataDir(g.cfg, W(pid)) + L"\\" + W(pid);
                     std::string tabs;
                     if (!pid.empty() && FpReadTextFile(dd + L"\\sf_tabs.txt", tabs) && !tabs.empty())
                         body = "{\"code\":0,\"data\":" + tabs + ",\"msg\":\"success\"}";
@@ -1321,7 +1275,7 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE, LPWSTR, int show) {
                         size_t b = one.find_last_not_of(" \t\r\n");
                         if (a != std::string::npos) {
                             one = one.substr(a, b - a + 1);
-                            std::wstring dd = g.cfg.dataDir + L"\\" + W(one);
+                            std::wstring dd = EffDataDir(g.cfg, W(one)) + L"\\" + W(one);
                             // 只删可再生缓存子目录，不碰指纹三件套与 Default/Preferences 等
                             const wchar_t* sub[] = { L"\\Default\\Cache", L"\\Default\\Code Cache",
                                 L"\\Default\\GPUCache", L"\\GrShaderCache", L"\\ShaderCache",
@@ -1360,7 +1314,7 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE, LPWSTR, int show) {
                         if (a != std::string::npos) {
                             one = one.substr(a, b - a + 1);
                             std::wstring wn = W(one);
-                            std::wstring dd = g.cfg.dataDir + L"\\" + wn;
+                            std::wstring dd = EffDataDir(g.cfg, wn) + L"\\" + wn;
                             auto k = FpKillProfileTree(dd);
                             (void)k;
                             auto it = g.procs.find(wn);
@@ -1462,7 +1416,7 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE, LPWSTR, int show) {
                     std::string tabs = jsonStr(rbody, "tabs");
                     if (pid.empty()) { code = 400; body = "{\"code\":-1,\"msg\":\"missing id\"}"; }
                     else {
-                        std::wstring dd = g.cfg.dataDir + L"\\" + W(pid);
+                        std::wstring dd = EffDataDir(g.cfg, W(pid)) + L"\\" + W(pid);
                         if (::GetFileAttributesW(dd.c_str()) == INVALID_FILE_ATTRIBUTES) {
                             code = 404; body = "{\"code\":-1,\"msg\":\"profile not found\"}";
                         } else {
@@ -1474,7 +1428,7 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE, LPWSTR, int show) {
                     // asar: POST {id} 窗口前置。离线：按 user-data-dir 找 SunBrowser 主窗口并 SetForegroundWindow。
                     std::string pid = jsonStr(rbody, "id");
                     if (pid.empty()) pid = jsonStr(rbody, "name");
-                    std::wstring dd = g.cfg.dataDir + L"\\" + W(pid);
+                    std::wstring dd = EffDataDir(g.cfg, W(pid)) + L"\\" + W(pid);
                     HWND found = NULL;
                     ::EnumWindows([](HWND hw, LPARAM lp) -> BOOL {
                         DWORD cpid = 0;
@@ -1507,7 +1461,7 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE, LPWSTR, int show) {
                     body = "{\"code\":0,\"msg\":\"success\"}";
                 } else if (target.compare(0, 8, "/api/fp/") == 0 && !isPost) {
                     std::string kind = target.substr(8);
-                    std::wstring dataDir = g.cfg.dataDir + L"\\" + W(qp("name"));
+                    std::wstring dataDir = EffDataDir(g.cfg, W(qp("name"))) + L"\\" + W(qp("name"));
                     std::string j;
                     bool ok = false;
                     if (kind == "static") ok = FpLoadStaticJson(dataDir, j);
@@ -1527,7 +1481,24 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE, LPWSTR, int show) {
                     }
                 } else if (target == "/api/fp/save" && isPost) {
                     std::string nm = jsonStr(rbody, "name");
-                    std::wstring dataDir = g.cfg.dataDir + L"\\" + W(nm);
+                    std::wstring dataDir = EffDataDir(g.cfg, W(nm)) + L"\\" + W(nm);
+                    // web-ui 传 profiles 目录覆盖（per-profile 独立目录）：有则回写入
+                    // sunlauncher.json profiles 段（与指纹窗口 A2 行同源），目录只存本地文件。
+                    {
+                        std::string pd = jsonStr(rbody, "data_dir");
+                        std::string bd = jsonStr(rbody, "sun_browser_dir");
+                        if (!pd.empty() || !bd.empty()) {
+                            ProfileOverride o;
+                            if (!pd.empty()) o.dataDir = W(pd);
+                            if (!bd.empty()) o.sunBrowserDir = W(bd);
+                            if (o.dataDir.empty() && o.sunBrowserDir.empty())
+                                g.cfg.profiles.erase(W(nm));
+                            else
+                                g.cfg.profiles[W(nm)] = o;
+                            try { SaveConfig(g.cfg); } catch (...) {}
+                            dataDir = EffDataDir(g.cfg, W(nm)) + L"\\" + W(nm);
+                        }
+                    }
                     std::vector<std::string> notes;
                     // body 里 static/dynamic/cookies/ui 都是 JSON 字符串（已转义）；简单提取
                     auto grabRaw = [&](const char* k) -> std::string {

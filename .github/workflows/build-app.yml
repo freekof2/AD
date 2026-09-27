@@ -202,12 +202,10 @@ jobs:
             if ($mc2 -notmatch [regex]::Escape($s)) { throw "missing create-link symbol '$s' in main.cpp" }
             Write-Host "createlink ok: $s"
           }
-          # 2a8. 保存目录防闪退（根因：SaveConfig 异常穿越持锁区 / 持锁调 RefreshList 重入）：
-          #     快照写盘放锁外 + try/catch + 首尾 diag 日志，崩溃可定位
-          foreach ($s in @("diag savedir begin", "diag savedir end")) {
-            if ($mc2 -notmatch [regex]::Escape($s)) { throw "missing savedir-diag symbol '$s' in main.cpp" }
-            Write-Host "savedir ok: $s"
-          }
+          # 2a8. 保存目录防闪退已删除（主窗口无全局目录区，无 SAVEDIR 分支）：
+          #     若 IDC_SAVEDIR 重现即回归
+          if ($mc2 -match "IDC_SAVEDIR") { throw "IDC_SAVEDIR should be removed (no global dirs)" }
+          Write-Host "nosavedir ok"
           # 2b. 原生指纹窗口模块（web-ui 1:1 纯原生重写，字段与 collectFp/applyUiExtra 对齐）
           $fph = Get-Content launcher\cpp\fp_ui.h -Raw
           foreach ($s in @("FpFormData", "proxyPass", "mediaDevices", "webglMeta", "webgpu",
@@ -305,9 +303,9 @@ jobs:
             Write-Host "align comment ok: $s"
           }
           # 2e. 主窗口几何（760x660，LISTVIEW 三列，批量行/日志行/新建列互不重叠）
-          #     顶端为全局目录只读展示（修改请进指纹配置 A2 行按指纹独立设置）
+          #     无全局目录区：路径只在指纹配置 A2 行按指纹独立设置（Eff* 解析）
           $mcpp = Get-Content launcher\cpp\main.cpp -Raw
-          foreach ($s in @("全局数据目录:", "全局浏览器目录:", "ES_READONLY", "指纹配置顶端",
+          foreach ($s in @("12, 12, 470, 330", "494, 12, 100", "606, 12, 100",
                            "760, 660", "WC_LISTVIEWW", "LVS_REPORT", "LVS_EX_CHECKBOXES",
                            "LVS_EX_FULLROWSELECT", "LVN_ITEMCHANGED", "NM_CUSTOMDRAW",
                            "kUiBg", "kUiPanel", "kUiSuccess", "kUiMuted",
@@ -323,11 +321,16 @@ jobs:
             if ($mcpp -notmatch [regex]::Escape($s)) { throw "main-window rect '$s' missing in main.cpp" }
             Write-Host "mainrect ok: $s"
           }
-          # 右列纵向：启动92/关闭130/刷新168/指纹206/新建236/输入260/新建按钮292（A2 行后列表区下移 14）
-          foreach ($s in @("494, 92, 100", "494, 130, 100", "494, 168, 100", "494, 206, 100",
+          # 右列纵向：启动12/关闭50/刷新88/指纹126/日志目录12/新建236/输入260/新建按钮292
+          foreach ($s in @("494, 12, 100", "494, 50, 100", "494, 88, 100", "494, 126, 100",
                            "494, 260, 212", "494, 292, 100")) {
             if ($mcpp -notmatch [regex]::Escape($s)) { throw "right-col rect '$s' missing in main.cpp" }
             Write-Host "rightcol ok: $s"
+          }
+          # 主窗口无全局目录残留（DATADIR/BROWSERDIR/SAVEDIR 控件与读写已删除）
+          foreach ($s in @("IDC_DATADIR", "IDC_BROWSERDIR", "IDC_SAVEDIR", "hDataDir", "hBrowserDir")) {
+            if ($mcpp -match [regex]::Escape($s)) { throw "legacy global-dir symbol '$s' still in main.cpp" }
+            Write-Host "noglobaldir ok: $s"
           }
           # 旧 LISTBOX 残留不得出现（LB_ADDSTRING/LB_GETTEXT/LB_RESETCONTENT/LB_GETCURSEL/LBS_NOTIFY）
           foreach ($s in @("LB_ADDSTRING", "LB_GETTEXT", "LB_RESETCONTENT", "LB_GETCURSEL", "LBS_NOTIFY")) {
