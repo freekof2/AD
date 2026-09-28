@@ -343,8 +343,9 @@ jobs:
           }
           # 2e. 主窗口几何（760x660，LISTVIEW 三列，批量行/日志行/新建列互不重叠）
           #     无全局目录区：路径只在指纹配置 A2 行按指纹独立设置（Eff* 解析）
+          #     右列操作按钮靠右对齐（x=606，无打开日志目录按钮；主窗口无 DEBUG 日志框）
           $mcpp = Get-Content launcher\cpp\main.cpp -Raw
-          foreach ($s in @("12, 12, 470, 330", "494, 12, 100", "606, 12, 100",
+          foreach ($s in @("12, 12, 470, 330", "606, 12, 100",
                            "760, 660", "WC_LISTVIEWW", "LVS_REPORT", "LVS_EX_CHECKBOXES",
                            "LVS_EX_FULLROWSELECT", "LVN_ITEMCHANGED", "NM_CUSTOMDRAW",
                            "kUiBg", "kUiPanel", "kUiSuccess", "kUiMuted",
@@ -354,17 +355,23 @@ jobs:
             if ($mcpp -notmatch [regex]::Escape($s)) { throw "main-window symbol '$s' missing in main.cpp" }
             Write-Host "mainwin ok: $s"
           }
-          # 批量行 y=384 高 30（底 414）vs 日志说明 y=416：无重叠；三批量按钮 88 宽 + ClearLog 100 宽全在 760 内
-          foreach ($s in @("292, 384, 88", "396, 384, 88", "500, 384, 88", "606, 384, 100",
-                           "12, 416, 694", "12, 440, 694", "12, 598, 694")) {
+          # 批量行 y=384 高 30（底 414）；状态条 y=598；主窗口无 DEBUG 日志框（日志只写 debug.log 文件）
+          foreach ($s in @("292, 384, 88", "396, 384, 88", "500, 384, 88",
+                           "12, 598, 694")) {
             if ($mcpp -notmatch [regex]::Escape($s)) { throw "main-window rect '$s' missing in main.cpp" }
             Write-Host "mainrect ok: $s"
           }
-          # 右列纵向：启动12/关闭50/刷新88/指纹126/日志目录12/新建236/输入260/新建按钮292
-          foreach ($s in @("494, 12, 100", "494, 50, 100", "494, 88, 100", "494, 126, 100",
-                           "494, 260, 212", "494, 292, 100")) {
+          # 右列纵向靠右对齐：启动12/关闭50/刷新88/指纹126/新建按钮292/新建输入260
+          foreach ($s in @("606, 12, 100", "606, 50, 100", "606, 88, 100", "606, 126, 100",
+                           "494, 260, 212", "606, 292, 100")) {
             if ($mcpp -notmatch [regex]::Escape($s)) { throw "right-col rect '$s' missing in main.cpp" }
             Write-Host "rightcol ok: $s"
+          }
+          # DEBUG 日志框及相关符号已删除（无清空按钮/日志框控件/窗口回显刷新；日志只写 debug.log 文件）
+          foreach ($s in @("IDC_OPENDIR", "IDC_CLEARLOG", "IDC_LOG", "RefreshLogView", "AppendLog", "g.hLog",
+                            "hLog =", "打开日志目录", "清空日志窗", "12, 416, 694", "12, 440, 694")) {
+            if ($mcpp -match [regex]::Escape($s)) { throw "removed log view '$s' still in main.cpp" }
+            Write-Host "nologview ok: $s gone"
           }
           # 主窗口无全局目录残留（DATADIR/BROWSERDIR/SAVEDIR 控件与读写已删除）
           foreach ($s in @("IDC_DATADIR", "IDC_BROWSERDIR", "IDC_SAVEDIR", "hDataDir", "hBrowserDir")) {

@@ -80,7 +80,7 @@ struct ProcHandle {
     DWORD  pid = 0;
 };
 
-// ---------- DEBUG 日志（写文件 debug.log + 可选窗口回显） ----------
+// ---------- DEBUG 日志（只写 debug.log 文件，主窗口无日志框） ----------
 class DebugLog {
 public:
     static DebugLog& Instance() {
@@ -164,7 +164,7 @@ struct AppState {
     std::map<std::wstring, ProcHandle> procs; // profile -> 进程
     std::map<std::wstring, int>        ports; // profile -> 调试端口（持久化 ports.json）
     std::mutex mu;
-    HWND hMain = NULL, hList = NULL, hLog = NULL, hStatus = NULL;
+    HWND hMain = NULL, hList = NULL, hStatus = NULL;
     HWND hSearch = NULL;   // 环境搜索框（对齐 web-ui globalSearch）
     std::wstring searchFilter; // 搜索关键字（刷新列表时过滤）
     std::map<std::wstring, bool> checked; // 多选勾选态（LISTVIEW 复选框镜像，批量操作用）

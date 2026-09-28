@@ -1,4 +1,4 @@
-// main.cpp — Win32 原生窗口：profile 列表 + 启动/关闭/新建 + 目录修改 + DEBUG 日志窗
+// main.cpp — Win32 原生窗口：profile 列表 + 启动/关闭/新建（无 DEBUG 日志框，日志只写 debug.log）
 // 离线版：启动时经 fingerprint 模块注入 --extended-parameters（static/dynamic/cookies
 // 三文件指针 + UserId + fbcc 确定性噪声种子），只读写本地缓存目录，不做任何网络 IO。
 // 指纹配置原生窗口见 fp_ui.h/cpp（web-ui/index.html 单页版 1:1 纯原生重写，Tab 5 页）。
@@ -11,7 +11,6 @@ static AppState g;
 
 enum {
     IDC_LIST = 100, IDC_START, IDC_STOP, IDC_REFRESH, IDC_NEWNAME, IDC_CREATE,
-    IDC_LOG, IDC_CLEARLOG, IDC_OPENDIR,
     IDC_SEARCH, IDC_CHECKALL, IDC_BSTART, IDC_BSTOP, IDC_BDEL, IDC_FPCONFIG,
     IDC_GROUPLBL,
     TIMER_POLL = 1,
@@ -23,49 +22,11 @@ static std::wstring GetEdit(HWND h) {
     if (n > 0) ::GetWindowTextW(h, &s[0], n + 1);
     return s;
 }
-static void AppendLog(const std::wstring& s) {
-    if (!g.hLog) return;
-    int n = ::GetWindowTextLengthW(g.hLog);
-    ::SendMessageW(g.hLog, EM_SETSEL, n, n);
-    std::wstring line = s + L"\r\n";
-    ::SendMessageW(g.hLog, EM_REPLACESEL, 0, (LPARAM)line.c_str());
-}
 static void SetStatus(const std::wstring& s) {
     if (g.hStatus) ::SetWindowTextW(g.hStatus, s.c_str());
 }
 
-// 从 debug.log 尾部刷新日志窗（避免跨线程写控件）
-static void RefreshLogView() {
-    if (!g.hLog || !::IsWindow(g.hLog)) return;
-    LOG(L"probe logview-enter");
-    std::wstring path = DebugLog::Instance().Path();
-    if (path.empty()) return;
-    HANDLE h = ::CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
-        NULL, OPEN_EXISTING, 0, NULL);
-    if (h == INVALID_HANDLE_VALUE) return;
-    LARGE_INTEGER sz{};
-    ::GetFileSizeEx(h, &sz);
-    const long long tail = 64 * 1024;
-    long long off = sz.QuadPart > tail ? sz.QuadPart - tail : 0;
-    LARGE_INTEGER li{}; li.QuadPart = off;
-    ::SetFilePointerEx(h, li, NULL, FILE_BEGIN);
-    DWORD left = (DWORD)(sz.QuadPart - off);
-    std::string buf((size_t)left, 0);
-    DWORD got = 0;
-    if (left > 0) ::ReadFile(h, &buf[0], left, &got, NULL);
-    ::CloseHandle(h);
-    buf.resize(got);
-    std::wstring w = W(buf);
-    // 只取最后 ~40 行
-    int lines = 0;
-    size_t p = w.size();
-    while (p > 0 && lines < 40) { if (w[--p] == L'\n') lines++; }
-    if (p > 0) w = w.substr(p + 1);
-    ::SetWindowTextW(g.hLog, w.c_str());
-    ::SendMessageW(g.hLog, EM_SETSEL, -1, -1);
-    ::SendMessageW(g.hLog, EM_SCROLLCARET, 0, 0);
-    LOG(L"probe logview-done");
-}
+// DEBUG 日志只写 debug.log 文件（主窗口无日志框；定时器只刷环境列表）
 
 static void RefreshList() {
     HWND hList = g.hList;
@@ -592,34 +553,28 @@ static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
             c2.cx = 96;
             ::SendMessageW(g.hList, LVM_INSERTCOLUMNW, 2, (LPARAM)&c2);
         }
-        mkBtn(IDC_START, L"启动", 494, 12, 100);
-        mkBtn(IDC_STOP, L"关闭", 494, 50, 100);
-        mkBtn(IDC_REFRESH, L"刷新", 494, 88, 100);
-        mkBtn(IDC_FPCONFIG, L"指纹配置", 494, 126, 100);
-        mkBtn(IDC_OPENDIR, L"打开日志目录", 606, 12, 100);
+        // 右列操作按钮（靠右对齐 x=606）：启动/关闭/刷新/指纹配置/新建（无日志目录按钮）
+        mkBtn(IDC_START, L"启动", 606, 12, 100);
+        mkBtn(IDC_STOP, L"关闭", 606, 50, 100);
+        mkBtn(IDC_REFRESH, L"刷新", 606, 88, 100);
+        mkBtn(IDC_FPCONFIG, L"指纹配置", 606, 126, 100);
         ::CreateWindowW(L"STATIC", L"新建环境:", WS_CHILD | WS_VISIBLE, 494, 236, 100, 22, h, NULL, hi, NULL);
         ::CreateWindowW(L"EDIT", L"", WS_CHILD | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL,
             494, 260, 212, 26, h, (HMENU)(INT_PTR)IDC_NEWNAME, hi, NULL);
-        mkBtn(IDC_CREATE, L"新建", 494, 292, 100);
-        // 搜索 + 批量行（y=386，互不重叠；窗口 760 宽，间隙 ≥16）
+        mkBtn(IDC_CREATE, L"新建", 606, 292, 100);
+        // 搜索 + 批量行（y=386，互不重叠；窗口 760 宽，间隙 ≥16；主窗口无日志框）
         ::CreateWindowW(L"STATIC", L"搜索:", WS_CHILD | WS_VISIBLE, 12, 388, 40, 22, h, NULL, hi, NULL);
         g.hSearch = ::CreateWindowW(L"EDIT", L"", WS_CHILD | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL,
             56, 386, 220, 24, h, (HMENU)(INT_PTR)IDC_SEARCH, hi, NULL);
         mkBtn(IDC_BSTART, L"批量启动", 292, 384, 88);
         mkBtn(IDC_BSTOP, L"批量停止", 396, 384, 88);
         mkBtn(IDC_BDEL, L"批量删除", 500, 384, 88);
-        mkBtn(IDC_CLEARLOG, L"清空日志窗", 606, 384, 100);
-        ::CreateWindowW(L"STATIC", L"DEBUG 日志（debug.log 尾部；单击复选框多选，双击行=选中，多选后用批量按钮）:",
-            WS_CHILD | WS_VISIBLE, 12, 416, 694, 22, h, NULL, hi, NULL);
-        g.hLog = ::CreateWindowW(L"EDIT", L"",
-            WS_CHILD | WS_VISIBLE | WS_BORDER | WS_VSCROLL | ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL,
-            12, 440, 694, 150, h, (HMENU)(INT_PTR)IDC_LOG, hi, NULL);
         g.hStatus = ::CreateWindowW(L"STATIC", L"就绪", WS_CHILD | WS_VISIBLE, 12, 598, 694, 22, h, NULL, hi, NULL);
         LOG(L"probe wmcreate ctrls-done");
         ::SetTimer(h, TIMER_POLL, 2000, NULL);
         LOG(L"probe wmcreate timer-ok");
         LOG(L"probe wmcreate refresh-pre");
-        RefreshList(); RefreshLogView();
+        RefreshList();
         LOG(L"probe wmcreate refresh-done");
         return 0;
     }
@@ -627,9 +582,9 @@ static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
         int id = LOWORD(wp);
         int code = HIWORD(wp);
         (void)code; // code 仅 IDC_SEARCH / IDC_LIST 分支使用，其余分支忽略
-        if (id == IDC_START) { OnStart(); RefreshList(); RefreshLogView(); }
-        else if (id == IDC_STOP) { OnStop(); RefreshList(); RefreshLogView(); }
-        else if (id == IDC_REFRESH) { RefreshList(); RefreshLogView(); SetStatus(L"已刷新"); }
+        if (id == IDC_START) { OnStart(); RefreshList(); }
+        else if (id == IDC_STOP) { OnStop(); RefreshList(); }
+        else if (id == IDC_REFRESH) { RefreshList(); SetStatus(L"已刷新"); }
         else if (id == IDC_FPCONFIG) {
             std::wstring name = SelectedProfile();
             if (name.empty()) { SetStatus(L"请先选中一个环境再点指纹配置"); break; }
@@ -640,15 +595,15 @@ static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
                 LOG(L"指纹已保存 " + name);
                 SetStatus(L"指纹已保存 " + name);
             }
-            RefreshList(); RefreshLogView();
+            RefreshList();
         }
-        else if (id == IDC_BSTART) { OnBatchStart(); RefreshList(); RefreshLogView(); }
-        else if (id == IDC_BSTOP) { OnBatchStop(); RefreshList(); RefreshLogView(); }
+        else if (id == IDC_BSTART) { OnBatchStart(); RefreshList(); }
+        else if (id == IDC_BSTOP) { OnBatchStop(); RefreshList(); }
         else if (id == IDC_BDEL) {
             // 二次确认（对齐 web-ui confirm）
             if (::MessageBoxW(h, L"确定删除勾选的环境吗？目录将被整体删除。", L"批量删除",
                     MB_YESNO | MB_ICONWARNING) == IDYES) {
-                OnBatchDel(); RefreshList(); RefreshLogView();
+                OnBatchDel(); RefreshList();
             }
         }
         else if (id == IDC_SEARCH && code == EN_CHANGE) {
@@ -705,15 +660,10 @@ static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
             ::SetWindowTextW(::GetDlgItem(h, IDC_NEWNAME), L"");
             RefreshList(); SetStatus(L"已新建 " + name);
         }
-        else if (id == IDC_CLEARLOG) { ::SetWindowTextW(g.hLog, L""); }
-        else if (id == IDC_OPENDIR) {
-            std::wstring d = AppDir();
-            ::ShellExecuteW(NULL, L"open", d.c_str(), NULL, NULL, SW_SHOW);
-        }
         return 0;
     }
     case WM_TIMER:
-        RefreshList(); RefreshLogView();
+        RefreshList();
         return 0;
     case WM_NOTIFY: {
         NMHDR* nm = (NMHDR*)lp;
@@ -822,7 +772,6 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE, LPWSTR, int show) {
     ::UpdateWindow(g.hMain);
     LOG(L"probe ShowWindow ok");
     LOG(L"probe http-thread-start");
-    AppendLog(L"日志文件：" + DebugLog::Instance().Path());
 
     // 轻量 HTTP 离线接口（给同目录 web-ui 用 + 给 RPA 用），失败不影响主窗口。
     // 全是本机文件读写，不做任何出站网络。路由分两层：
