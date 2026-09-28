@@ -80,7 +80,7 @@ jobs:
           if ($pdb) { Write-Host "symbols: $($pdb.FullName) ($($pdb.Length) bytes)" }
           else { Write-Host "warning: no pdb emitted" }
 
-      - name: WebRTC mode unit tests
+      - name: Fingerprint WebRTC/WebGL/timezone unit tests
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
@@ -88,7 +88,7 @@ jobs:
           $testExe = Get-ChildItem tests\x64\Release\fp_webrtc_test.exe -ErrorAction Stop
           & $testExe.FullName
           if ($LASTEXITCODE -ne 0) { throw "WebRTC mode unit test failed: $LASTEXITCODE" }
-          Write-Host "WebRTC mode tests passed"
+          Write-Host "Fingerprint mode tests passed"
 
       - name: Check web-ui required files
         shell: pwsh
@@ -309,10 +309,18 @@ jobs:
           foreach ($s in @("webrtcIp", "F_WEBRTCIP", "FpSaveDynamicJson", "WebRTCAddress", "DisableWebRTC", "代理模式缺少有效 IP", "当前选择 forward", "切换到 proxy 模式后保存")) {
             if ($fpc2 -notmatch [regex]::Escape($s)) { throw "WebRTC persistence contract '$s' missing in fp_ui.cpp" }
           }
+          foreach ($s in @("FpBackfillWebGl", "webgl_config", "UNMASKED_VENDOR_WEBGL", "GPUAdapterInfo")) {
+            if ($fpc2 -notmatch [regex]::Escape($s)) { throw "WebGL metadata contract '$s' missing in fp_ui.cpp" }
+          }
+          foreach ($s in @("FpNormalizeTimezone", "FpBuildTimeZoneSunParam", "TimeZone")) {
+            if ($fpc2 -notmatch [regex]::Escape($s)) { throw "timezone save contract '$s' missing in fp_ui.cpp" }
+          }
           $rtcFpCpp = Get-Content launcher\cpp\fingerprint.cpp -Raw
           foreach ($s in @("webrtc.mode=", "FpBuildWebRtcSunParams", "sunBrowserParams.WebRTCAddress",
-                           "ext.webrtc.disabled=", "webrtc-ip-handling-policy=disable_non_proxied_udp")) {
-            if ($rtcFpCpp -notmatch [regex]::Escape($s)) { throw "WebRTC launch/diagnostic contract '$s' missing" }
+                           "ext.webrtc.disabled=", "FpBuildTimeZoneSunParam", "WebGLFP",
+                           "FpBuildWebGlConfigJson", "ext.settings.timezone=",
+                           "webrtc-ip-handling-policy=disable_non_proxied_udp")) {
+            if ($rtcFpCpp -notmatch [regex]::Escape($s)) { throw "fingerprint launch/diagnostic contract '$s' missing" }
           }
           Write-Host "webrtc persistence contract ok"
           # (b) 地理三态 ask/allow/block + 时区 Asia/Shanghai 默认 + 默认经纬度
@@ -348,7 +356,7 @@ jobs:
           Write-Host "fonts split ok"
           # 2c. vcxproj 必须编译新模块
           $vcx = Get-Content launcher\cpp\SunLauncher.vcxproj -Raw
-          foreach ($s in @("fp_ui.cpp", "fp_ui.h", "fp_webrtc.h")) {
+          foreach ($s in @("fp_ui.cpp", "fp_ui.h", "fp_webrtc.h", "fp_browser_config.h")) {
             if ($vcx -notmatch [regex]::Escape($s)) { throw "missing '$s' in vcxproj" }
             Write-Host "vcxproj ok: $s"
           }

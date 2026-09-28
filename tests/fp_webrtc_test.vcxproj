@@ -42,6 +42,7 @@
   <ItemGroup>
     <ClCompile Include="fp_webrtc_test.cpp" />
     <ClInclude Include="..\launcher\cpp\fp_webrtc.h" />
+    <ClInclude Include="..\launcher\cpp\fp_browser_config.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
 </Project>

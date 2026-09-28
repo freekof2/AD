@@ -1,4 +1,5 @@
 #include "fp_webrtc.h"
+#include "fp_browser_config.h"
 #include <iostream>
 
 static int Check(bool condition, int line) {
@@ -46,6 +47,20 @@ int main() {
 
     const FpWebRtcResolution disableUdp = FpResolveWebRtc(L"disable_udp", L"");
     CHECK(!disableUdp.disableWebRtc && disableUdp.disableUdp);
+
+    CHECK(FpNormalizeTimezone("America/Los Angeles") == "America/Los_Angeles");
+    CHECK(FpBuildTimeZoneSunParam("America/Los Angeles") ==
+        "\"TimeZone\":\"America/Los_Angeles\"");
+    CHECK(FpBuildTimeZoneSunParam("").empty());
+    CHECK(FpBrowserPlatformTag("Win32") == "Other");
+    CHECK(FpBrowserPlatformTag("MacIntel") == "MacOS");
+    CHECK(FpBrowserPlatformTag("iPhone") == "iPhone");
+    CHECK(FpBrowserPlatformTag("Linux armv8I") == "Android");
+    CHECK(FpBuildWebGlConfigJson("Google Inc.", "ANGLE Renderer", "0", "", "") ==
+        "{\"UNMASKED_VENDOR_WEBGL\":\"Google Inc.\",\"UNMASKED_RENDERER_WEBGL\":\"ANGLE Renderer\",\"SUPPORTED_EXTENSIONS\":[]}");
+    CHECK(FpBuildWebGlConfigJson("Google Inc.", "ANGLE Renderer", "1", "amd", "gcn-5") ==
+        "{\"UNMASKED_VENDOR_WEBGL\":\"Google Inc.\",\"UNMASKED_RENDERER_WEBGL\":\"ANGLE Renderer\",\"GPUAdapterInfo\":{\"vendor\":\"amd\",\"architecture\":\"gcn-5\"},\"SUPPORTED_EXTENSIONS\":[]}");
+    CHECK(FpBuildWebGlConfigJson("", "ANGLE Renderer", "1", "amd", "gcn-5").empty());
 
     ::WSACleanup();
     return 0;

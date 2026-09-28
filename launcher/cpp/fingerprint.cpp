@@ -3,6 +3,7 @@
 // 不做任何网络 IO；只读写 <dataDir>/<profile>/ 下的文件并拼启动命令行。
 #include "fingerprint.h"
 #include "fp_webrtc.h"
+#include "fp_browser_config.h"
 #include <tlhelp32.h>
 
 const wchar_t* FP_C1 = L"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -539,6 +540,13 @@ std::string FpJsonSet(const std::string& json, const std::string& key, const std
     return o;
 }
 
+static std::wstring FpWebGlProfilePath(const std::wstring& profileDir,
+    const std::string& fbcc, const std::string& staticJson) {
+    std::string platformRaw = FpJsonGet(staticJson, "Platform");
+    std::string platform = platformRaw.empty() ? "Win32" : N(FpJsonUnquote(platformRaw));
+    return profileDir + L"\\" + W(FpMd5Hex(fbcc + "_webgl") + "_" + FpBrowserPlatformTag(platform));
+}
+
 // ================= 启动命令行组装 =================
 // 冲突规则（以缓存为准，见 fingerprint.h）：
 //  - UserId / ProxyChain / DeviceName / MacAddress / MediaDevices 等：只从 static 文件读，
@@ -668,6 +676,57 @@ std::wstring FpBuildCmdline(const std::wstring& profileDir, int port,
         if (rtcParams.size() >= 2)
             sp += "," + rtcParams.substr(1, rtcParams.size() - 2);
     }
+    // official setTimezone 写 sunBrowserParams.TimeZone；static 中的 timezone 小写键
+    // 单独存在不会让浏览器 timezone override 生效。
+    {
+        std::string autoMode = FpJsonGet(staticJson, "automatic_timezone");
+        if (autoMode.empty()) autoMode = FpJsonGet(staticJson, "tzAuto");
+        if (autoMode.empty()) autoMode = FpJsonGet(dynamicJson, "automatic_timezone");
+        if (autoMode.empty()) autoMode = FpJsonGet(dynamicJson, "tzAuto");
+        const bool timezoneByIp = (autoMode == "1" || autoMode == "\"1\"");
+        std::string raw = FpJsonGet(staticJson, "TimeZone");
+        if (raw.empty() || raw == "\"\"") raw = FpJsonGet(dynamicJson, "TimeZone");
+        if ((raw.empty() || raw == "\"\"") && !timezoneByIp) {
+            raw = FpJsonGet(staticJson, "timezone");
+            if (raw.empty() || raw == "\"\"") raw = FpJsonGet(dynamicJson, "timezone");
+        }
+        if (!raw.empty() && raw != "\"\"") {
+            const std::string timezone = FpNormalizeTimezone(N(FpJsonUnquote(raw)));
+            const std::string fragment = FpBuildTimeZoneSunParam(timezone);
+            if (!fragment.empty()) sp += "," + fragment;
+        }
+    }
+    // official WebGLTask writes a per-profile WebGLFP JSON file and injects its path
+    // in sunBrowserParams. A lowercase static webgl_config alone is not consumed by WebGL.
+    {
+        std::string mode = N(FpJsonUnquote(FpJsonGet(staticJson, "webgl")));
+        std::wstring webglPath = FpWebGlProfilePath(profileDir, fbcc, staticJson);
+        bool useWebglFile = false;
+        if (mode == "2" || mode == "3") {
+            std::string cfg = FpJsonGet(staticJson, "webgl_config");
+            std::string webgpu = FpJsonGet(cfg, "webgpu");
+            auto strVal = [](const std::string& j, const char* key) {
+                return N(FpJsonUnquote(FpJsonGet(j, key))); };
+            std::string json = FpBuildWebGlConfigJson(
+                strVal(cfg, "unmasked_vendor"), strVal(cfg, "unmasked_renderer"),
+                strVal(webgpu, "webgpu_switch"), strVal(webgpu, "gpu_adapterinfo_vendor"),
+                strVal(webgpu, "gpu_adapterinfo_architecture"));
+            if (!json.empty()) {
+                if (FpWriteTextFile(webglPath, json)) {
+                    useWebglFile = true;
+                    LOG(L"WebGLFP 配置已生成 " + webglPath);
+                } else {
+                    LOG(L"WebGLFP 配置写入失败 " + webglPath);
+                }
+            }
+        }
+        // ui-less/official profiles may have only their already generated WebGLFP file.
+        if (mode != "0" && !useWebglFile &&
+            ::GetFileAttributesW(webglPath.c_str()) != INVALID_FILE_ATTRIBUTES)
+            useWebglFile = true;
+        if (useWebglFile)
+            sp += ",\"WebGLFP\":\"" + JsonEscapeStr(N(webglPath)) + "\"";
+    }
     if (attr != INVALID_FILE_ATTRIBUTES)
         sp += ",\"CookiesFile\":\"" + JsonEscapeStr(N(wCookies)) + "\"";
     // 运行时噪声种子：官方 canvasId?canvasId:fbccId；离线无 canvasId，直接用 fbccId
@@ -682,7 +741,7 @@ std::wstring FpBuildCmdline(const std::wstring& profileDir, int port,
     static const char* kProtected[] = { "UserId","StaticConfig","DynamicConfig","CookiesFile",
         "CanvasMark","WebGLMark","AudioFp","ClientRectFp","TimeZone","Geoposition",
         "WebRTCAddress","DisableWebRTC","ProxyChain","DeviceName","MacAddress",
-        "MediaDevices","TTSEngines","Langs","AcceptLang", NULL };
+        "MediaDevices","TTSEngines","Langs","AcceptLang","WebGLFP", NULL };
     static const char* kExtraAllow[] = {
         // 官方 sunBrowserParams 常用小标量（与 main.min.js set* 系列写入键对齐）
         "DisableContainer","LoadExtensionErrorBox","ForceProcessExit","StartTime",
@@ -945,6 +1004,10 @@ std::string FpDiagDumpLaunch(const std::wstring& exe, const std::wstring& workDi
             std::string wrAddress = FpJsonGet(dec, "WebRTCAddress");
             o << "\n[diag] ext.webrtc.disabled=" << (wrDisabled.empty() ? "(absent)" : wrDisabled)
               << " address=" << (!wrAddress.empty() && wrAddress != "\"\"" ? "set" : "empty");
+            std::string tz = FpJsonGet(dec, "TimeZone");
+            std::string webglFp = FpJsonGet(dec, "WebGLFP");
+            o << "\n[diag] ext.settings.timezone=" << (tz.empty() || tz == "\"\"" ? "empty" : tz)
+              << " webglFP=" << (!webglFp.empty() && webglFp != "\"\"" ? "set" : "empty");
         } else {
             o << "\n[diag] ext.decode=FAIL(!!换表/编码异常，浏览器会拒绝指纹)";
         }

@@ -2,6 +2,7 @@
 #include "fp_ui.h"
 #include "fingerprint.h"
 #include "fp_webrtc.h"
+#include "fp_browser_config.h"
 #include <ctime>
 #include <shlobj.h>  // SHBrowseForFolderW（数据目录浏览）
 #include <commdlg.h> // GetOpenFileNameW（浏览器 SunBrowser.exe 选择）
@@ -288,6 +289,60 @@ bool FpFormFromUiJson(const std::string& json, FpFormData& f) {
     return true;
 }
 
+static std::wstring FpWebGlProfilePath(const std::wstring& profileDir,
+    const std::wstring& profileName, const std::string& staticJson) {
+    std::string platformRaw = FpJsonGet(staticJson, "Platform");
+    std::string platform = platformRaw.empty() ? "Win32" : N(FpJsonUnquote(platformRaw));
+    const std::string fbcc = FpFbccIdOf(profileName);
+    const std::string file = FpMd5Hex(fbcc + "_webgl") + "_" + FpBrowserPlatformTag(platform);
+    return profileDir + L"\\" + W(file);
+}
+
+static void FpBackfillWebGl(FpFormData& f, const std::string& ui,
+    const std::string& staticJson, const std::wstring& profileDir,
+    const std::wstring& profileName) {
+    auto missing = [](const std::string& value) { return value.empty() || value == "\"\""; };
+    const std::string uiMeta = FpJsonGet(ui, "webglMeta");
+    const std::string uiVendor = FpJsonGet(ui, "vendor");
+    const std::string uiRenderer = FpJsonGet(ui, "renderer");
+    const std::string uiGpu = FpJsonGet(ui, "webgpu");
+    const std::string uiGpuVendor = FpJsonGet(ui, "gpuVendor");
+    const std::string uiGpuArch = FpJsonGet(ui, "gpuArch");
+    const std::string staticMode = FpJsonGet(staticJson, "webgl");
+    const std::string staticConfig = FpJsonGet(staticJson, "webgl_config");
+    std::string webglFile;
+    FpReadTextFile(FpWebGlProfilePath(profileDir, profileName, staticJson), webglFile);
+    if (!webglFile.empty() && webglFile.front() != '{') webglFile.clear();
+
+    if (missing(uiMeta)) {
+        if (staticMode == "\"0\"" || staticMode == "0") f.webglMeta = L"real";
+        else if (staticMode == "\"2\"" || staticMode == "2" ||
+                 staticMode == "\"3\"" || staticMode == "3") f.webglMeta = L"custom";
+        else if (!staticConfig.empty() || !webglFile.empty()) f.webglMeta = L"custom";
+    }
+    std::string vendor = FpJsonGet(staticConfig, "unmasked_vendor");
+    std::string renderer = FpJsonGet(staticConfig, "unmasked_renderer");
+    if (missing(vendor)) vendor = FpJsonGet(webglFile, "UNMASKED_VENDOR_WEBGL");
+    if (missing(renderer)) renderer = FpJsonGet(webglFile, "UNMASKED_RENDERER_WEBGL");
+    if (missing(uiVendor) && !missing(vendor)) f.vendor = WJ(vendor);
+    if (missing(uiRenderer) && !missing(renderer)) f.renderer = WJ(renderer);
+
+    const std::string staticWebgpu = FpJsonGet(staticConfig, "webgpu");
+    const std::string staticSwitch = FpJsonGet(staticWebgpu, "webgpu_switch");
+    std::string gpuVendor = FpJsonGet(staticWebgpu, "gpu_adapterinfo_vendor");
+    std::string gpuArch = FpJsonGet(staticWebgpu, "gpu_adapterinfo_architecture");
+    const std::string fileAdapter = FpJsonGet(webglFile, "GPUAdapterInfo");
+    if (missing(gpuVendor)) gpuVendor = FpJsonGet(fileAdapter, "vendor");
+    if (missing(gpuArch)) gpuArch = FpJsonGet(fileAdapter, "architecture");
+    if (missing(uiGpu)) {
+        if (staticSwitch == "\"0\"" || staticSwitch == "0") f.webgpu = L"disabled";
+        else if (!missing(gpuVendor) || !missing(gpuArch)) f.webgpu = L"custom";
+        else f.webgpu = L"follow_webgl";
+    }
+    if (missing(uiGpuVendor) && !missing(gpuVendor)) f.gpuVendor = WJ(gpuVendor);
+    if (missing(uiGpuArch) && !missing(gpuArch)) f.gpuArch = WJ(gpuArch);
+}
+
 // ---- asar 1:1 字体表（main.min.js 内嵌 u[] 181 条 / c[] 12 条，顺序保留，含 "Caurier Regular" 笔误）----
 // 用途见下方 FpBuildFakefontsJson / FpBuildDisabledFontsJson。
 // 注意：表定义在文件靠后位置（kTz 附近），此处函数仅声明，定义见表后。
@@ -345,10 +400,9 @@ std::string FpFormToFpConfig(const FpFormData& f) {
         o += ",\"WebRTCStun\":\"stun:stun.l.google.com:19302\",\"WebRTCTurn\":\"stun:stun.l.google.com:19302\"";
     o += ",\"tzAuto\":\"" + tz + "\"";
     if (tz == "0") {
-        std::string tzn = N(f.timezone);
-        for (auto& c : tzn) if (c == ' ') c = '_';
-        o += ",\"timezone\":\"" + tzn + "\"";
-    } else o += ",\"timezone\":\"\"";
+        std::string tzn = FpNormalizeTimezone(N(f.timezone));
+        o += ",\"timezone\":\"" + tzn + "\",\"TimeZone\":\"" + tzn + "\"";
+    } else o += ",\"timezone\":\"\",\"TimeZone\":\"\"";
     std::string loc = N(f.geoMode);
     std::string locSw = (f.geoIp == L"ip" ? "1" : "0");
     o += ",\"location\":\"" + loc + "\",\"location_switch\":\"" + locSw + "\"";
@@ -1425,16 +1479,28 @@ static LRESULT CALLBACK FpWndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
                             v.find_first_not_of("[ \t\r\n]") != std::string::npos)
                             w->form.swSpeech = true;
                     }
-                    // 时区/地理 static 后备：仅 ui 对应键缺失时（timezone/timezoneMode/geoMode/lat/lng/accuracy）
+                    // 时区/地理 static/dynamic 后备：ui 缺失时按 official TimeZone/automatic_timezone 回填。
                     std::string uiTz = FpJsonGet(ui, "timezone");
                     if (uiTz.empty() || uiTz == "\"\"") {
                         v = FpJsonGet(sj, "TimeZone");
+                        if (v.empty() || v == "\"\"") v = FpJsonGet(dj, "TimeZone");
+                        if (v.empty() || v == "\"\"") v = FpJsonGet(sj, "timezone");
+                        if (v.empty() || v == "\"\"") v = FpJsonGet(dj, "timezone");
                         if (!v.empty() && v.front() == '"') {
                             std::string t = N(WJ(v));
                             for (auto& c : t) if (c == '_') c = ' ';
                             w->form.timezone = W(t);
                             w->form.timezoneMode = L"custom";
                         }
+                    }
+                    std::string uiTzm = FpJsonGet(ui, "timezoneMode");
+                    if (uiTzm.empty() || uiTzm == "\"\"") {
+                        std::string za = FpJsonGet(sj, "automatic_timezone");
+                        if (za.empty()) za = FpJsonGet(sj, "tzAuto");
+                        if (za.empty()) za = FpJsonGet(dj, "automatic_timezone");
+                        if (za.empty()) za = FpJsonGet(dj, "tzAuto");
+                        if (za == "1" || za == "\"1\"") w->form.timezoneMode = L"ip";
+                        else if (za == "0" || za == "\"0\"") w->form.timezoneMode = L"custom";
                     }
                     // 地理模式 static 后备：GeolocationSetting ask/allow/block（ui 缺失时；
                     // official static 有该键但旧回填没读，导致无 ui 环境恒显示“允许”与实际相反）
@@ -1500,6 +1566,7 @@ static LRESULT CALLBACK FpWndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
                         else if (wrAddress.size() >= 2 && wrAddress.front() == '"' && wrAddress != "\"\"") w->form.webrtc = L"proxy";
                         else w->form.webrtc = L"forward";
                     }
+                    FpBackfillWebGl(w->form, ui, sj, dd, w->profile);
                 }
                 // ProxyChain 回填（ui 优先：ui 存档是用户最后一次保存的值；static 只在
                 // ui 缺代理字段时作为后备）。根因：旧逻辑 static 回填无条件覆盖 ui，
@@ -1981,10 +2048,22 @@ static LRESULT CALLBACK FpWndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
                     std::string uiTz = FpJsonGet(ui2, "timezone");
                     if (uiTz.empty() || uiTz == "\"\"") {
                         v = FpJsonGet(sj2, "TimeZone");
+                        if (v.empty() || v == "\"\"") v = FpJsonGet(dj2, "TimeZone");
+                        if (v.empty() || v == "\"\"") v = FpJsonGet(sj2, "timezone");
+                        if (v.empty() || v == "\"\"") v = FpJsonGet(dj2, "timezone");
                         if (!v.empty() && v.front() == '"') {
                             std::string t = N(WJ(v)); for (auto& c : t) if (c == '_') c = ' ';
                             w->form.timezone = W(t); w->form.timezoneMode = L"custom";
                         }
+                    }
+                    std::string uiTzm2 = FpJsonGet(ui2, "timezoneMode");
+                    if (uiTzm2.empty() || uiTzm2 == "\"\"") {
+                        std::string za = FpJsonGet(sj2, "automatic_timezone");
+                        if (za.empty()) za = FpJsonGet(sj2, "tzAuto");
+                        if (za.empty()) za = FpJsonGet(dj2, "automatic_timezone");
+                        if (za.empty()) za = FpJsonGet(dj2, "tzAuto");
+                        if (za == "1" || za == "\"1\"") w->form.timezoneMode = L"ip";
+                        else if (za == "0" || za == "\"0\"") w->form.timezoneMode = L"custom";
                     }
                     std::string uiGm2 = FpJsonGet(ui2, "geoMode");
                     if (uiGm2.empty() || uiGm2 == "\"\"") {
@@ -2044,6 +2123,7 @@ static LRESULT CALLBACK FpWndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
                         else if (wrAddress.size() >= 2 && wrAddress.front() == '"' && wrAddress != "\"\"") w->form.webrtc = L"proxy";
                         else w->form.webrtc = L"forward";
                     }
+                    FpBackfillWebGl(w->form, ui2, sj2, srcDir, w->profile);
                 }
                 std::string pc = FpJsonGet(sj2, "ProxyChain");
                 std::string uiH = FpJsonGet(ui2, "proxyHost"), uiP = FpJsonGet(ui2, "proxyPort");
@@ -2455,10 +2535,14 @@ static LRESULT CALLBACK FpWndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
                 if (dynamic.empty() || dynamic.front() != '{') dynamic = "{}";
                 dynamic = FpJsonSet(dynamic, "DisableWebRTC", rtc.disableWebRtc ? "true" : "false");
                 dynamic = FpJsonSet(dynamic, "WebRTCAddress", "\"" + JEsc(rtc.address) + "\"");
+                const std::string timezone = (w->form.timezoneMode == L"ip")
+                    ? "" : FpNormalizeTimezone(N(w->form.timezone));
+                dynamic = FpJsonSet(dynamic, "TimeZone", FpBrowserConfigJsonQuote(timezone));
                 bool okd = FpSaveDynamicJson(dd, dynamic);
                 std::wstring detail = L" mode=" + w->form.webrtc +
                     L" disabled=" + (rtc.disableWebRtc ? L"1" : L"0") +
-                    L" ip=" + (rtc.address.empty() ? L"(empty)" : rtc.address);
+                    L" ip=" + (rtc.address.empty() ? L"(empty)" : rtc.address) +
+                    L" timezone=" + (timezone.empty() ? L"(empty)" : W(timezone));
                 LOG(L"指纹保存 WebRTC dynamic " + std::wstring(okd ? L"OK" : L"FAIL") + detail + L" " + w->profile);
             }
             (void)okc;
