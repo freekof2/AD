@@ -784,6 +784,7 @@ struct FpWnd {
     std::wstring profile;
     bool saved = false;
     int scrollY = 0; // 当前滚动偏移（0..kFpContentH-可见高）
+    int cookieLenLogged = 0; // Cookie 框长度日志（只记空<->有内容转换，避免逐键刷屏）
 };
 
 static HWND FpMk(HWND p, const wchar_t* cls, const wchar_t* txt, DWORD st, int x, int y, int w, int h, int id, HINSTANCE hi) {
@@ -792,8 +793,14 @@ static HWND FpMk(HWND p, const wchar_t* cls, const wchar_t* txt, DWORD st, int x
 static void FpMkLabel(HWND p, FpWnd* w, int id, const wchar_t* t, int x, int y, int ww) {
     w->ctl[id - F_BASE] = FpMk(p, L"STATIC", t, SS_LEFT, x, y, ww, 20, id, (HINSTANCE)::GetWindowLongPtrW(p, GWLP_HINSTANCE));
 }
-static void FpMkEdit(HWND p, FpWnd* w, int id, int x, int y, int ww, int hh = 24) {
-    w->ctl[id - F_BASE] = FpMk(p, L"EDIT", L"", WS_BORDER | ES_AUTOHSCROLL, x, y, ww, hh, id, (HINSTANCE)::GetWindowLongPtrW(p, GWLP_HINSTANCE));
+static void FpMkEdit(HWND p, FpWnd* w, int id, int x, int y, int ww, int hh = 24, bool multi = false) {
+    DWORD st = WS_BORDER | ES_AUTOHSCROLL;
+    if (multi)
+        // Cookie 是 16KB+ JSON：单行框只能看见开头，粘贴多行 JSON 还会被吃掉换行，
+        // 表现为“改不了/保存丢失”。改成多行可编辑框（Enter=换行，Ctrl+V 全量粘贴）。
+        st = WS_BORDER | WS_VSCROLL | ES_LEFT | ES_AUTOHSCROLL | ES_AUTOVSCROLL |
+             ES_MULTILINE | ES_WANTRETURN;
+    w->ctl[id - F_BASE] = FpMk(p, L"EDIT", L"", st, x, y, ww, hh, id, (HINSTANCE)::GetWindowLongPtrW(p, GWLP_HINSTANCE));
     // EDIT 默认文本上限 30000 字符；cookie（16KB+）等大字段会被静默截断，
     // 截断的 JSON 下次读回即错位，表现为“无法保存”。统一放宽到 1MB。
     ::SendMessageW(w->ctl[id - F_BASE], EM_SETLIMITTEXT, 1048576, 0);
@@ -901,7 +908,7 @@ static void FpBuildPages(FpWnd* w, HWND p, HINSTANCE hi) {
     FpMkLabel(p, w, F_UA, L"User-Agent", 12, 160, 80);
     FpMkEdit(p, w, F_UA, 100, 158, 570);
     FpMkLabel(p, w, F_COOKIE, L"Cookie", 12, 194, 80);
-    FpMkEdit(p, w, F_COOKIE, 100, 192, 570, 100);
+    FpMkEdit(p, w, F_COOKIE, 100, 192, 570, 100, true);
     FpMkBtn(p, w, F_MERGECOOKIE, L"合并Cookie", 100, 298, 110);
     FpMkBtn(p, w, F_IMPORT, L"从目录导入指纹", 220, 298, 140);
     FpMkLabel(p, w, F_REMARK, L"备注", 12, 338, 80);
@@ -1140,6 +1147,8 @@ static void FpFill(FpWnd* w) {
     FpSet(C(F_PUSER), f.proxyUser);
     FpSet(C(F_PPASS), f.proxyPass);
     FpSet(C(F_COOKIE), f.cookie);
+    w->cookieLenLogged = (int)f.cookie.size();
+    LOG(L"指纹回填 cookie len=" + std::to_wstring(f.cookie.size()) + L" " + w->profile);
     FpSet(C(F_REMARK), f.remark);
     selByVal(F_WEBRTC, f.webrtc.empty() ? L"proxy" : f.webrtc);
     FpSet(C(F_WEBRTCIP), f.webrtcIp);
@@ -1348,6 +1357,10 @@ static LRESULT CALLBACK FpWndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
         bool hasUi = FpLoadUiExtra(dd, ui) && !ui.empty();
         if (hasUi) FpFormFromUiJson(ui, w->form);
         else FpFormDefaults(w->form, w->profile);
+        // Cookie 链路取证：ui 侧车长度 -> 文件长度 -> FpFill 写框长度 -> 保存时长度（四级对齐，
+        // 任一级为 0 就能定位是“没存上”还是“没读出来/被清空”）。
+        LOG(L"指纹载入 ui侧车 cookie len=" + std::to_wstring(w->form.cookie.size()) +
+            L" hasUi=" + std::to_wstring(hasUi ? 1 : 0) + L" " + w->profile);
         // A2 默认取全局生效值（必填，保存时以前缀判断落盘，见 FpFill/F_OK）
         if (w->form.profDataDir.empty()) w->form.profDataDir = effParent0;
         if (w->form.profBrowserDir.empty()) w->form.profBrowserDir = EffBrowserDir(w->cfg, w->profile);
@@ -1645,6 +1658,7 @@ static LRESULT CALLBACK FpWndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
                 }
                 out += "]";
                 if (!first) w->form.cookie = W(out);
+                LOG(L"指纹载入 文件cookie len=" + std::to_wstring(w->form.cookie.size()) + L" " + w->profile);
             }
         }
         FpFill(w);
@@ -1703,6 +1717,17 @@ static LRESULT CALLBACK FpWndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
         int id = LOWORD(wp);
         int code = HIWORD(wp);
         auto C = [&](int c) { return w->ctl[c - F_BASE]; };
+        // Cookie 框只记“空 <-> 有内容”两个边沿（逐键 EN_CHANGE 会刷屏）。
+        // 用途：定位“打开时有内容、点保存时却是空的”是程序写入还是用户清空/粘贴失败。
+        if (id == F_COOKIE && code == EN_CHANGE) {
+            int n = (int)::GetWindowTextLengthW(C(F_COOKIE));
+            if (n == 0 && w->cookieLenLogged > 0)
+                LOG(L"Cookie框变空（原 " + std::to_wstring(w->cookieLenLogged) + L" 字符） " + w->profile);
+            else if (n > 0 && w->cookieLenLogged == 0)
+                LOG(L"Cookie框写入内容 len=" + std::to_wstring(n) + L" " + w->profile);
+            w->cookieLenLogged = n;
+            return 0;
+        }
         if (id == F_CANCEL) { ::DestroyWindow(h); return 0; }
         // A2 浏览按钮：数据目录选父目录（SHBrowseForFolder）；浏览器目录选 SunBrowser.exe
         // 文件（GetOpenFileName），自动取其父目录填入。选后 FpCollect 同步表单。
@@ -2294,6 +2319,45 @@ static LRESULT CALLBACK FpWndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
             std::wstring dd = effParent + L"\\" + w->profile;
             ::CreateDirectoryW(effParent.c_str(), NULL);
             ::CreateDirectoryW(dd.c_str(), NULL);
+            // Cookie 保存守卫。根因：框内为空/非 JSON 数组时旧逻辑直接不写盘，
+            // 但 ui 存档仍被写成空 cookie，重开又从 cookies 文件读回旧值 -> “改了保存不了”。
+            // 现在：非法输入不覆盖既有 Cookie（回读磁盘值），并明确提示用户该怎么转格式。
+            {
+                auto trim = [](std::wstring s) {
+                    size_t a = s.find_first_not_of(L" \t\r\n");
+                    if (a == std::wstring::npos) return std::wstring();
+                    s = s.substr(a, s.find_last_not_of(L" \t\r\n") - a + 1);
+                    return s;
+                };
+                std::string ck = N(trim(w->form.cookie));
+                const bool valid = ck.size() >= 2 && ck.front() == '[' && ck.back() == ']';
+                if (!valid) {
+                    std::string old;
+                    const bool hasOld = FpLoadCookiesJson(dd, old) && !old.empty();
+                    if (hasOld) w->form.cookie = W(old);
+                    else w->form.cookie.clear();
+                    // 只在“会丢东西/会静默跳过”时打扰用户：框空且磁盘有 Cookie（本次空保存会清空）、
+                    // 或框里有内容但不是 JSON 数组（旧逻辑直接不写盘、用户以为存了）。
+                    if (ck.empty() && !hasOld) {
+                        // 新环境且本来就没 Cookie：无需提示，正常保存其它字段
+                    } else {
+                        const std::wstring why = ck.empty()
+                            ? L"Cookie 框是空的，但该环境已有 Cookie。"
+                            : L"Cookie 不是 JSON 数组，本次未写入。";
+                        const std::wstring hint = ck.empty()
+                            ? L"已保留原有 Cookie（如确实要清空，请删除 profile 目录下的 cookies 文件）。"
+                            : L"请先点「合并Cookie」把 Name=Value / Netscape 文本转成 JSON 数组后再保存。";
+                        ::MessageBoxW(h, (why + L"\r\n" + hint).c_str(),
+                            L"Cookie 未保存", MB_OK | MB_ICONWARNING);
+                    }
+                    LOG(L"指纹保存 Cookie守卫 " + (ck.empty() ? std::wstring(L"EMPTY") : std::wstring(L"NOT_JSON")) +
+                        L" len=" + std::to_wstring(ck.size()) +
+                        L" old=" + (hasOld ? std::wstring(L"kept") : std::wstring(L"none")) +
+                        L" " + w->profile);
+                } else {
+                    w->form.cookie = W(ck); // 去首尾空白后再落盘
+                }
+            }
             // 1. ui 侧车全量存档（字段名与 web-ui collectFp 一致，含派生字段，双向可读）
             {
                 std::string ui = FpFormToUiJson(w->form);

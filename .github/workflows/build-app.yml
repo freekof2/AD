@@ -315,6 +315,16 @@ jobs:
           foreach ($s in @("FpNormalizeTimezone", "FpBrowserConfigJsonQuote", "TimeZone")) {
             if ($fpc2 -notmatch [regex]::Escape($s)) { throw "timezone save contract '$s' missing in fp_ui.cpp" }
           }
+          # Cookie 保存守卫（“改了保存不了/空保存清掉 Cookie”回归）：多行可编辑、
+          # 非法/为空不覆盖既有值、回填与变空两条日志、web-ui 同语义。
+          foreach ($s in @("Cookie 保存守卫", "ES_MULTILINE", "指纹回填 cookie len", "Cookie框变空", "指纹载入 ui侧车 cookie", "FpLoadCookiesJson")) {
+            if ($fpc2 -notmatch [regex]::Escape($s)) { throw "cookie guard contract '$s' missing in fp_ui.cpp" }
+          }
+          $appJsCookie = Get-Content web-ui\js\app.js -Raw
+          if ($appJsCookie -notmatch [regex]::Escape("本次未覆盖已有 Cookie")) {
+            throw "cookie guard contract missing in web-ui/js/app.js"
+          }
+          Write-Host "cookie guard contract ok"
           $rtcFpCpp = Get-Content launcher\cpp\fingerprint.cpp -Raw
           foreach ($s in @("webrtc.mode=", "FpBuildWebRtcSunParams", "sunBrowserParams.WebRTCAddress",
                            "ext.webrtc.disabled=", "FpBuildTimeZoneSunParam", "WebGLFP",

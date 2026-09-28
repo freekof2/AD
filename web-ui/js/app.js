@@ -782,9 +782,17 @@
     try {
       const fbcc = (window.FP ? window.FP.fbccOf(nm) : nm.split("_")[0]);
       const cleanCookie = window.FP ? window.FP.sanitizeCookies(fp.cookie || "[]", fbcc) : { text: fp.cookie };
+      // 与原生指纹窗保存守卫同语义：Cookie 为空 / 不是 JSON 数组时，不覆盖既有 Cookie。
+      // 否则 cookies 文件没写、ui 存档却成了空值，重开又读回旧值——表现为“改了保存不了”。
+      let cookieValid = false;
+      try { cookieValid = Array.isArray(JSON.parse(cleanCookie.text)); } catch (e) { cookieValid = false; }
+      if (!cookieValid) {
+        delete fp.cookie;
+        toast("Cookie 为空或不是 JSON 数组：本次未覆盖已有 Cookie（非 JSON 请先点「合并Cookie」）");
+      }
       const payload = { ui: JSON.stringify(fp), fingerprint_config: JSON.stringify(fpConfig) };
       // 代理/设备等只进 ui 存档；Cookie 清洗后可写 cookies 文件
-      try { JSON.parse(cleanCookie.text); payload.cookies = cleanCookie.text; } catch (e) { /* 非 JSON 则不写 */ }
+      if (cookieValid) payload.cookies = cleanCookie.text;
       if (dirHandle && dirName === nm) {
         const notes = await window.FP.exportToDirHandle(dirHandle, nm, payload);
         toast("已写回目录：" + notes.join("；"));
