@@ -312,7 +312,7 @@ jobs:
           foreach ($s in @("FpBackfillWebGl", "webgl_config", "UNMASKED_VENDOR_WEBGL", "GPUAdapterInfo")) {
             if ($fpc2 -notmatch [regex]::Escape($s)) { throw "WebGL metadata contract '$s' missing in fp_ui.cpp" }
           }
-          foreach ($s in @("FpNormalizeTimezone", "FpBuildTimeZoneSunParam", "TimeZone")) {
+          foreach ($s in @("FpNormalizeTimezone", "FpBrowserConfigJsonQuote", "TimeZone")) {
             if ($fpc2 -notmatch [regex]::Escape($s)) { throw "timezone save contract '$s' missing in fp_ui.cpp" }
           }
           $rtcFpCpp = Get-Content launcher\cpp\fingerprint.cpp -Raw
