@@ -59,7 +59,6 @@ static std::wstring WJ(const std::string& raw) {
     }
     return W(raw);
 }
-}
 
 // ---- 伪装 IP 存 exe 同目录 Config.json（按环境目录名对应，双向同步） ----
 // 格式：{"k1hf7t36_hyg6dd":"192.168.128.129"}。读优先级 Config.json > ui 存档 webrtcIp
