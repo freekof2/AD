@@ -36,7 +36,7 @@ static void RefreshList() {
     // 同步触发 LVN_ITEMCHANGED -> WndProc -> ListNameOfRow(+lock g.mu) 及 NM_CUSTOMDRAW
     // 回调（也在 WndProc 内读 g.hList），若此时 RefreshList 持有 g.mu 就是“UI 线程自己
     // 锁自己 + 回调重入”的未定义行为：MSVC /GS 熔断即报 0xc0000409。锁外发消息消重入。
-    struct RowSnap { std::wstring name; std::wstring remark; std::wstring st; std::wstring port; bool checked; };
+    struct RowSnap { std::wstring name; std::wstring remark; std::wstring st; bool checked; };
     std::wstring keep;
     std::vector<RowSnap> rows;
     std::wstring filter;
@@ -55,7 +55,7 @@ static void RefreshList() {
             if (::SendMessageW(hList, LVM_GETITEMTEXTW, (WPARAM)cur, (LPARAM)&li))
                 keep = tmp;
         }
-        auto profiles = ScanProfiles(g.cfg, g.procs, g.ports);
+        auto profiles = ScanProfiles(g.cfg, g.procs);
         LOG(std::wstring(L"probe refresh scan-done n=") + std::to_wstring(profiles.size()));
         for (auto& p : profiles) {
             // 搜索过滤（对齐 web-ui globalSearch：按目录名子串，不区分大小写）
@@ -69,7 +69,6 @@ static void RefreshList() {
             r.name = p.name;
             r.remark = p.remark;
             r.st = p.running ? (L"运行中 pid=" + std::to_wstring(p.pid)) : L"已停止";
-            r.port = p.port ? std::to_wstring(p.port) : L"-";
             auto ck = g.checked.find(p.name);
             r.checked = (ck != g.checked.end() && ck->second);
             rows.push_back(std::move(r));
@@ -105,13 +104,6 @@ static void RefreshList() {
         li1.pszText = (LPWSTR)r.st.c_str();
         ::SendMessageW(hList, LVM_SETITEMTEXTW, (WPARAM)idx, (LPARAM)&li1);
         if (row == 0) LOG(L"probe refresh row0-status");
-        LVITEMW li2{};
-        li2.mask = LVIF_TEXT;
-        li2.iItem = idx;
-        li2.iSubItem = 3;
-        li2.pszText = (LPWSTR)r.port.c_str();
-        ::SendMessageW(hList, LVM_SETITEMTEXTW, (WPARAM)idx, (LPARAM)&li2);
-        if (row == 0) LOG(L"probe refresh row0-port");
         // 复选框镜像 g.checked（批量操作用；LVS_EX_CHECKBOXES 状态图：2=勾选，1=未勾选）
         LVITEMW liS{};
         liS.mask = LVIF_STATE;
@@ -258,14 +250,9 @@ static void OnBatchDel() {
         {
             std::lock_guard<std::mutex> lk(g.mu);
             g.checked.erase(n);
-            g.ports.erase(n);
         }
         del++;
         LOG(L"删除环境 " + n);
-    }
-    {
-        std::lock_guard<std::mutex> lk(g.mu);
-        SavePorts(g.ports);
     }
     SetStatus(L"已删除 " + std::to_wstring(del) + L" 个环境");
 }
@@ -284,21 +271,6 @@ static std::wstring MakeProfileDirName(const std::wstring& input, std::wstring& 
     wsprintfW(b, L"env%llx_local", t & 0xFFFFFFFF);
     remarkOut = input;
     return b;
-}
-
-static int AllocPortLocked(const std::wstring& name) {
-    auto it = g.ports.find(name);
-    if (it != g.ports.end() && it->second > 0 && PortFree(it->second)) return it->second;
-    std::map<int, bool> used;
-    for (auto& kv : g.ports) used[kv.second] = true;
-    for (int p = g.cfg.portBase; p < g.cfg.portBase + 1000; p++) {
-        if (!used[p] && PortFree(p)) {
-            g.ports[name] = p;
-            SavePorts(g.ports);
-            return p;
-        }
-    }
-    return 0;
 }
 
 static std::wstring SelectedProfile() {
@@ -384,13 +356,11 @@ static bool StartOneLocked(const std::wstring& name) {
             LOG(L"diag Network目录存在 " + name + L"（若本次仍刷 Network service crashed，删 Default\\Network 后重试）");
     }
 
-    int port = AllocPortLocked(name);
-    if (port == 0) {
-        std::wstring m = L"无可用调试端口（" + std::to_wstring(g.cfg.portBase) + L" 起 1000 个全占）";
-        LOG(m); SetStatus(m); return false;
-    }
-    LOG(L"diag port记账=" + std::to_wstring(port) +
-        L"（仅记ports.json备查；实际传 --remote-debugging-port=0 由浏览器随机，见官方buildLaunchOpt）");
+    // 端口跟随官方：命令行只传 --remote-debugging-port=0，由浏览器自己随机，
+    // 实际端口写 <profile>\DevToolsActivePort（启动后再读）。不再分配端口、
+    // 不再有"1000 个端口全占"的失败路径，也没有 ports.json 端口表。
+    int port = 0;
+    LOG(L"diag port=官方随机(--remote-debugging-port=0)，实际值启动后读 DevToolsActivePort");
     std::string uiExtra;
     FpLoadUiExtra(dataDir, uiExtra);
     std::wstring args = FpBuildCmdline(dataDir, port, uiExtra);
@@ -477,8 +447,11 @@ static bool StartOneLocked(const std::wstring& name) {
         return false;
     }
     g.procs[name] = { hProc, pid };
+    // 实际端口：浏览器随机分配后写 DevToolsActivePort；3 秒存活轮询已过，直接读。
+    port = ReadDevToolsPort(dataDir);
     std::wstring m = L"已启动 " + name + L" pid=" + std::to_wstring(pid) +
-        L" port=" + std::to_wstring(port);
+        L" port=" + (port > 0 ? std::to_wstring(port) : L"0(DevToolsActivePort未生成)") +
+        L"（官方随机）";
     LOG(m); SetStatus(m);
     return true;
 }
@@ -535,7 +508,9 @@ static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
         };
         // 主窗口无全局目录区：数据/浏览器路径只在指纹配置 A2 行按指纹独立设置，
         // 存 sunlauncher.json profiles 段（EffDataDir/EffBrowserDir 解析）。
-        // 环境表占满左侧空间：LISTVIEW (12,12,582x494)；四列：备注/环境目录/状态/端口。
+        // 环境表占满左侧空间：LISTVIEW (12,12,582x494)；三列：备注/环境目录/状态。
+        // 无端口列：调试端口由浏览器随机写 DevToolsActivePort（官方 --remote-debugging-port=0），
+        // 备注列吃掉原端口列的 64px（185->249），环境目录/状态列宽与总宽不变。
         LOG(L"probe wmcreate listview-pre");
         g.hList = ::CreateWindowW(WC_LISTVIEWW, NULL,
             WS_CHILD | WS_VISIBLE | WS_BORDER | LVS_REPORT | LVS_SHOWSELALWAYS | LVS_SINGLESEL,
@@ -548,7 +523,7 @@ static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
             LVCOLUMNW c0{};
             c0.mask = LVCF_TEXT | LVCF_WIDTH;
             c0.pszText = (LPWSTR)L"备注";
-            c0.cx = 185;
+            c0.cx = 249;
             ::SendMessageW(g.hList, LVM_INSERTCOLUMNW, 0, (LPARAM)&c0);
             LVCOLUMNW c1{};
             c1.mask = LVCF_TEXT | LVCF_WIDTH;
@@ -560,11 +535,6 @@ static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
             c2.pszText = (LPWSTR)L"状态";
             c2.cx = 120;
             ::SendMessageW(g.hList, LVM_INSERTCOLUMNW, 2, (LPARAM)&c2);
-            LVCOLUMNW c3{};
-            c3.mask = LVCF_TEXT | LVCF_WIDTH;
-            c3.pszText = (LPWSTR)L"端口";
-            c3.cx = 64;
-            ::SendMessageW(g.hList, LVM_INSERTCOLUMNW, 3, (LPARAM)&c3);
         }
         // 右列操作按钮（靠右对齐 x=606）：启动/关闭/刷新/指纹配置/新建（无日志目录按钮）
         mkBtn(IDC_START, L"启动", 606, 12, 100);
@@ -758,7 +728,15 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE, LPWSTR, int show) {
     DebugLog::Instance().Init(AppDir());
     LOG(std::wstring(L"probe iccOk=") + (iccOk ? L"1" : L"0"));
     g.cfg = LoadConfig();
-    g.ports = LoadPorts();
+    // 旧版 ports.json 端口表已废弃（官方只传 --remote-debugging-port=0，端口由浏览器
+    // 随机写 DevToolsActivePort）。启动即删，避免残留端口号误导排障。
+    {
+        std::wstring legacy = AppDir() + L"\\ports.json";
+        if (::GetFileAttributesW(legacy.c_str()) != INVALID_FILE_ATTRIBUTES) {
+            ::DeleteFileW(legacy.c_str());
+            LOG(L"清理旧 ports.json（端口改为浏览器随机分配，端口表已废弃）");
+        }
+    }
     LOG(L"config dataDir=" + g.cfg.dataDir);
     LOG(L"config browserDir=" + g.cfg.sunBrowserDir);
     LOG(L"config listen=" + g.cfg.listen);
@@ -927,7 +905,7 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE, LPWSTR, int show) {
             {
                 std::lock_guard<std::mutex> lk(g.mu);
                 if (target == "/api/profiles" || target == "/api/list") {
-                    auto ps = ScanProfiles(g.cfg, g.procs, g.ports);
+                    auto ps = ScanProfiles(g.cfg, g.procs);
                     body = "[";
                     for (size_t i = 0; i < ps.size(); i++) {
                         if (i) body += ",";
@@ -947,36 +925,27 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE, LPWSTR, int show) {
                             DWORD cd = 0;
                             if (::GetExitCodeProcess(it->second.hProcess, &cd) && cd == STILL_ACTIVE) {
                                 body = "{\"ok\":true,\"pid\":" + std::to_string(it->second.pid) +
-                                    ",\"port\":" + std::to_string(g.ports[wname]) + ",\"running\":true}";
+                                    ",\"port\":" + std::to_string(ReadDevToolsPort(dataDir)) +
+                                    ",\"running\":true}";
                             } else { ::CloseHandle(it->second.hProcess); g.procs.erase(it); }
                         }
                         if (body.empty()) {
                             ::DeleteFileW((dataDir + L"\\LOCK").c_str());
                             ::DeleteFileW((dataDir + L"\\DevToolsActivePort").c_str());
-                            int p2 = 0;
-                            auto itp = g.ports.find(wname);
-                            if (itp != g.ports.end() && itp->second > 0 && PortFree(itp->second)) p2 = itp->second;
-                            if (!p2) {
-                                std::map<int, bool> used;
-                                for (auto& kv : g.ports) used[kv.second] = true;
-                                for (int pp = g.cfg.portBase; pp < g.cfg.portBase + 1000; pp++) {
-                                    if (!used[pp] && PortFree(pp)) { g.ports[wname] = pp; SavePorts(g.ports); p2 = pp; break; }
-                                }
-                            }
-                            if (!p2) { code = 503; body = "{\"ok\":false,\"err\":\"no free port\"}"; }
-                            else {
-                                std::string uiExtra;
-                                FpLoadUiExtra(dataDir, uiExtra);
-                                std::wstring cmd = FpBuildCmdline(dataDir, p2, uiExtra);
-                                std::wstring exe = EffBrowserDir(g.cfg, wname) + L"\\SunBrowser.exe";
-                                HANDLE hp = NULL; DWORD pid = 0, err = 0;
-                                if (!LaunchSunBrowser(exe, EffBrowserDir(g.cfg, wname), cmd, &hp, &pid, &err)) {
-                                    code = 500; body = "{\"ok\":false,\"err\":\"CreateProcess failed\"}";
-                                } else {
-                                    g.procs[wname] = { hp, pid };
-                                    body = "{\"ok\":true,\"pid\":" + std::to_string(pid) +
-                                        ",\"port\":" + std::to_string(p2) + "}";
-                                }
+                            std::string uiExtra;
+                            FpLoadUiExtra(dataDir, uiExtra);
+                            // 端口跟随官方：只传 0，浏览器自己随机并写 DevToolsActivePort。
+                            std::wstring cmd = FpBuildCmdline(dataDir, 0, uiExtra);
+                            std::wstring exe = EffBrowserDir(g.cfg, wname) + L"\\SunBrowser.exe";
+                            HANDLE hp = NULL; DWORD pid = 0, err = 0;
+                            if (!LaunchSunBrowser(exe, EffBrowserDir(g.cfg, wname), cmd, &hp, &pid, &err)) {
+                                code = 500; body = "{\"ok\":false,\"err\":\"CreateProcess failed\"}";
+                            } else {
+                                g.procs[wname] = { hp, pid };
+                                // 启动后读实际端口（最多等 1s；未生成=0，客户端按未就绪处理）
+                                int p2 = ReadDevToolsPort(dataDir, 1000);
+                                body = "{\"ok\":true,\"pid\":" + std::to_string(pid) +
+                                    ",\"port\":" + std::to_string(p2) + "}";
                             }
                         }
                     }
@@ -1013,33 +982,23 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE, LPWSTR, int show) {
                     } else {
                         ::DeleteFileW((dataDir + L"\\LOCK").c_str());
                         ::DeleteFileW((dataDir + L"\\DevToolsActivePort").c_str());
-                        int p2 = 0;
-                        auto itp = g.ports.find(wname);
-                        if (itp != g.ports.end() && itp->second > 0 && PortFree(itp->second)) p2 = itp->second;
-                        if (!p2) {
-                            std::map<int, bool> used;
-                            for (auto& kv : g.ports) used[kv.second] = true;
-                            for (int pp = g.cfg.portBase; pp < g.cfg.portBase + 1000; pp++) {
-                                if (!used[pp] && PortFree(pp)) { g.ports[wname] = pp; SavePorts(g.ports); p2 = pp; break; }
-                            }
-                        }
-                        if (!p2) { code = 503; body = "{\"code\":100037,\"msg\":\"no free port\",\"data\":{}}"; }
-                        else {
-                            std::string uiExtra;
-                            FpLoadUiExtra(dataDir, uiExtra);
-                            std::wstring cmd = FpBuildCmdline(dataDir, p2, uiExtra);
-                            std::wstring exe = EffBrowserDir(g.cfg, wname) + L"\\SunBrowser.exe";
-                            HANDLE hp = NULL; DWORD cpid = 0, cerr = 0;
-                            if (!LaunchSunBrowser(exe, EffBrowserDir(g.cfg, wname), cmd, &hp, &cpid, &cerr)) {
-                                code = 500; body = "{\"code\":100001,\"msg\":\"CreateProcess failed\",\"data\":{}}";
-                            } else {
-                                g.procs[wname] = { hp, cpid };
-                                std::string ws = "ws://127.0.0.1:" + std::to_string(p2) + "/devtools/browser/launcher";
-                                body = "{\"code\":0,\"msg\":\"success\",\"data\":{\"ws\":{\"puppeteer\":\"" + ws +
-                                    "\",\"selenium\":\"127.0.0.1:" + std::to_string(p2) +
-                                    "\"},\"debug_port\":\"" + std::to_string(p2) +
-                                    "\",\"webdriver\":\"\"},\"debugUrl\":\"" + ws + "\"}";
-                            }
+                        std::string uiExtra;
+                        FpLoadUiExtra(dataDir, uiExtra);
+                        // 端口跟随官方：只传 --remote-debugging-port=0，浏览器自己随机；
+                        // 启动后读 DevToolsActivePort 拿实际端口（未生成=0）。
+                        std::wstring cmd = FpBuildCmdline(dataDir, 0, uiExtra);
+                        std::wstring exe = EffBrowserDir(g.cfg, wname) + L"\\SunBrowser.exe";
+                        HANDLE hp = NULL; DWORD cpid = 0, cerr = 0;
+                        if (!LaunchSunBrowser(exe, EffBrowserDir(g.cfg, wname), cmd, &hp, &cpid, &cerr)) {
+                            code = 500; body = "{\"code\":100001,\"msg\":\"CreateProcess failed\",\"data\":{}}";
+                        } else {
+                            g.procs[wname] = { hp, cpid };
+                            int p2 = ReadDevToolsPort(dataDir, 1000);
+                            std::string ws = "ws://127.0.0.1:" + std::to_string(p2) + "/devtools/browser/launcher";
+                            body = "{\"code\":0,\"msg\":\"success\",\"data\":{\"ws\":{\"puppeteer\":\"" + ws +
+                                "\",\"selenium\":\"127.0.0.1:" + std::to_string(p2) +
+                                "\"},\"debug_port\":\"" + std::to_string(p2) +
+                                "\",\"webdriver\":\"\"},\"debugUrl\":\"" + ws + "\"}";
                         }
                     }
                 } else if (target == "/api/openBrowserV3" && isPost) {
@@ -1055,33 +1014,22 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE, LPWSTR, int show) {
                     } else {
                         ::DeleteFileW((dataDir + L"\\LOCK").c_str());
                         ::DeleteFileW((dataDir + L"\\DevToolsActivePort").c_str());
-                        int p2 = 0;
-                        auto itp = g.ports.find(wname);
-                        if (itp != g.ports.end() && itp->second > 0 && PortFree(itp->second)) p2 = itp->second;
-                        if (!p2) {
-                            std::map<int, bool> used;
-                            for (auto& kv : g.ports) used[kv.second] = true;
-                            for (int pp = g.cfg.portBase; pp < g.cfg.portBase + 1000; pp++) {
-                                if (!used[pp] && PortFree(pp)) { g.ports[wname] = pp; SavePorts(g.ports); p2 = pp; break; }
-                            }
-                        }
-                        if (!p2) { code = 503; body = "{\"code\":100037,\"msg\":\"Queue exceeds 200\",\"data\":{}}"; }
-                        else {
-                            std::string uiExtra;
-                            FpLoadUiExtra(dataDir, uiExtra);
-                            std::wstring cmd = FpBuildCmdline(dataDir, p2, uiExtra);
-                            std::wstring exe = EffBrowserDir(g.cfg, wname) + L"\\SunBrowser.exe";
-                            HANDLE hp = NULL; DWORD cpid = 0, cerr = 0;
-                            if (!LaunchSunBrowser(exe, EffBrowserDir(g.cfg, wname), cmd, &hp, &cpid, &cerr)) {
-                                code = 500; body = "{\"code\":100001,\"msg\":\"CreateProcess failed\",\"data\":{}}";
-                            } else {
-                                g.procs[wname] = { hp, cpid };
-                                std::string ws = "ws://127.0.0.1:" + std::to_string(p2) + "/devtools/browser/launcher";
-                                body = "{\"code\":0,\"msg\":\"success\",\"data\":{\"ws\":{\"puppeteer\":\"" + ws +
-                                    "\",\"selenium\":\"127.0.0.1:" + std::to_string(p2) +
-                                    "\"},\"debug_port\":\"" + std::to_string(p2) +
-                                    "\",\"webdriver\":\"\"},\"debugUrl\":\"" + ws + "\"}";
-                            }
+                        std::string uiExtra;
+                        FpLoadUiExtra(dataDir, uiExtra);
+                        // 端口跟随官方：只传 --remote-debugging-port=0，启动后读实际值。
+                        std::wstring cmd = FpBuildCmdline(dataDir, 0, uiExtra);
+                        std::wstring exe = EffBrowserDir(g.cfg, wname) + L"\\SunBrowser.exe";
+                        HANDLE hp = NULL; DWORD cpid = 0, cerr = 0;
+                        if (!LaunchSunBrowser(exe, EffBrowserDir(g.cfg, wname), cmd, &hp, &cpid, &cerr)) {
+                            code = 500; body = "{\"code\":100001,\"msg\":\"CreateProcess failed\",\"data\":{}}";
+                        } else {
+                            g.procs[wname] = { hp, cpid };
+                            int p2 = ReadDevToolsPort(dataDir, 1000);
+                            std::string ws = "ws://127.0.0.1:" + std::to_string(p2) + "/devtools/browser/launcher";
+                            body = "{\"code\":0,\"msg\":\"success\",\"data\":{\"ws\":{\"puppeteer\":\"" + ws +
+                                "\",\"selenium\":\"127.0.0.1:" + std::to_string(p2) +
+                                "\"},\"debug_port\":\"" + std::to_string(p2) +
+                                "\",\"webdriver\":\"\"},\"debugUrl\":\"" + ws + "\"}";
                         }
                     }
                 } else if ((target == "/api/closeAllBrowser" && !isPost) ||
@@ -1089,7 +1037,7 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE, LPWSTR, int show) {
                     // asar: GET 二者都调 closeAll()，返回 {code:0,data:{},msg}。
                     std::vector<DWORD> all;
                     {
-                        auto ps = ScanProfiles(g.cfg, g.procs, g.ports);
+                        auto ps = ScanProfiles(g.cfg, g.procs);
                         for (auto& p : ps) {
                             std::wstring dd = p.path;
                             auto k = FpKillProfileTree(dd);
@@ -1163,7 +1111,7 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE, LPWSTR, int show) {
                     // status: launcher 运行中=SUCCESS；其余按目录存在=CLOSED。
                     body = "{\"code\":0,\"msg\":\"success\",\"data\":[";
                     {
-                        auto ps = ScanProfiles(g.cfg, g.procs, g.ports);
+                        auto ps = ScanProfiles(g.cfg, g.procs);
                         for (size_t i = 0; i < ps.size(); i++) {
                             if (i) body += ",";
                             body += "{\"id\":\"" + N(ps[i].name) + "\",\"status\":\"" +
@@ -1175,7 +1123,7 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE, LPWSTR, int show) {
                     // asar: {code:0,data:{list:[{accId,ws,id}]}} chrome 已开列表。
                     body = "{\"code\":0,\"data\":{\"list\":[";
                     {
-                        auto ps = ScanProfiles(g.cfg, g.procs, g.ports);
+                        auto ps = ScanProfiles(g.cfg, g.procs);
                         bool first = true;
                         for (auto& p : ps) {
                             if (!p.running) continue;
@@ -1198,14 +1146,14 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE, LPWSTR, int show) {
                     } else {
                         std::string sj;
                         FpLoadStaticJson(dd, sj);
-                        bool run = false; int pp = 0;
+                        bool run = false;
                         auto it = g.procs.find(W(pid));
                         if (it != g.procs.end() && it->second.hProcess) {
                             DWORD cd = 0;
                             if (::GetExitCodeProcess(it->second.hProcess, &cd) && cd == STILL_ACTIVE) run = true;
                         }
-                        auto itp = g.ports.find(W(pid));
-                        if (itp != g.ports.end()) pp = itp->second;
+                        // 端口跟随官方：本次浏览器随机写 DevToolsActivePort，未运行/未生成=0
+                        int pp = run ? ReadDevToolsPort(dd) : 0;
                         body = "{\"code\":0,\"msg\":\"success\",\"data\":{\"fbccId\":\"" + pid +
                             "\",\"running\":" + (run ? "true" : "false") +
                             ",\"port\":" + std::to_string(pp) +

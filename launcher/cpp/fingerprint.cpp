@@ -776,7 +776,7 @@ std::wstring FpBuildCmdline(const std::wstring& profileDir, int port,
     if (wantConsole)
         cmd += L" --enable-logging=stderr --v=0";
     cmd += L" about:blank";
-    (void)port; // 端口改由浏览器随机分配（官方 --remote-debugging-port=0），port 仅记 ports.json 备查
+    (void)port; // 端口跟随官方：命令行只传 --remote-debugging-port=0，实际值由浏览器随机写 DevToolsActivePort
     return cmd;
 }
 
@@ -886,7 +886,9 @@ std::string FpDiagDumpLaunch(const std::wstring& exe, const std::wstring& workDi
     o << "[diag] exe=" << N(exe) << "\n";
     o << "[diag] workDir=" << N(workDir) << "\n";
     o << "[diag] profileDir=" << N(profileDir) << "\n";
-    o << "[diag] profileName=" << profileName << " fbccId=" << fbcc << " port=" << port
+    o << "[diag] profileName=" << profileName << " fbccId=" << fbcc
+      << " port=" << (port > 0 ? std::to_string(port)
+                               : std::string("0(官方随机,启动后读DevToolsActivePort)"))
       << " pid=" << (unsigned long)pid << "\n";
     // 三件套现场
     int rcS = -1, rcD = -1, rcC = -1;

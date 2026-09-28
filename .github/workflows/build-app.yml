@@ -25,7 +25,8 @@ name: Build SunLauncher App
 #   - 导出/保存：写回三件套（md5 比对一致跳过）+ ui_fingerprint.json 明文侧车（35+ 参数全量）；
 #   - 启动：POST /api/start -> C++ FpBuildCmdline 注入 --extended-parameters（含
 #     StaticConfig/DynamicConfig/CookiesFile 三文件绝对路径 + UserId + fbcc 噪声种子），
-#     spawn SunBrowser.exe + --user-data-dir=<profile> --remote-debugging-port=<分配端口>；
+#     spawn SunBrowser.exe + --user-data-dir=<profile> --remote-debugging-port=0（官方随机端口，
+#     实际值读 profile 目录 DevToolsActivePort，无 ports.json）；
 #   - 停止：POST /api/stop -> FpKillProfileTree 按 user-data-dir 树杀 + 句柄兜底；
 #   - 代理检测：GET /api/proxy/check?addr=host:port，只做本机 TCP connect（3s 超时），
 #     不访问任何云端测速接口；
@@ -48,7 +49,6 @@ on:
     paths:
       - "launcher/**"
       - "web-ui/**"
-      - "ports.json"
       - ".github/workflows/build-app.yml"
 
 permissions:
@@ -100,8 +100,9 @@ jobs:
             if (-not (Test-Path $f)) { throw "missing: $f" }
             Write-Host "ok: $f ($((Get-Item $f).Length) bytes)"
           }
-          if (-not (Test-Path "ports.json")) { throw "missing: ports.json template" }
-          Write-Host "ok: ports.json"
+          # 端口跟随官方：无 ports.json 端口表（端口由浏览器随机写 DevToolsActivePort）
+          if (Test-Path "ports.json") { throw "ports.json must be removed (official: --remote-debugging-port=0)" }
+          Write-Host "ok: no ports.json"
 
       - name: JS syntax check (node --check, no execution)
         shell: pwsh
@@ -341,11 +342,11 @@ jobs:
             if ($fpc -notmatch $s) { throw "alignment comment '$s' missing in fp_ui.cpp" }
             Write-Host "align comment ok: $s"
           }
-          # 2e. 主窗口几何（760x660，LISTVIEW 四列占满左侧，批量行/新建行/状态条互不重叠）
+          # 2e. 主窗口几何（760x660，LISTVIEW 三列占满左侧，批量行/新建行/状态条互不重叠）
           #     无全局目录区：路径只在指纹配置 A2 行按指纹独立设置（Eff* 解析）
           #     右列操作按钮靠右对齐（x=606，无打开日志目录按钮；主窗口无 DEBUG 日志框）
           $mcpp = Get-Content launcher\cpp\main.cpp -Raw
-          # ListView 插行只能指定主列 subitem=0；目录名/状态/端口必须后续写入 subitem 1/2/3。
+          # ListView 插行只能指定主列 subitem=0；目录名/状态必须后续写入 subitem 1/2（无端口列）。
           $refreshStart = $mcpp.IndexOf("static void RefreshList()")
           $refreshEnd = $mcpp.IndexOf("// 从 LISTVIEW 当前选中行", $refreshStart)
           if ($refreshStart -lt 0 -or $refreshEnd -le $refreshStart) { throw "RefreshList body not found" }
@@ -367,8 +368,9 @@ jobs:
             if ($mcpp -notmatch [regex]::Escape($s)) { throw "main-window symbol '$s' missing in main.cpp" }
             Write-Host "mainwin ok: $s"
           }
-          # 四列：备注185/环境目录190/状态120/端口64（备注第0列，环境目录第1列，状态第2列，端口第3列）
-          foreach ($s in @("L`"备注`"", "L`"环境目录`"", "L`"状态`"", "L`"端口`"",
+          # 三列：备注249/环境目录190/状态120（备注第0列，环境目录第1列，状态第2列）
+          foreach ($s in @("L`"备注`"", "L`"环境目录`"", "L`"状态`"",
+                           "c0.cx = 249", "c1.cx = 190", "c2.cx = 120",
                            "FpProfileRemark", "FpJsonUnquote", "FpLoadUiExtra")) {
             if ($mcpp -notmatch [regex]::Escape($s) -and
                 (Get-Content launcher\cpp\fingerprint.cpp -Raw) -notmatch [regex]::Escape($s) -and
@@ -377,6 +379,27 @@ jobs:
             }
             Write-Host "remarkcol ok: $s"
           }
+          # 端口列不得重现（省下的宽度已给备注 185->249）
+          if ($mcpp -match 'L"端口"') { throw "port column must not return to the profile list" }
+          if ($refreshBody -match 'iSubItem\s*=\s*3') { throw "subitem 3 (port) write must stay removed" }
+          Write-Host "noportcol ok"
+          # 端口跟随官方：不分配端口、无端口表，只从 DevToolsActivePort 读实际端口
+          $utilCpp = Get-Content launcher\cpp\util.cpp -Raw
+          foreach ($s in @("ReadDevToolsPort", "DevToolsActivePort", "--remote-debugging-port=0")) {
+            $hit = ($utilCpp -match [regex]::Escape($s)) -or ($mcpp -match [regex]::Escape($s))
+            if (-not $hit) { throw "official-port symbol '$s' missing" }
+            Write-Host "officialport ok: $s"
+          }
+          foreach ($bad in @("g.ports", "AllocPortLocked", "SavePorts(", "LoadPorts(", "PortFree(")) {
+            if ($mcpp -match [regex]::Escape($bad)) { throw "port-table legacy symbol '$bad' still in main.cpp" }
+            if ($utilCpp -match [regex]::Escape($bad)) { throw "port-table legacy symbol '$bad' still in util.cpp" }
+            Write-Host "noporttable ok: $bad"
+          }
+          # 旧 sunlauncher.json 的端口基数配置不再读写（键名出现只允许在说明性注释里）
+          if ($utilCpp -match 'JsonGet\(txt,\s*L"port_base"\)' -or $utilCpp -match '"port_base": ') {
+            throw "port_base config must no longer be read/written"
+          }
+          Write-Host "noportbase ok"
           # 搜索+批量行在窗口底部 y=564/566（底 594），与状态条 y=598 不重叠；主窗口无 DEBUG 日志框
           foreach ($s in @("292, 564, 88", "396, 564, 88", "500, 564, 88",
                            "12, 568, 40", "56, 566, 220",
@@ -535,7 +558,7 @@ jobs:
           $pdbFiles = Get-ChildItem launcher\cpp\x64\Release\*.pdb -ErrorAction SilentlyContinue
           foreach ($p in $pdbFiles) { Copy-Item $p.FullName (Join-Path $out $p.Name) -Force; Write-Host "packed symbol: $($p.Name)" }
           Copy-Item web-ui (Join-Path $out "web-ui") -Recurse -Force
-          Copy-Item ports.json (Join-Path $out "ports.json") -Force
+          if (Test-Path ports.json) { throw "ports.json must not be packaged" }
           @"
           # SunLauncher 离线启动器包（本机使用，不联网、不上传、不与 AdsPower 云端通信）
           # 1. 把 SunLauncher.exe 放到任意目录，双击运行（Win32 原生窗口：profile 列表 + 启动/关闭）

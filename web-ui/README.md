@@ -27,6 +27,6 @@ GitHub Actions 工作流配置于 `.github/workflows/build-offline.yml`：
 1. MSVC 编译 `launcher/cpp`（指纹注入版 SunLauncher.exe）
 2. `node --check` 校验全部 JS 语法
 3. 离线契约检查：web-ui 无云端域名/token/旧路由；C++ 指纹符号与离线路由齐备
-4. 打包 `offline-app.zip`（SunLauncher.exe + web-ui/ + ports.json 模板）供下载使用
+4. 打包 `offline-app.zip`（SunLauncher.exe + web-ui/）供下载使用（无 ports.json，端口由浏览器随机）
 
 旧 `build-web-ui.yml`（纯前端打包）已废弃，保留仅供参考。

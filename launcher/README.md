@@ -54,11 +54,12 @@ profile，一键**指纹注入启动**/关闭。只读写本地缓存目录，**
   否则 `GetModuleFileNameW` 拼版本子目录会失败导致静默退出）
 - 默认数据目录：`F:\.ADSPOWER_GLOBAL\cache`，每个子目录 = 一个 profile。
 - 两个目录都可以在窗口上修改并持久化到 `sunlauncher.json`。
-- 端口分配持久化到 `ports.json`，重启后复用。
+- 端口跟随官方：启动只传 `--remote-debugging-port=0`（浏览器自己随机），
+  实际端口从 profile 目录的 `DevToolsActivePort` 首行读取；不再有 `ports.json` 端口表。
 
 ## 构建（GitHub Actions，MSVC）
 
 `.github/workflows/build-offline.yml` 在 `windows-latest` 上编译
 `launcher/cpp/SunLauncher.vcxproj`，校验 web-ui 离线契约，并打包
-`offline-app.zip`（SunLauncher.exe + web-ui/ + ports.json 模板）。
+`offline-app.zip`（SunLauncher.exe + web-ui/）。
 不在本地测试时直接去 Actions 下载。

@@ -51,7 +51,6 @@ struct Config {
     std::wstring sunBrowserDir = kDefaultBrowserDir;
     std::wstring dataDir       = kDefaultDataDir;
     std::wstring listen        = kDefaultListen;
-    int          portBase      = kDefaultPortBase;
     std::map<std::wstring, ProfileOverride> profiles; // profile 名 -> 独立目录覆盖
 };
 // 取 profile 实际生效目录：覆盖优先，全局兜底。
@@ -73,7 +72,7 @@ struct ProfileInfo {
     std::wstring remark; // ui_fingerprint.json 指纹备注（环境列表备注列显示）
     bool         running = false;
     DWORD        pid = 0;
-    int          port = 0;
+    int          port = 0; // DevToolsActivePort 实际端口（官方随机；未运行/未生成=0）
 };
 
 struct ProcHandle {
@@ -140,12 +139,12 @@ std::wstring W(const std::string& s);
 std::string  N(const std::wstring& s);
 Config LoadConfig();
 bool SaveConfig(const Config& c);
-std::map<std::wstring, int> LoadPorts();
-void SavePorts(const std::map<std::wstring, int>& m);
-bool PortFree(int port);
+// 读 profile 目录 DevToolsActivePort 首行 = 浏览器实际调试端口（官方 buildLaunchOpt 只传
+// --remote-debugging-port=0，端口由浏览器随机并写进该文件，puppeteer 同源读法）。
+// waitMs>0 时按 100ms 轮询等待文件生成（启动后立即查需要等待）；读不到返回 0。
+int ReadDevToolsPort(const std::wstring& profileDir, int waitMs = 0);
 std::vector<ProfileInfo> ScanProfiles(const Config& cfg,
-    const std::map<std::wstring, ProcHandle>& procs,
-    const std::map<std::wstring, int>& ports);
+    const std::map<std::wstring, ProcHandle>& procs);
 bool LaunchSunBrowser(const std::wstring& exe, const std::wstring& workDir,
     const std::wstring& cmdline, HANDLE* outProcess, DWORD* outPid, DWORD* outErr);
 
@@ -163,7 +162,6 @@ static const COLORREF kUiText    = RGB(26, 32, 44);    // --text-main #1a202c
 struct AppState {
     Config cfg;
     std::map<std::wstring, ProcHandle> procs; // profile -> 进程
-    std::map<std::wstring, int>        ports; // profile -> 调试端口（持久化 ports.json）
     std::mutex mu;
     HWND hMain = NULL, hList = NULL, hStatus = NULL;
     HWND hSearch = NULL;   // 环境搜索框（对齐 web-ui globalSearch）

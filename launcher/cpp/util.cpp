@@ -1,4 +1,4 @@
-// util.cpp — 路径/JSON/端口/进程小工具 + DEBUG 日志落盘
+// util.cpp — 路径/JSON/DevTools端口/进程小工具 + DEBUG 日志落盘
 #include "SunLauncher.h"
 #include "fingerprint.h"
 
@@ -28,7 +28,7 @@ std::string N(const std::wstring& s) {
     return a;
 }
 
-// 极简 JSON（只够读 config/ports，写用拼接，保证无第三方依赖）
+// 极简 JSON（只够读 config，写用拼接，保证无第三方依赖）
 static std::wstring JsonGet(const std::wstring& json, const std::wstring& key) {
     std::wstring k = L"\"" + key + L"\"";
     size_t p = json.find(k);
@@ -65,8 +65,8 @@ Config LoadConfig() {
     if (!(v = JsonGet(txt, L"sun_browser_dir")).empty()) c.sunBrowserDir = v;
     if (!(v = JsonGet(txt, L"data_dir")).empty())        c.dataDir = v;
     if (!(v = JsonGet(txt, L"listen")).empty())          c.listen = v;
-    if (!(v = JsonGet(txt, L"port_base")).empty())       c.portBase = _wtoi(v.c_str());
-    if (c.portBase <= 0) c.portBase = kDefaultPortBase;
+    // 端口不落盘：官方只传 --remote-debugging-port=0（浏览器随机，写 DevToolsActivePort），
+    // 旧 sunlauncher.json 里的 port_base 键读取时直接忽略。
     // per-profile 覆盖：profiles: { "<name>": { "data_dir": "...", "sun_browser_dir": "..." } }
     // 极简解析：逐 profile 块取二键（空=跟随全局；兼容旧文件无 profiles 段）。
     {
@@ -85,7 +85,7 @@ Config LoadConfig() {
                 size_t cb = txt.find(L'{', q2);
                 size_t ce = (cb == std::wstring::npos) ? std::wstring::npos : txt.find(L'}', cb);
                 if (cb == std::wstring::npos || ce == std::wstring::npos) break;
-                if (nm == L"profiles" || nm == L"ports") { p = ce + 1; continue; }
+                if (nm == L"profiles") { p = ce + 1; continue; }
                 std::wstring blk = txt.substr(cb, ce - cb + 1);
                 ProfileOverride o;
                 std::wstring d = JsonGet(blk, L"data_dir");
@@ -118,8 +118,7 @@ bool SaveConfig(const Config& c) {
     try {
         std::wstring j = L"{\r\n  \"sun_browser_dir\": \"" + Esc(c.sunBrowserDir) +
             L"\",\r\n  \"data_dir\": \"" + Esc(c.dataDir) +
-            L"\",\r\n  \"listen\": \"" + Esc(c.listen) +
-            L"\",\r\n  \"port_base\": " + std::to_wstring(c.portBase);
+            L"\",\r\n  \"listen\": \"" + Esc(c.listen) + L"\"";
         if (!c.profiles.empty()) {
             j += L",\r\n  \"profiles\": {\r\n";
             bool first = true;
@@ -153,65 +152,29 @@ bool SaveConfig(const Config& c) {
     }
 }
 
-std::map<std::wstring, int> LoadPorts() {
-    std::map<std::wstring, int> m;
-    std::wstring txt = ReadFileW(ExeDir() + L"\\ports.json");
-    if (txt.empty()) return m;
-    // 解析 "name": port 对
-    size_t p = 0;
-    while ((p = txt.find(L'"', p)) != std::wstring::npos) {
-        size_t q = txt.find(L'"', p + 1);
-        if (q == std::wstring::npos) break;
-        std::wstring key = txt.substr(p + 1, q - p - 1);
-        if (key == L"ports") { p = q + 1; continue; }
-        size_t c = txt.find(L":", q);
-        if (c == std::wstring::npos) break;
-        size_t r = c + 1;
-        while (r < txt.size() && (txt[r] < L'0' || txt[r] > L'9')) {
-            if (txt[r] == L'"' || txt[r] == L'{') break;
-            r++;
-        }
-        size_t e = r;
+// DevToolsActivePort：官方 buildLaunchOpt 只传 --remote-debugging-port=0，端口由浏览器
+// 自己随机选并写进 <profile>\DevToolsActivePort（首行端口、次行 ws 路径；puppeteer 同源读法）。
+// 不再有 ports.json 端口表，也不存在"端口不够用"的问题。waitMs>0 时按 100ms 轮询等它生成。
+int ReadDevToolsPort(const std::wstring& profileDir, int waitMs) {
+    if (profileDir.empty()) return 0;
+    std::wstring path = profileDir + L"\\DevToolsActivePort";
+    for (int waited = 0; ; waited += 100) {
+        std::wstring txt = ReadFileW(path);
+        size_t s = 0;
+        while (s < txt.size() && (txt[s] < L'0' || txt[s] > L'9')) s++;
+        size_t e = s;
         while (e < txt.size() && txt[e] >= L'0' && txt[e] <= L'9') e++;
-        if (e > r) m[key] = _wtoi(txt.substr(r, e - r).c_str());
-        p = e;
+        if (e > s) {
+            int port = _wtoi(txt.substr(s, e - s).c_str());
+            if (port > 0 && port < 65536) return port;
+        }
+        if (waited >= waitMs) return 0;
+        ::Sleep(100);
     }
-    return m;
-}
-
-void SavePorts(const std::map<std::wstring, int>& m) {
-    std::wstring j = L"{\r\n  \"ports\": {\r\n";
-    bool first = true;
-    for (auto& kv : m) {
-        if (!first) j += L",\r\n";
-        first = false;
-        j += L"    \"" + Esc(kv.first) + L"\": " + std::to_wstring(kv.second);
-    }
-    j += L"\r\n  }\r\n}\r\n";
-    std::wofstream f(ExeDir() + L"\\ports.json");
-    if (!f) return;
-    f.imbue(std::locale(f.getloc(), new std::codecvt_utf8<wchar_t>));
-    f << j;
-}
-
-bool PortFree(int port) {
-    WSADATA wd{};
-    static bool wsa = false;
-    if (!wsa) { ::WSAStartup(MAKEWORD(2, 2), &wd); wsa = true; }
-    SOCKET s = ::socket(AF_INET, SOCK_STREAM, 0);
-    if (s == INVALID_SOCKET) return false;
-    sockaddr_in a{};
-    a.sin_family = AF_INET;
-    a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-    a.sin_port = htons((u_short)port);
-    int r = ::bind(s, (sockaddr*)&a, sizeof(a));
-    ::closesocket(s);
-    return r == 0;
 }
 
 std::vector<ProfileInfo> ScanProfiles(const Config& cfg,
-    const std::map<std::wstring, ProcHandle>& procs,
-    const std::map<std::wstring, int>& ports) {
+    const std::map<std::wstring, ProcHandle>& procs) {
     // 多父目录扫描：全局 dataDir + 各 profile 独立父目录（profiles 段），按名去重合并。
     // 指纹页 A2 行设置的独立数据目录是 profile 的真实住所，列表必须从那里读。
     std::vector<std::wstring> parents;
@@ -254,8 +217,8 @@ std::vector<ProfileInfo> ScanProfiles(const Config& cfg,
                 p.pid = it->second.pid;
             }
         }
-        auto ip = ports.find(p.name);
-        if (ip != ports.end()) p.port = ip->second;
+        // 实际端口只在运行中才读（DevToolsActivePort 由本次浏览器随机写入；已停=0）
+        if (p.running) p.port = ReadDevToolsPort(p.path);
         out.push_back(p);
     }
     std::sort(out.begin(), out.end(),
