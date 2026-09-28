@@ -59,6 +59,71 @@ static std::wstring WJ(const std::string& raw) {
     }
     return W(raw);
 }
+}
+
+// ---- 伪装 IP 存 exe 同目录 Config.json（按环境目录名对应，双向同步） ----
+// 格式：{"k1hf7t36_hyg6dd":"192.168.128.129"}。读优先级 Config.json > ui 存档 webrtcIp
+// > static/dynamic 后备；指纹页保存时把框内有效 IP 回写，清空则删键。文件不存在视为空。
+static std::wstring FpSpoofIpCfgPath() { return AppDir() + L"\\Config.json"; }
+// 读：返回原始 IP 字符串（""=无）；调用方用 FpIsValidWebRtcIp 校验。
+static std::string FpConfigSpoofIpRaw(const std::wstring& profile) {
+    std::string txt;
+    if (!FpReadTextFile(FpSpoofIpCfgPath(), txt) || txt.empty()) return "";
+    std::string v = FpJsonGet(txt, N(profile));
+    if (v.size() >= 2 && v.front() == '"' && v.back() == '"') {
+        std::string s = v.substr(1, v.size() - 2), o;
+        for (size_t i = 0; i < s.size(); i++) {
+            if (s[i] == '\\' && i + 1 < s.size()) { o += s[i + 1]; i++; }
+            else o += s[i];
+        }
+        return o;
+    }
+    return "";
+}
+// 写：ip 为空=删键；返回写盘是否成功。
+static bool FpConfigSpoofIpSet(const std::wstring& profile, const std::string& ip) {
+    std::wstring path = FpSpoofIpCfgPath();
+    std::string txt;
+    bool hasFile = FpReadTextFile(path, txt) && !txt.empty();
+    if (!hasFile) {
+        if (ip.empty()) return true; // 无文件无写入=已是删后状态
+        txt = "{}";
+    }
+    std::string q = "\"" + N(profile) + "\"";
+    size_t ks = txt.find(q);
+    if (!ip.empty()) {
+        std::string nv = "\"" + ip + "\"";
+        std::string merged = FpJsonSet(txt, N(profile), nv);
+        if (merged.empty()) return false;
+        return FpWriteTextFile(path, merged);
+    }
+    // 删键：定位 "name" : "value" 片段并连带一个相邻逗号删掉
+    if (ks == std::string::npos) return true; // 本就没有
+    size_t p = ks + q.size();
+    while (p < txt.size() && (txt[p] == ' ' || txt[p] == '\t' || txt[p] == '\r' || txt[p] == '\n')) p++;
+    if (p >= txt.size() || txt[p] != ':') return false;
+    p++;
+    while (p < txt.size() && (txt[p] == ' ' || txt[p] == '\t' || txt[p] == '\r' || txt[p] == '\n')) p++;
+    if (p >= txt.size() || txt[p] != '"') return false;
+    size_t ve = p + 1;
+    while (ve < txt.size()) {
+        if (txt[ve] == '\\') { ve += 2; continue; }
+        if (txt[ve] == '"') { ve++; break; }
+        ve++;
+    }
+    std::string o = txt;
+    o.erase(ks, ve - ks);
+    // 吃掉一个相邻逗号（优先后面，否则前面）
+    size_t t = ks;
+    while (t < o.size() && (o[t] == ' ' || o[t] == '\t' || o[t] == '\r' || o[t] == '\n')) t++;
+    if (t < o.size() && o[t] == ',') o.erase(t, 1);
+    else if (ks > 0) {
+        size_t b = ks;
+        while (b > 0 && (o[b - 1] == ' ' || o[b - 1] == '\t' || o[b - 1] == '\r' || o[b - 1] == '\n')) b--;
+        if (b > 0 && o[b - 1] == ',') o.erase(b - 1, 1);
+    }
+    return FpWriteTextFile(path, o);
+}
 
 std::string FpFormToUiJson(const FpFormData& f) {
     std::string o = "{";
@@ -1421,6 +1486,14 @@ static LRESULT CALLBACK FpWndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
                     }
                     if ((uiWrIp.empty() || uiWrIp == "\"\"") && wrAddress.size() >= 2 && wrAddress.front() == '"')
                         w->form.webrtcIp = WJ(wrAddress);
+                    // Config.json 最高优先：exe 同目录按环境名对应的伪装 IP（有效才覆盖）
+                    {
+                        std::string cfgIp = FpConfigSpoofIpRaw(w->profile);
+                        if (!cfgIp.empty() && FpIsValidWebRtcIp(W(cfgIp))) {
+                            w->form.webrtcIp = W(cfgIp);
+                            LOG(L"指纹载入 伪装IP=Config.json " + w->profile);
+                        }
+                    }
                     if (uiWr.empty() || uiWr == "\"\"") {
                         std::string dw = FpJsonGet(sj, "DisableWebRTC");
                         if (dw.empty()) dw = FpJsonGet(dj, "DisableWebRTC");
@@ -1959,6 +2032,12 @@ static LRESULT CALLBACK FpWndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
                     }
                     if ((uiWrIp.empty() || uiWrIp == "\"\"") && wrAddress.size() >= 2 && wrAddress.front() == '"')
                         w->form.webrtcIp = WJ(wrAddress);
+                    // Config.json 最高优先（与打开回填同表，键为当前环境名）
+                    {
+                        std::string cfgIp = FpConfigSpoofIpRaw(w->profile);
+                        if (!cfgIp.empty() && FpIsValidWebRtcIp(W(cfgIp)))
+                            w->form.webrtcIp = W(cfgIp);
+                    }
                     if (uiWr.empty() || uiWr == "\"\"") {
                         std::string dw = FpJsonGet(sj2, "DisableWebRTC");
                         if (dw.empty()) dw = FpJsonGet(dj2, "DisableWebRTC");
@@ -2097,6 +2176,15 @@ static LRESULT CALLBACK FpWndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
                     L"当前选择 forward：将按普通 WebRTC 工作，不会应用已填写的伪装 IP。\r\n要让 WebRTC 测试显示指定 IP，请切换到 proxy 模式后保存。",
                     L"WebRTC 伪装 IP 未启用", MB_OK | MB_ICONINFORMATION);
                 LOG(L"WebRTC forward 模式忽略已填写的伪装 IP " + w->profile);
+            }
+            // 伪装 IP 双向同步：框内有效 IP 回写 exe 目录 Config.json（按环境名）；
+            // 清空/无效则删键（防旧值下次覆盖复活）。启动链路不变（表单→static/dynamic→ext）。
+            {
+                std::string boxIp = N(FpTrimWebRtcIp(w->form.webrtcIp));
+                std::string cfgIp = FpIsValidWebRtcIp(W(boxIp)) ? boxIp : "";
+                bool okCfg = FpConfigSpoofIpSet(w->profile, cfgIp);
+                LOG(L"指纹保存 伪装IP Config.json " + std::wstring(okCfg ? L"OK" : L"FAIL") +
+                    (cfgIp.empty() ? L" cleared" : L" set") + L" " + w->profile);
             }
             // A2 独立目录落盘：只写 sunlauncher.json profiles 段（非官方设置，
             // 不进三件套/ext）。写盘失败记日志，不阻断指纹保存。
