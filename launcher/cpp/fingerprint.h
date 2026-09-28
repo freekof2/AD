@@ -58,6 +58,10 @@ bool FpSaveCookiesJson(const std::wstring& profileDir, const std::string& jsonTe
 // UI 35+ 参数全量存档。启动时作为 extra 传入 FpBuildCmdline，其中保护键被丢弃（缓存为准）。
 bool FpLoadUiExtra(const std::wstring& profileDir, std::string& jsonOut);
 bool FpSaveUiExtra(const std::wstring& profileDir, const std::string& jsonText);
+// 取 JSON 字符串值的反转义文本（去引号，还原 \" \\ \/ \b \f \n \r \t \u00XX）。
+std::wstring FpJsonUnquote(const std::string& raw);
+// 取 profile 目录 ui 存档中的 remark（指纹备注），单行化供列表显示；无则返回 ""。
+std::wstring FpProfileRemark(const std::wstring& profileDir);
 
 // ---------- 语言三键工具（对齐 main.min.js LanguageTask 全文） ----------
 // 解析 language 原始值（支持 "en-US,en" 字符串或 ["en-US","en"] 数组）为有序列表。

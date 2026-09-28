@@ -257,6 +257,49 @@ bool FpLoadUiExtra(const std::wstring& profileDir, std::string& jsonOut) {
 bool FpSaveUiExtra(const std::wstring& profileDir, const std::string& jsonText) {
     return FpWriteTextFile(profileDir + L"\\ui_fingerprint.json", jsonText);
 }
+// FpJsonGet 返回含引号的原始片段，去引号并还原转义（与 fp_ui.cpp JEsc 对应）。
+std::wstring FpJsonUnquote(const std::string& raw) {
+    if (raw.size() >= 2 && raw.front() == '"' && raw.back() == '"') {
+        std::string s = raw.substr(1, raw.size() - 2), o;
+        for (size_t i = 0; i < s.size(); i++) {
+            if (s[i] == '\\' && i + 1 < s.size()) {
+                char n = s[i + 1];
+                if (n == 'b') { o += '\b'; i++; }
+                else if (n == 'f') { o += '\f'; i++; }
+                else if (n == 'n') { o += '\n'; i++; }
+                else if (n == 'r') { o += '\r'; i++; }
+                else if (n == 't') { o += '\t'; i++; }
+                else if (n == 'u' && i + 5 < s.size()) {
+                    auto hv = [](char h) -> int {
+                        if (h >= '0' && h <= '9') return h - '0';
+                        if (h >= 'a' && h <= 'f') return h - 'a' + 10;
+                        if (h >= 'A' && h <= 'F') return h - 'A' + 10;
+                        return -1;
+                    };
+                    int h1 = hv(s[i + 2]), h2 = hv(s[i + 3]), h3 = hv(s[i + 4]), h4 = hv(s[i + 5]);
+                    if (h1 >= 0 && h2 >= 0 && h3 >= 0 && h4 >= 0 && h1 == 0 && h2 == 0) {
+                        o += (char)((h3 << 4) | h4);
+                        i += 5;
+                    } else { o += n; i++; }
+                } else { o += n; i++; }
+            }
+            else o += s[i];
+        }
+        return W(o);
+    }
+    return W(raw);
+}
+// 主窗口环境列表备注列：读 ui 存档 remark，换行/制表压成空格并去首尾空白。
+std::wstring FpProfileRemark(const std::wstring& profileDir) {
+    std::string ui;
+    if (!FpLoadUiExtra(profileDir, ui) || ui.empty()) return L"";
+    std::wstring r = FpJsonUnquote(FpJsonGet(ui, "remark"));
+    for (auto& c : r) { if (c == L'\r' || c == L'\n' || c == L'\t') c = L' '; }
+    size_t a = r.find_first_not_of(L" ");
+    if (a == std::wstring::npos) return L"";
+    size_t b = r.find_last_not_of(L" ");
+    return r.substr(a, b - a + 1);
+}
 
 // ================= 语言三键工具（对齐 main.min.js LanguageTask 全文） =================
 static std::string TrimTag(const std::string& s) {

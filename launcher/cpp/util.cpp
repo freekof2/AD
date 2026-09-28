@@ -1,5 +1,6 @@
 // util.cpp — 路径/JSON/端口/进程小工具 + DEBUG 日志落盘
 #include "SunLauncher.h"
+#include "fingerprint.h"
 
 static std::wstring ExeDir() {
     wchar_t buf[MAX_PATH]{};
@@ -243,6 +244,8 @@ std::vector<ProfileInfo> ScanProfiles(const Config& cfg,
     std::vector<ProfileInfo> out;
     for (auto& kv : merged) {
         ProfileInfo p = kv.second;
+        // 备注列：读该 profile 目录 ui 存档 remark（小文件本地读，无网络）
+        p.remark = FpProfileRemark(p.path);
         auto it = procs.find(p.name);
         if (it != procs.end() && it->second.hProcess) {
             DWORD code = 0;

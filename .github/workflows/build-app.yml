@@ -341,11 +341,11 @@ jobs:
             if ($fpc -notmatch $s) { throw "alignment comment '$s' missing in fp_ui.cpp" }
             Write-Host "align comment ok: $s"
           }
-          # 2e. 主窗口几何（760x660，LISTVIEW 三列，批量行/日志行/新建列互不重叠）
+          # 2e. 主窗口几何（760x660，LISTVIEW 四列占满左侧，批量行/新建行/状态条互不重叠）
           #     无全局目录区：路径只在指纹配置 A2 行按指纹独立设置（Eff* 解析）
           #     右列操作按钮靠右对齐（x=606，无打开日志目录按钮；主窗口无 DEBUG 日志框）
           $mcpp = Get-Content launcher\cpp\main.cpp -Raw
-          foreach ($s in @("12, 12, 470, 330", "606, 12, 100",
+          foreach ($s in @("12, 12, 582, 494", "606, 12, 100",
                            "760, 660", "WC_LISTVIEWW", "LVS_REPORT", "LVS_EX_CHECKBOXES",
                            "LVS_EX_FULLROWSELECT", "LVN_ITEMCHANGED", "NM_CUSTOMDRAW",
                            "kUiBg", "kUiPanel", "kUiSuccess", "kUiMuted",
@@ -354,6 +354,16 @@ jobs:
                            "LVIS_SELECTED", "LVIS_STATEIMAGEMASK")) {
             if ($mcpp -notmatch [regex]::Escape($s)) { throw "main-window symbol '$s' missing in main.cpp" }
             Write-Host "mainwin ok: $s"
+          }
+          # 四列：备注185/环境目录190/状态120/端口64（备注第0列，环境目录第1列，状态第2列，端口第3列）
+          foreach ($s in @("L`"备注`"", "L`"环境目录`"", "L`"状态`"", "L`"端口`"",
+                           "FpProfileRemark", "FpJsonUnquote", "FpLoadUiExtra")) {
+            if ($mcpp -notmatch [regex]::Escape($s) -and
+                (Get-Content launcher\cpp\fingerprint.cpp -Raw) -notmatch [regex]::Escape($s) -and
+                (Get-Content launcher\cpp\util.cpp -Raw) -notmatch [regex]::Escape($s)) {
+              throw "remark-col symbol '$s' missing"
+            }
+            Write-Host "remarkcol ok: $s"
           }
           # 搜索+批量行在窗口底部 y=564/566（底 594），与状态条 y=598 不重叠；主窗口无 DEBUG 日志框
           foreach ($s in @("292, 564, 88", "396, 564, 88", "500, 564, 88",
@@ -367,8 +377,8 @@ jobs:
             if ($mcpp -notmatch [regex]::Escape($s)) { throw "right-col rect '$s' missing in main.cpp" }
             Write-Host "rightcol ok: $s"
           }
-          # 新建环境行（搜索行上方，同行：标签12,528/输入88,526/按钮498,524）
-          foreach ($s in @("12, 528, 70", "88, 526, 400", "498, 524, 100")) {
+          # 新建环境行（搜索行上方，同行：标签12,528宽92/输入110,526宽380/按钮498,524）
+          foreach ($s in @("12, 528, 92", "110, 526, 380", "498, 524, 100")) {
             if ($mcpp -notmatch [regex]::Escape($s)) { throw "newenv-row rect '$s' missing in main.cpp" }
             Write-Host "newenvrow ok: $s"
           }

@@ -36,7 +36,7 @@ static void RefreshList() {
     // 同步触发 LVN_ITEMCHANGED -> WndProc -> ListNameOfRow(+lock g.mu) 及 NM_CUSTOMDRAW
     // 回调（也在 WndProc 内读 g.hList），若此时 RefreshList 持有 g.mu 就是“UI 线程自己
     // 锁自己 + 回调重入”的未定义行为：MSVC /GS 熔断即报 0xc0000409。锁外发消息消重入。
-    struct RowSnap { std::wstring name; std::wstring st; std::wstring port; bool checked; };
+    struct RowSnap { std::wstring name; std::wstring remark; std::wstring st; std::wstring port; bool checked; };
     std::wstring keep;
     std::vector<RowSnap> rows;
     std::wstring filter;
@@ -49,7 +49,7 @@ static void RefreshList() {
             LVITEMW li{};
             li.mask = LVIF_TEXT;
             li.iItem = cur;
-            li.iSubItem = 0;
+            li.iSubItem = 1; // 第 0 列是备注，环境目录名在第 1 列
             li.pszText = tmp;
             li.cchTextMax = 512;
             if (::SendMessageW(hList, LVM_GETITEMTEXTW, (WPARAM)cur, (LPARAM)&li))
@@ -67,6 +67,7 @@ static void RefreshList() {
             }
             RowSnap r;
             r.name = p.name;
+            r.remark = p.remark;
             r.st = p.running ? (L"运行中 pid=" + std::to_wstring(p.pid)) : L"已停止";
             r.port = p.port ? std::to_wstring(p.port) : L"-";
             auto ck = g.checked.find(p.name);
@@ -85,22 +86,29 @@ static void RefreshList() {
         LVITEMW li{};
         li.mask = LVIF_TEXT;
         li.iItem = row;
-        li.iSubItem = 0;
+        li.iSubItem = 1; // 环境目录名在第 1 列（第 0 列是备注）
         li.pszText = (LPWSTR)r.name.c_str();
         int idx = (int)::SendMessageW(hList, LVM_INSERTITEMW, 0, (LPARAM)&li);
         if (row == 0) LOG(std::wstring(L"probe refresh row0-insert idx=") + std::to_wstring(idx));
         if (idx < 0) { row++; continue; } // 插入失败跳过本行，避免后续 SETITEM 用野 idx
+        LVITEMW li0{};
+        li0.mask = LVIF_TEXT;
+        li0.iItem = idx;
+        li0.iSubItem = 0; // 备注列（ui 存档 remark）
+        li0.pszText = (LPWSTR)r.remark.c_str();
+        ::SendMessageW(hList, LVM_SETITEMTEXTW, (WPARAM)idx, (LPARAM)&li0);
+        if (row == 0) LOG(L"probe refresh row0-col0");
         LVITEMW li1{};
         li1.mask = LVIF_TEXT;
         li1.iItem = idx;
-        li1.iSubItem = 1;
+        li1.iSubItem = 2;
         li1.pszText = (LPWSTR)r.st.c_str();
         ::SendMessageW(hList, LVM_SETITEMTEXTW, (WPARAM)idx, (LPARAM)&li1);
         if (row == 0) LOG(L"probe refresh row0-col1");
         LVITEMW li2{};
         li2.mask = LVIF_TEXT;
         li2.iItem = idx;
-        li2.iSubItem = 2;
+        li2.iSubItem = 3;
         li2.pszText = (LPWSTR)r.port.c_str();
         ::SendMessageW(hList, LVM_SETITEMTEXTW, (WPARAM)idx, (LPARAM)&li2);
         if (row == 0) LOG(L"probe refresh row0-col2");
@@ -140,14 +148,14 @@ static void RefreshList() {
     LOG(L"probe refresh status-done");
 }
 
-// 从 LISTVIEW 当前选中行取 profile 名（第 0 列文本即目录名，无需反解）
+// 从 LISTVIEW 当前选中行取 profile 名（环境目录名在第 1 列，第 0 列是备注，无需反解）
 static std::wstring ListNameOfRow(int idx) {
     if (!g.hList || !::IsWindow(g.hList) || idx < 0) return L"";
     wchar_t tmp[512]{};
     LVITEMW li{};
     li.mask = LVIF_TEXT;
     li.iItem = idx;
-    li.iSubItem = 0;
+    li.iSubItem = 1;
     li.pszText = tmp;
     li.cchTextMax = 512;
     if (!::SendMessageW(g.hList, LVM_GETITEMTEXTW, (WPARAM)idx, (LPARAM)&li)) return L"";
@@ -527,11 +535,11 @@ static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
         };
         // 主窗口无全局目录区：数据/浏览器路径只在指纹配置 A2 行按指纹独立设置，
         // 存 sunlauncher.json profiles 段（EffDataDir/EffBrowserDir 解析）。
-        // 环境表上移：LISTVIEW (12,12,470x330)。
+        // 环境表占满左侧空间：LISTVIEW (12,12,582x494)；四列：备注/环境目录/状态/端口。
         LOG(L"probe wmcreate listview-pre");
         g.hList = ::CreateWindowW(WC_LISTVIEWW, NULL,
             WS_CHILD | WS_VISIBLE | WS_BORDER | LVS_REPORT | LVS_SHOWSELALWAYS | LVS_SINGLESEL,
-            12, 12, 470, 330, h, (HMENU)(INT_PTR)IDC_LIST, hi, NULL);
+            12, 12, 582, 494, h, (HMENU)(INT_PTR)IDC_LIST, hi, NULL);
         LOG(std::wstring(L"probe wmcreate listview=") + (g.hList ? L"ok" : (L"fail err=" + std::to_wstring(::GetLastError()))));
         {
             DWORD ex = (DWORD)::SendMessageW(g.hList, LVM_GETEXTENDEDLISTVIEWSTYLE, 0, 0);
@@ -539,29 +547,34 @@ static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
             ::SendMessageW(g.hList, LVM_SETEXTENDEDLISTVIEWSTYLE, 0, (LPARAM)ex);
             LVCOLUMNW c0{};
             c0.mask = LVCF_TEXT | LVCF_WIDTH;
-            c0.pszText = (LPWSTR)L"环境目录";
-            c0.cx = 220;
+            c0.pszText = (LPWSTR)L"备注";
+            c0.cx = 185;
             ::SendMessageW(g.hList, LVM_INSERTCOLUMNW, 0, (LPARAM)&c0);
             LVCOLUMNW c1{};
             c1.mask = LVCF_TEXT | LVCF_WIDTH;
-            c1.pszText = (LPWSTR)L"状态";
-            c1.cx = 150;
+            c1.pszText = (LPWSTR)L"环境目录";
+            c1.cx = 190;
             ::SendMessageW(g.hList, LVM_INSERTCOLUMNW, 1, (LPARAM)&c1);
             LVCOLUMNW c2{};
             c2.mask = LVCF_TEXT | LVCF_WIDTH;
-            c2.pszText = (LPWSTR)L"端口";
-            c2.cx = 96;
+            c2.pszText = (LPWSTR)L"状态";
+            c2.cx = 120;
             ::SendMessageW(g.hList, LVM_INSERTCOLUMNW, 2, (LPARAM)&c2);
+            LVCOLUMNW c3{};
+            c3.mask = LVCF_TEXT | LVCF_WIDTH;
+            c3.pszText = (LPWSTR)L"端口";
+            c3.cx = 64;
+            ::SendMessageW(g.hList, LVM_INSERTCOLUMNW, 3, (LPARAM)&c3);
         }
         // 右列操作按钮（靠右对齐 x=606）：启动/关闭/刷新/指纹配置/新建（无日志目录按钮）
         mkBtn(IDC_START, L"启动", 606, 12, 100);
         mkBtn(IDC_STOP, L"关闭", 606, 50, 100);
         mkBtn(IDC_REFRESH, L"刷新", 606, 88, 100);
         mkBtn(IDC_FPCONFIG, L"指纹配置", 606, 126, 100);
-        // 新建环境行（搜索行上方 y=524/526/528，标签+输入框+按钮同行）
-        ::CreateWindowW(L"STATIC", L"新建环境:", WS_CHILD | WS_VISIBLE, 12, 528, 70, 22, h, NULL, hi, NULL);
+        // 新建环境行（搜索行上方 y=524/526/528，标签+输入框+按钮同行；标签加宽防截断）
+        ::CreateWindowW(L"STATIC", L"新建环境:", WS_CHILD | WS_VISIBLE, 12, 528, 92, 22, h, NULL, hi, NULL);
         ::CreateWindowW(L"EDIT", L"", WS_CHILD | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL,
-            88, 526, 400, 26, h, (HMENU)(INT_PTR)IDC_NEWNAME, hi, NULL);
+            110, 526, 380, 26, h, (HMENU)(INT_PTR)IDC_NEWNAME, hi, NULL);
         mkBtn(IDC_CREATE, L"新建", 498, 524, 100);
         // 搜索 + 批量行移到底部（y=566，与状态条 598 不重叠；窗口 760 宽，间隙 ≥16；主窗口无日志框）
         ::CreateWindowW(L"STATIC", L"搜索:", WS_CHILD | WS_VISIBLE, 12, 568, 40, 22, h, NULL, hi, NULL);
@@ -693,7 +706,7 @@ static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
                     LVITEMW li{};
                     li.mask = LVIF_TEXT;
                     li.iItem = (int)cd->nmcd.dwItemSpec;
-                    li.iSubItem = 1;
+                    li.iSubItem = 2; // 状态列（第 0 列备注，第 1 列环境目录）
                     li.pszText = st;
                     li.cchTextMax = 64;
                     ::SendMessageW(g.hList, LVM_GETITEMTEXTW, (WPARAM)li.iItem, (LPARAM)&li);

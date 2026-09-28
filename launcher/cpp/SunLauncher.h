@@ -70,6 +70,7 @@ inline std::wstring EffBrowserDir(const Config& c, const std::wstring& profile) 
 struct ProfileInfo {
     std::wstring name;
     std::wstring path;
+    std::wstring remark; // ui_fingerprint.json 指纹备注（环境列表备注列显示）
     bool         running = false;
     DWORD        pid = 0;
     int          port = 0;
