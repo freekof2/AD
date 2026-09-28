@@ -1324,17 +1324,42 @@ static LRESULT CALLBACK FpWndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
                     if (uiMac.empty() || uiMac == "\"\"") {
                         v = FpJsonGet(sj, "MacAddress"); if (!v.empty()) { w->form.mac = WJ(v); }
                     }
-                    // MediaDevices：仅 ui 缺失时补（ui 存档 mediaDevices 为准）
+                    // MediaDevices：仅 ui 缺失时补。字符串形态直接取；official 数组形态
+                    // [{kind,label}...] 按 kind 数出三数量，模式按“真实设备列表”置 0（真实/关闭）。
                     std::string uiMd = FpJsonGet(ui, "mediaDevices");
                     if ((uiMd.empty() || uiMd == "\"\"") ) {
                         v = FpJsonGet(sj, "MediaDevices");
                         if (!v.empty() && v.front() == '"') w->form.mediaDevices = WJ(v);
+                        else if (!v.empty() && v.front() == '[') {
+                            w->form.mediaDevices = L"0";
+                            int nin = 0, nvid = 0, nout = 0;
+                            size_t q = 0;
+                            while ((q = v.find("\"kind\"", q)) != std::string::npos) {
+                                size_t c = v.find(':', q);
+                                size_t q1 = (c == std::string::npos) ? std::string::npos : v.find('"', c);
+                                size_t q2 = (q1 == std::string::npos) ? std::string::npos : v.find('"', q1 + 1);
+                                if (q1 == std::string::npos || q2 == std::string::npos) break;
+                                std::string kd = v.substr(q1 + 1, q2 - q1 - 1);
+                                if (kd == "audioinput") nin++;
+                                else if (kd == "videoinput") nvid++;
+                                else if (kd == "audiooutput") nout++;
+                                q = q2 + 1;
+                            }
+                            if (nin + nvid + nout > 0) {
+                                w->form.mediaIn = W(std::to_string(nin));
+                                w->form.mediaVid = W(std::to_string(nvid));
+                                w->form.mediaOut = W(std::to_string(nout));
+                            }
+                        }
                     }
-                    // TTSEngines -> speechSwitch：仅 ui 缺失时
+                    // TTSEngines -> speechSwitch：仅 ui 缺失时；非空数组即有可用语音 -> 开。
+                    // 旧逻辑 v.find('1') 对 official 语音表恒假，误关语音。
                     std::string uiSp = FpJsonGet(ui, "speechSwitch");
                     if (uiSp.empty() || uiSp == "\"\"") {
                         v = FpJsonGet(sj, "TTSEngines");
-                        if (!v.empty()) w->form.swSpeech = (v.find('1') != std::string::npos);
+                        if (!v.empty() && v.front() == '[' &&
+                            v.find_first_not_of("[ \t\r\n]") != std::string::npos)
+                            w->form.swSpeech = true;
                     }
                     // 时区/地理 static 后备：仅 ui 对应键缺失时（timezone/timezoneMode/geoMode/lat/lng/accuracy）
                     std::string uiTz = FpJsonGet(ui, "timezone");
@@ -1345,6 +1370,29 @@ static LRESULT CALLBACK FpWndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
                             for (auto& c : t) if (c == '_') c = ' ';
                             w->form.timezone = W(t);
                             w->form.timezoneMode = L"custom";
+                        }
+                    }
+                    // 地理模式 static 后备：GeolocationSetting ask/allow/block（ui 缺失时；
+                    // official static 有该键但旧回填没读，导致无 ui 环境恒显示“允许”与实际相反）
+                    {
+                        std::string uiGm = FpJsonGet(ui, "geoMode");
+                        if (uiGm.empty() || uiGm == "\"\"") {
+                            v = FpJsonGet(sj, "GeolocationSetting");
+                            if (!v.empty() && v.front() == '"') {
+                                std::string gm = N(WJ(v));
+                                for (auto& c : gm) c = tolower(c);
+                                if (gm == "ask" || gm == "allow" || gm == "block")
+                                    w->form.geoMode = W(gm);
+                            }
+                        }
+                    }
+                    // 白名单端口 static 后备：AllowScanPorts（ui 缺失且非空时）
+                    {
+                        std::string uiWp = FpJsonGet(ui, "whitePorts");
+                        if (uiWp.empty() || uiWp == "\"\"") {
+                            v = FpJsonGet(sj, "AllowScanPorts");
+                            if (!v.empty() && v.front() == '"' && v != "\"\"")
+                                w->form.whitePorts = WJ(v);
                         }
                     }
                     // AudioFp/ClientRectFp -> 开关：仅 ui 缺失时
@@ -1358,22 +1406,19 @@ static LRESULT CALLBACK FpWndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
                         v = FpJsonGet(sj, "ClientRectFp");
                         if (!v.empty()) w->form.swClientRects = (v != "0" && v != "\"0\"");
                     }
-                    // CanvasMark/WebGLMark -> 开关+种子显示：仅 ui 缺失时（ui canvas/webglImage 为准）
-                    std::string uiCv = FpJsonGet(ui, "canvas");
-                    if (uiCv.empty() || uiCv == "\"\"") {
-                        v = FpJsonGet(sj, "CanvasMark");
-                        if (!v.empty()) w->form.swCanvas = true;
-                    }
-                    std::string uiWg = FpJsonGet(ui, "webglImage");
-                    if (uiWg.empty() || uiWg == "\"\"") {
-                        v = FpJsonGet(sj, "WebGLMark");
-                        if (!v.empty()) w->form.swWebglImg = true;
-                    }
-                    // WebRTC 回填：ui 模式优先；缺 IP 时从 static/dynamic WebRTCAddress 补。
+                    // CanvasMark/WebGLMark 只是噪声种子（official static 恒存在），
+                    // 不能反推开关状态：ui 缺失时留默认值，不强制勾选。
+                    // WebRTC 回填：ui 模式优先；缺 IP 时按 WebRTCAddress -> WebRTCLocalAddress
+                    // 顺序从 static/dynamic 补（official static 只有后者）。
                     std::string uiWr = FpJsonGet(ui, "webrtc");
                     std::string uiWrIp = FpJsonGet(ui, "webrtcIp");
                     std::string wrAddress = FpJsonGet(sj, "WebRTCAddress");
                     if (wrAddress.empty() || wrAddress == "\"\"") wrAddress = FpJsonGet(dj, "WebRTCAddress");
+                    if ((wrAddress.empty() || wrAddress == "\"\"")) {
+                        std::string wrLocal = FpJsonGet(sj, "WebRTCLocalAddress");
+                        if (wrLocal.size() >= 2 && wrLocal.front() == '"' && wrLocal != "\"\"")
+                            wrAddress = wrLocal;
+                    }
                     if ((uiWrIp.empty() || uiWrIp == "\"\"") && wrAddress.size() >= 2 && wrAddress.front() == '"')
                         w->form.webrtcIp = WJ(wrAddress);
                     if (uiWr.empty() || uiWr == "\"\"") {
@@ -1400,6 +1445,14 @@ static LRESULT CALLBACK FpWndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
                         }
                         std::string uiPt = FpJsonGet(ui, "proxyType");
                         if ((uiPt.empty() || uiPt == "\"\"") && s2.size() >= 2 && s2.front() == '"') w->form.proxyType = WJ(s2);
+                        // 代理账号/密码 official static 有 account/password 但旧回填没读；
+                        // 不读则保存时被空值覆盖，带鉴权代理一次保存即丢。
+                        std::string uiPu = FpJsonGet(ui, "proxyUser"), uiPw = FpJsonGet(ui, "proxyPass");
+                        std::string a2 = FpJsonGet(pc, "account"), pw2 = FpJsonGet(pc, "password");
+                        if ((uiPu.empty() || uiPu == "\"\"") && a2.size() >= 2 && a2.front() == '"' && a2 != "\"\"")
+                            w->form.proxyUser = WJ(a2);
+                        if ((uiPw.empty() || uiPw == "\"\"") && pw2.size() >= 2 && pw2.front() == '"' && pw2 != "\"\"")
+                            w->form.proxyPass = WJ(pw2);
                         LOG(L"指纹载入 代理=static后备 " + w->profile);
                     }
                 } else {
@@ -1821,7 +1874,38 @@ static LRESULT CALLBACK FpWndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
                     std::string uiMac = FpJsonGet(ui2, "mac");
                     if (uiMac.empty() || uiMac == "\"\"") { v = FpJsonGet(sj2, "MacAddress"); if (!v.empty()) w->form.mac = WJ(v); }
                     std::string uiMd = FpJsonGet(ui2, "mediaDevices");
-                    if (uiMd.empty() || uiMd == "\"\"") { v = FpJsonGet(sj2, "MediaDevices"); if (!v.empty() && v.front() == '"') w->form.mediaDevices = WJ(v); }
+                    if (uiMd.empty() || uiMd == "\"\"") {
+                        v = FpJsonGet(sj2, "MediaDevices");
+                        if (!v.empty() && v.front() == '"') w->form.mediaDevices = WJ(v);
+                        else if (!v.empty() && v.front() == '[') {
+                            w->form.mediaDevices = L"0";
+                            int nin = 0, nvid = 0, nout = 0;
+                            size_t q = 0;
+                            while ((q = v.find("\"kind\"", q)) != std::string::npos) {
+                                size_t c = v.find(':', q);
+                                size_t q1 = (c == std::string::npos) ? std::string::npos : v.find('"', c);
+                                size_t q2 = (q1 == std::string::npos) ? std::string::npos : v.find('"', q1 + 1);
+                                if (q1 == std::string::npos || q2 == std::string::npos) break;
+                                std::string kd = v.substr(q1 + 1, q2 - q1 - 1);
+                                if (kd == "audioinput") nin++;
+                                else if (kd == "videoinput") nvid++;
+                                else if (kd == "audiooutput") nout++;
+                                q = q2 + 1;
+                            }
+                            if (nin + nvid + nout > 0) {
+                                w->form.mediaIn = W(std::to_string(nin));
+                                w->form.mediaVid = W(std::to_string(nvid));
+                                w->form.mediaOut = W(std::to_string(nout));
+                            }
+                        }
+                    }
+                    std::string uiSp2 = FpJsonGet(ui2, "speechSwitch");
+                    if (uiSp2.empty() || uiSp2 == "\"\"") {
+                        v = FpJsonGet(sj2, "TTSEngines");
+                        if (!v.empty() && v.front() == '[' &&
+                            v.find_first_not_of("[ \t\r\n]") != std::string::npos)
+                            w->form.swSpeech = true;
+                    }
                     std::string uiTz = FpJsonGet(ui2, "timezone");
                     if (uiTz.empty() || uiTz == "\"\"") {
                         v = FpJsonGet(sj2, "TimeZone");
@@ -1829,6 +1913,22 @@ static LRESULT CALLBACK FpWndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
                             std::string t = N(WJ(v)); for (auto& c : t) if (c == '_') c = ' ';
                             w->form.timezone = W(t); w->form.timezoneMode = L"custom";
                         }
+                    }
+                    std::string uiGm2 = FpJsonGet(ui2, "geoMode");
+                    if (uiGm2.empty() || uiGm2 == "\"\"") {
+                        v = FpJsonGet(sj2, "GeolocationSetting");
+                        if (!v.empty() && v.front() == '"') {
+                            std::string gm = N(WJ(v));
+                            for (auto& c : gm) c = tolower(c);
+                            if (gm == "ask" || gm == "allow" || gm == "block")
+                                w->form.geoMode = W(gm);
+                        }
+                    }
+                    std::string uiWp2 = FpJsonGet(ui2, "whitePorts");
+                    if (uiWp2.empty() || uiWp2 == "\"\"") {
+                        v = FpJsonGet(sj2, "AllowScanPorts");
+                        if (!v.empty() && v.front() == '"' && v != "\"\"")
+                            w->form.whitePorts = WJ(v);
                     }
                     std::string uiG = FpJsonGet(ui2, "lat");
                     if ((uiG.empty() || uiG == "\"\"") && !dj2.empty()) {
@@ -1847,14 +1947,16 @@ static LRESULT CALLBACK FpWndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
                     if (uiAu.empty() || uiAu == "\"\"") { v = FpJsonGet(sj2, "AudioFp"); if (!v.empty()) w->form.swAudio = (v != "0" && v != "\"0\""); }
                     std::string uiCr = FpJsonGet(ui2, "clientRects");
                     if (uiCr.empty() || uiCr == "\"\"") { v = FpJsonGet(sj2, "ClientRectFp"); if (!v.empty()) w->form.swClientRects = (v != "0" && v != "\"0\""); }
-                    std::string uiCv = FpJsonGet(ui2, "canvas");
-                    if (uiCv.empty() || uiCv == "\"\"") { v = FpJsonGet(sj2, "CanvasMark"); if (!v.empty()) w->form.swCanvas = true; }
-                    std::string uiWg = FpJsonGet(ui2, "webglImage");
-                    if (uiWg.empty() || uiWg == "\"\"") { v = FpJsonGet(sj2, "WebGLMark"); if (!v.empty()) w->form.swWebglImg = true; }
+                    // CanvasMark/WebGLMark 只是噪声种子（恒存在），不能反推开关，留默认。
                     std::string uiWr = FpJsonGet(ui2, "webrtc");
                     std::string uiWrIp = FpJsonGet(ui2, "webrtcIp");
                     std::string wrAddress = FpJsonGet(sj2, "WebRTCAddress");
                     if (wrAddress.empty() || wrAddress == "\"\"") wrAddress = FpJsonGet(dj2, "WebRTCAddress");
+                    if ((wrAddress.empty() || wrAddress == "\"\"")) {
+                        std::string wrLocal = FpJsonGet(sj2, "WebRTCLocalAddress");
+                        if (wrLocal.size() >= 2 && wrLocal.front() == '"' && wrLocal != "\"\"")
+                            wrAddress = wrLocal;
+                    }
                     if ((uiWrIp.empty() || uiWrIp == "\"\"") && wrAddress.size() >= 2 && wrAddress.front() == '"')
                         w->form.webrtcIp = WJ(wrAddress);
                     if (uiWr.empty() || uiWr == "\"\"") {
@@ -1876,6 +1978,12 @@ static LRESULT CALLBACK FpWndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
                     }
                     std::string uiT = FpJsonGet(ui2, "proxyType");
                     if ((uiT.empty() || uiT == "\"\"") && s2.size() >= 2 && s2.front() == '"') w->form.proxyType = WJ(s2);
+                    std::string uiU2 = FpJsonGet(ui2, "proxyUser"), uiW2 = FpJsonGet(ui2, "proxyPass");
+                    std::string a2 = FpJsonGet(pc, "account"), pw2 = FpJsonGet(pc, "password");
+                    if ((uiU2.empty() || uiU2 == "\"\"") && a2.size() >= 2 && a2.front() == '"' && a2 != "\"\"")
+                        w->form.proxyUser = WJ(a2);
+                    if ((uiW2.empty() || uiW2 == "\"\"") && pw2.size() >= 2 && pw2.front() == '"' && pw2 != "\"\"")
+                        w->form.proxyPass = WJ(pw2);
                 }
                 // cookies 回填（剥离 CLIENT_HOST + BROWSER_ID 校正，与打开回填一致）
                 if (!cj2.empty()) {

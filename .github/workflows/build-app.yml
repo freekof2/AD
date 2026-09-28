@@ -188,6 +188,16 @@ jobs:
             if ($fpcProxy -notmatch [regex]::Escape($s)) { throw "missing fill-all symbol '$s' in fp_ui.cpp" }
             Write-Host "fillall ok: $s"
           }
+          # 2a5b2. 无 ui 存档后备（k1hf7t36 实测：official 环境只有三件套，打开即默认值）：
+          #      地理模式读 GeolocationSetting；白名单读 AllowScanPorts；代理账号密码读
+          #      account/password；伪装 IP 读 WebRTCLocalAddress；媒体三数量按 kind 数数组；
+          #      语音按非空 TTSEngines 数组开；Canvas/WebGL 种子恒存在≠开启，留默认。
+          foreach ($s in @("GeolocationSetting", "AllowScanPorts", "WebRTCLocalAddress",
+                           """account""", """password""", """audioinput""", "TTSEngines",
+                           "恒存在")) {
+            if ($fpcProxy -notmatch [regex]::Escape($s)) { throw "missingui-less fallback symbol '$s' in fp_ui.cpp" }
+            Write-Host "uiless ok: $s"
+          }
           # 2a5c. per-profile 独立目录：指纹窗口顶端 A2 行（空=跟随全局），只存 sunlauncher.json
           #     注意：$fpc 在下方 2d 节才赋值，此处用独立变量重读，避免空变量误报缺失
           $fpcProf = Get-Content launcher\cpp\fp_ui.cpp -Raw
