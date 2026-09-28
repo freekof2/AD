@@ -345,6 +345,18 @@ jobs:
           #     无全局目录区：路径只在指纹配置 A2 行按指纹独立设置（Eff* 解析）
           #     右列操作按钮靠右对齐（x=606，无打开日志目录按钮；主窗口无 DEBUG 日志框）
           $mcpp = Get-Content launcher\cpp\main.cpp -Raw
+          # ListView 插行只能指定主列 subitem=0；目录名/状态/端口必须后续写入 subitem 1/2/3。
+          $refreshStart = $mcpp.IndexOf("static void RefreshList()")
+          $refreshEnd = $mcpp.IndexOf("// 从 LISTVIEW 当前选中行", $refreshStart)
+          if ($refreshStart -lt 0 -or $refreshEnd -le $refreshStart) { throw "RefreshList body not found" }
+          $refreshBody = $mcpp.Substring($refreshStart, $refreshEnd - $refreshStart)
+          if ($refreshBody -notmatch '(?s)li\.iSubItem\s*=\s*0;.*?li\.pszText\s*=\s*\(LPWSTR\)r\.remark\.c_str\(\);.*?LVM_INSERTITEMW') {
+            throw "LVM_INSERTITEMW must insert primary remark column (subitem 0)"
+          }
+          if ($refreshBody -notmatch '(?s)liName\.iSubItem\s*=\s*1;.*?liName\.pszText\s*=\s*\(LPWSTR\)r\.name\.c_str\(\)') {
+            throw "profile name must be written to ListView subitem 1 after insert"
+          }
+          Write-Host "listview primary/subitem contract ok"
           foreach ($s in @("12, 12, 582, 494", "606, 12, 100",
                            "760, 660", "WC_LISTVIEWW", "LVS_REPORT", "LVS_EX_CHECKBOXES",
                            "LVS_EX_FULLROWSELECT", "LVN_ITEMCHANGED", "NM_CUSTOMDRAW",

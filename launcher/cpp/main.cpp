@@ -86,32 +86,32 @@ static void RefreshList() {
         LVITEMW li{};
         li.mask = LVIF_TEXT;
         li.iItem = row;
-        li.iSubItem = 1; // 环境目录名在第 1 列（第 0 列是备注）
-        li.pszText = (LPWSTR)r.name.c_str();
+        li.iSubItem = 0; // LVM_INSERTITEMW 只能插入主列；主列显示备注
+        li.pszText = (LPWSTR)r.remark.c_str();
         int idx = (int)::SendMessageW(hList, LVM_INSERTITEMW, 0, (LPARAM)&li);
         if (row == 0) LOG(std::wstring(L"probe refresh row0-insert idx=") + std::to_wstring(idx));
         if (idx < 0) { row++; continue; } // 插入失败跳过本行，避免后续 SETITEM 用野 idx
-        LVITEMW li0{};
-        li0.mask = LVIF_TEXT;
-        li0.iItem = idx;
-        li0.iSubItem = 0; // 备注列（ui 存档 remark）
-        li0.pszText = (LPWSTR)r.remark.c_str();
-        ::SendMessageW(hList, LVM_SETITEMTEXTW, (WPARAM)idx, (LPARAM)&li0);
-        if (row == 0) LOG(L"probe refresh row0-col0");
+        LVITEMW liName{};
+        liName.mask = LVIF_TEXT;
+        liName.iItem = idx;
+        liName.iSubItem = 1; // 环境目录名在第 1 列
+        liName.pszText = (LPWSTR)r.name.c_str();
+        ::SendMessageW(hList, LVM_SETITEMTEXTW, (WPARAM)idx, (LPARAM)&liName);
+        if (row == 0) LOG(L"probe refresh row0-name");
         LVITEMW li1{};
         li1.mask = LVIF_TEXT;
         li1.iItem = idx;
         li1.iSubItem = 2;
         li1.pszText = (LPWSTR)r.st.c_str();
         ::SendMessageW(hList, LVM_SETITEMTEXTW, (WPARAM)idx, (LPARAM)&li1);
-        if (row == 0) LOG(L"probe refresh row0-col1");
+        if (row == 0) LOG(L"probe refresh row0-status");
         LVITEMW li2{};
         li2.mask = LVIF_TEXT;
         li2.iItem = idx;
         li2.iSubItem = 3;
         li2.pszText = (LPWSTR)r.port.c_str();
         ::SendMessageW(hList, LVM_SETITEMTEXTW, (WPARAM)idx, (LPARAM)&li2);
-        if (row == 0) LOG(L"probe refresh row0-col2");
+        if (row == 0) LOG(L"probe refresh row0-port");
         // 复选框镜像 g.checked（批量操作用；LVS_EX_CHECKBOXES 状态图：2=勾选，1=未勾选）
         LVITEMW liS{};
         liS.mask = LVIF_STATE;
