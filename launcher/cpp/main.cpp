@@ -558,17 +558,18 @@ static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
         mkBtn(IDC_STOP, L"关闭", 606, 50, 100);
         mkBtn(IDC_REFRESH, L"刷新", 606, 88, 100);
         mkBtn(IDC_FPCONFIG, L"指纹配置", 606, 126, 100);
-        ::CreateWindowW(L"STATIC", L"新建环境:", WS_CHILD | WS_VISIBLE, 494, 236, 100, 22, h, NULL, hi, NULL);
+        // 新建环境行（搜索行上方 y=524/526/528，标签+输入框+按钮同行）
+        ::CreateWindowW(L"STATIC", L"新建环境:", WS_CHILD | WS_VISIBLE, 12, 528, 70, 22, h, NULL, hi, NULL);
         ::CreateWindowW(L"EDIT", L"", WS_CHILD | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL,
-            494, 260, 212, 26, h, (HMENU)(INT_PTR)IDC_NEWNAME, hi, NULL);
-        mkBtn(IDC_CREATE, L"新建", 606, 292, 100);
-        // 搜索 + 批量行（y=386，互不重叠；窗口 760 宽，间隙 ≥16；主窗口无日志框）
-        ::CreateWindowW(L"STATIC", L"搜索:", WS_CHILD | WS_VISIBLE, 12, 388, 40, 22, h, NULL, hi, NULL);
+            88, 526, 400, 26, h, (HMENU)(INT_PTR)IDC_NEWNAME, hi, NULL);
+        mkBtn(IDC_CREATE, L"新建", 498, 524, 100);
+        // 搜索 + 批量行移到底部（y=566，与状态条 598 不重叠；窗口 760 宽，间隙 ≥16；主窗口无日志框）
+        ::CreateWindowW(L"STATIC", L"搜索:", WS_CHILD | WS_VISIBLE, 12, 568, 40, 22, h, NULL, hi, NULL);
         g.hSearch = ::CreateWindowW(L"EDIT", L"", WS_CHILD | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL,
-            56, 386, 220, 24, h, (HMENU)(INT_PTR)IDC_SEARCH, hi, NULL);
-        mkBtn(IDC_BSTART, L"批量启动", 292, 384, 88);
-        mkBtn(IDC_BSTOP, L"批量停止", 396, 384, 88);
-        mkBtn(IDC_BDEL, L"批量删除", 500, 384, 88);
+            56, 566, 220, 24, h, (HMENU)(INT_PTR)IDC_SEARCH, hi, NULL);
+        mkBtn(IDC_BSTART, L"批量启动", 292, 564, 88);
+        mkBtn(IDC_BSTOP, L"批量停止", 396, 564, 88);
+        mkBtn(IDC_BDEL, L"批量删除", 500, 564, 88);
         g.hStatus = ::CreateWindowW(L"STATIC", L"就绪", WS_CHILD | WS_VISIBLE, 12, 598, 694, 22, h, NULL, hi, NULL);
         LOG(L"probe wmcreate ctrls-done");
         ::SetTimer(h, TIMER_POLL, 2000, NULL);

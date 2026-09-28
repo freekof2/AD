@@ -355,17 +355,22 @@ jobs:
             if ($mcpp -notmatch [regex]::Escape($s)) { throw "main-window symbol '$s' missing in main.cpp" }
             Write-Host "mainwin ok: $s"
           }
-          # 批量行 y=384 高 30（底 414）；状态条 y=598；主窗口无 DEBUG 日志框（日志只写 debug.log 文件）
-          foreach ($s in @("292, 384, 88", "396, 384, 88", "500, 384, 88",
+          # 搜索+批量行在窗口底部 y=564/566（底 594），与状态条 y=598 不重叠；主窗口无 DEBUG 日志框
+          foreach ($s in @("292, 564, 88", "396, 564, 88", "500, 564, 88",
+                           "12, 568, 40", "56, 566, 220",
                            "12, 598, 694")) {
             if ($mcpp -notmatch [regex]::Escape($s)) { throw "main-window rect '$s' missing in main.cpp" }
             Write-Host "mainrect ok: $s"
           }
-          # 右列纵向靠右对齐：启动12/关闭50/刷新88/指纹126/新建按钮292/新建输入260
-          foreach ($s in @("606, 12, 100", "606, 50, 100", "606, 88, 100", "606, 126, 100",
-                           "494, 260, 212", "606, 292, 100")) {
+          # 右列纵向靠右对齐：启动12/关闭50/刷新88/指纹126
+          foreach ($s in @("606, 12, 100", "606, 50, 100", "606, 88, 100", "606, 126, 100")) {
             if ($mcpp -notmatch [regex]::Escape($s)) { throw "right-col rect '$s' missing in main.cpp" }
             Write-Host "rightcol ok: $s"
+          }
+          # 新建环境行（搜索行上方，同行：标签12,528/输入88,526/按钮498,524）
+          foreach ($s in @("12, 528, 70", "88, 526, 400", "498, 524, 100")) {
+            if ($mcpp -notmatch [regex]::Escape($s)) { throw "newenv-row rect '$s' missing in main.cpp" }
+            Write-Host "newenvrow ok: $s"
           }
           # DEBUG 日志框及相关符号已删除（无清空按钮/日志框控件/窗口回显刷新；日志只写 debug.log 文件）
           foreach ($s in @("IDC_OPENDIR", "IDC_CLEARLOG", "IDC_LOG", "RefreshLogView", "AppendLog", "g.hLog",
