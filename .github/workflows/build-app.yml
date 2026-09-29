@@ -329,11 +329,14 @@ jobs:
           # dataDir 变成双反斜杠 -> A2 目录/打开/从目录导入全失效）；Config.json 启动优先；
           # 原生导入兼容粘完整 profile 路径；web 回退路径（file:// / picker 被拒）也解码三件套。
           $utilCfg = Get-Content launcher\cpp\util.cpp -Raw
-          foreach ($s in @("Config.json 覆盖 dataDir=", "反转义", "raw.find")) {
+          foreach ($s in @("Config.json 指纹目录", "ApplyConfigJsonProfiles", "data_dir", "sun_browser_dir", "反转义", "raw.find")) {
             if ($utilCfg -notmatch [regex]::Escape($s)) { throw "config load contract '$s' missing in util.cpp" }
           }
           if ($fpc2 -notmatch [regex]::Escape("指纹导入 F_IMPORT srcParent=")) {
             throw "import path contract missing in fp_ui.cpp"
+          }
+          foreach ($s in @("FpConfigSyncProfileDirs", "webrtc_ip", "FpConfigRemoveKey")) {
+            if ($fpc2 -notmatch [regex]::Escape($s)) { throw "Config.json profile contract '$s' missing in fp_ui.cpp" }
           }
           $fpJsCfg = Get-Content web-ui\js\fp.js -Raw
           if ($fpJsCfg -notmatch [regex]::Escape("importFromFiles")) {

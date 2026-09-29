@@ -84,38 +84,76 @@ static std::wstring ReadFileW(const std::wstring& path) {
     return ss.str();
 }
 
-// Config.json 优先（同目录、手改即生效）：数据目录 / 浏览器目录两个全局参数。
-// 与伪装 IP 共用一个文件；sunlauncher.json 保留作兜底（没有这两个键才用它）。
-// 注意 profiles 段的 per-profile 覆盖仍然优先于这里的全局值（EffDataDir 语义不变）。
-static void ApplyConfigJsonOverride(Config& c) {
+// Config.json 按指纹存目录（手改即生效）：
+//   { "<env名>": { "data_dir": "F:\\.ADSPOWER_GLOBAL\\cache\\k1ds12lu_hyg6dd",
+//                  "sun_browser_dir": "C:\\...\\chrome_152", "webrtc_ip": "1.2.3.4" },
+//     "<旧env名>": "1.2.3.4" }          // 旧写法：纯字符串=只有伪装 IP，无目录语义
+// 语义：只对键名对应的那一个指纹生效（不写=回落 sunlauncher.json）。
+// data_dir 按你的约定存**完整指纹目录**，但内部统一转成父目录存进 profiles
+//（EffDataDir 的约定是父目录，所有调用方都是 EffDataDir + "\" + 环境名）。
+static void ApplyConfigJsonProfiles(Config& c) {
     std::wstring cfgTxt = ReadFileW(ExeDir() + L"\\Config.json");
     if (cfgTxt.empty()) return;
-    std::wstring d = JsonGet(cfgTxt, L"data_dir");
-    std::wstring b = JsonGet(cfgTxt, L"sun_browser_dir");
-    // 手改容错：去掉末尾分隔符；浏览器目录若粘成了 SunBrowser.exe 完整路径则自动取其父目录
-    //（参数语义是“目录”，见 main.cpp effBrowserDir + \SunBrowser.exe）。
     auto trimSep = [](std::wstring s) {
         while (!s.empty() && (s.back() == L'\\' || s.back() == L'/')) s.pop_back();
         return s;
     };
-    d = trimSep(d);
-    b = trimSep(b);
-    if (!b.empty()) {
-        size_t i = b.find_last_of(L"\\/");
-        if (i != std::wstring::npos) {
-            std::wstring tail = b.substr(i + 1);
-            for (auto& ch : tail) ch = towlower(ch);
-            if (tail == L"sunbrowser.exe") b = b.substr(0, i);
+    // 扁平对象扫描：一次顶层键 + 其值（对象/字符串），配置无嵌套，够用
+    size_t p = cfgTxt.find(L'{');
+    if (p == std::wstring::npos) return;
+    p++;
+    while (p < cfgTxt.size()) {
+        while (p < cfgTxt.size() && (iswspace(cfgTxt[p]) || cfgTxt[p] == L',')) p++;
+        if (p >= cfgTxt.size() || cfgTxt[p] == L'}') break;
+        if (cfgTxt[p] != L'"') break;
+        size_t q2 = cfgTxt.find(L'"', p + 1);
+        if (q2 == std::wstring::npos) break;
+        const std::wstring name = cfgTxt.substr(p + 1, q2 - p - 1);
+        size_t colon = cfgTxt.find(L':', q2);
+        if (colon == std::wstring::npos) break;
+        size_t v = cfgTxt.find_first_not_of(L" \t\r\n", colon + 1);
+        if (v >= cfgTxt.size()) break;
+        if (cfgTxt[v] == L'"') { // 旧写法：纯字符串（伪装 IP），无目录参数
+            size_t e = cfgTxt.find(L'"', v + 1);
+            p = (e == std::wstring::npos) ? cfgTxt.size() : e + 1;
+            continue;
         }
+        if (cfgTxt[v] != L'{') break;
+        size_t e = cfgTxt.find(L'}', v);
+        if (e == std::wstring::npos) break;
+        const std::wstring blk = cfgTxt.substr(v, e - v + 1);
+        std::wstring d = trimSep(JsonGet(blk, L"data_dir"));
+        std::wstring b = trimSep(JsonGet(blk, L"sun_browser_dir"));
+        // data_dir 完整指纹目录 -> 去掉末尾环境名一层，还原成父目录
+        if (!d.empty()) {
+            size_t i = d.find_last_of(L"\\/");
+            if (i != std::wstring::npos && d.substr(i + 1) == name) d = d.substr(0, i);
+        }
+        // 手改容错：粘成 SunBrowser.exe 完整路径则取父目录（参数语义是目录）
+        if (!b.empty()) {
+            size_t i = b.find_last_of(L"\\/");
+            if (i != std::wstring::npos) {
+                std::wstring tail = b.substr(i + 1);
+                for (auto& ch : tail) ch = towlower(ch);
+                if (tail == L"sunbrowser.exe") b = b.substr(0, i);
+            }
+        }
+        if (!d.empty() || !b.empty()) {
+            ProfileOverride& o = c.profiles[name]; // 缺的字段保留 sunlauncher.json 里的值
+            if (!d.empty()) o.dataDir = d;
+            if (!b.empty()) o.sunBrowserDir = b;
+            LOG(L"Config.json 指纹目录 " + name + L" dataParent=" +
+                (d.empty() ? L"(未设)" : d) + L" browserDir=" +
+                (b.empty() ? L"(未设)" : b));
+        }
+        p = e + 1;
     }
-    if (!d.empty()) { c.dataDir = d; LOG(L"Config.json 覆盖 dataDir=" + d); }
-    if (!b.empty()) { c.sunBrowserDir = b; LOG(L"Config.json 覆盖 browserDir=" + b); }
 }
 
 Config LoadConfig() {
     Config c;
     std::wstring txt = ReadFileW(ExeDir() + L"\\sunlauncher.json");
-    if (txt.empty()) { ApplyConfigJsonOverride(c); return c; }
+    if (txt.empty()) { ApplyConfigJsonProfiles(c); return c; }
     std::wstring v;
     if (!(v = JsonGet(txt, L"sun_browser_dir")).empty()) c.sunBrowserDir = v;
     if (!(v = JsonGet(txt, L"data_dir")).empty())        c.dataDir = v;
@@ -154,8 +192,8 @@ Config LoadConfig() {
             }
         }
     }
-    // Config.json 覆盖（放最后：优先级高于 sunlauncher.json）
-    ApplyConfigJsonOverride(c);
+    // Config.json 按指纹覆盖（放最后：同一指纹优先于 sunlauncher.json 的 profiles 段）
+    ApplyConfigJsonProfiles(c);
     return c;
 }
 

@@ -61,68 +61,155 @@ static std::wstring WJ(const std::string& raw) {
     return W(raw);
 }
 
-// ---- 伪装 IP 存 exe 同目录 Config.json（按环境目录名对应，双向同步） ----
-// 格式：{"k1hf7t36_hyg6dd":"192.168.128.129"}。读优先级 Config.json > ui 存档 webrtcIp
-// > static/dynamic 后备；指纹页保存时把框内有效 IP 回写，清空则删键。文件不存在视为空。
+// ---- 伪装 IP + 按指纹目录 存 exe 同目录 Config.json（按环境名对应，双向同步） ----
+// 格式（一个指纹一个对象）：
+//   { "k1ds12lu_hyg6dd": { "data_dir": "F:\\.ADSPOWER_GLOBAL\\cache\\k1ds12lu_hyg6dd",
+//                          "sun_browser_dir": "C:\\...\\cwd_global\\chrome_152",
+//                          "webrtc_ip": "104.28.152.166" },
+//     "旧环境": "192.168.128.129" }   // 旧写法=只有伪装 IP，仍可读
+// data_dir 存**完整指纹目录**（数据就在该目录下）；LoadConfig 读取时去掉末尾环境名
+// 还原成父目录，以适配 EffDataDir（父目录 + "\" + 环境名）的既有调用约定。
+// 读优先级：Config.json（按指纹）> ui 存档 webrtcIp > static/dynamic 后备。
 static std::wstring FpSpoofIpCfgPath() { return AppDir() + L"\\Config.json"; }
-// 读：返回原始 IP 字符串（""=无）；调用方用 FpIsValidWebRtcIp 校验。
+
+// 去引号 + 反转义（\" \\ \/ \b \f \n \r \t）；非字符串返回 ""
+static std::string FpJsonUnquoteRaw(const std::string& raw) {
+    if (raw.size() < 2 || raw.front() != '"' || raw.back() != '"') return "";
+    std::string s = raw.substr(1, raw.size() - 2), o;
+    for (size_t i = 0; i < s.size(); i++) {
+        if (s[i] == '\\' && i + 1 < s.size()) { o += s[i + 1]; i++; }
+        else o += s[i];
+    }
+    return o;
+}
+
+// 删除顶层键（值可为对象/字符串/数组，含一个相邻逗号）；找不到返回原文。
+static std::string FpConfigRemoveKey(const std::string& json, const std::string& key) {
+    const std::string q = "\"" + key + "\"";
+    const size_t k = json.find(q);
+    if (k == std::string::npos) return json;
+    const size_t c = json.find(':', k + q.size());
+    if (c == std::string::npos) return json;
+    size_t v = c + 1;
+    while (v < json.size() && (json[v] == ' ' || json[v] == '\t' || json[v] == '\r' || json[v] == '\n')) v++;
+    if (v >= json.size()) return json;
+    size_t ve;
+    if (json[v] == '{' || json[v] == '[') {
+        const char open = json[v], close = (open == '{') ? '}' : ']';
+        int depth = 0; bool inStr = false;
+        for (ve = v; ve < json.size(); ve++) {
+            if (inStr) {
+                if (json[ve] == '\\') { ve++; continue; }
+                if (json[ve] == '"') inStr = false;
+            } else {
+                if (json[ve] == '"') inStr = true;
+                else if (json[ve] == open) depth++;
+                else if (json[ve] == close) { depth--; if (depth == 0) { ve++; break; } }
+            }
+        }
+    } else if (json[v] == '"') {
+        ve = v + 1;
+        while (ve < json.size()) {
+            if (json[ve] == '\\') { ve += 2; continue; }
+            if (json[ve] == '"') { ve++; break; }
+            ve++;
+        }
+    } else {
+        ve = v;
+        while (ve < json.size() && json[ve] != ',' && json[ve] != '}' && json[ve] != ']') ve++;
+    }
+    std::string o = json;
+    o.erase(k, ve - k);
+    size_t t = k; // 吃掉一个相邻逗号（先看后面，再看前面）
+    while (t < o.size() && (o[t] == ' ' || o[t] == '\t' || o[t] == '\r' || o[t] == '\n')) t++;
+    if (t < o.size() && o[t] == ',') o.erase(t, 1);
+    else if (k > 0) {
+        size_t b = k;
+        while (b > 0 && (o[b - 1] == ' ' || o[b - 1] == '\t' || o[b - 1] == '\r' || o[b - 1] == '\n')) b--;
+        if (b > 0 && o[b - 1] == ',') o.erase(b - 1, 1);
+    }
+    return o;
+}
+
+static std::string FpConfigTrim(const std::string& s) {
+    size_t a = s.find_first_not_of(" \t\r\n");
+    if (a == std::string::npos) return "";
+    return s.substr(a, s.find_last_not_of(" \t\r\n") - a + 1);
+}
+
+// 读：返回该指纹的伪装 IP（对象条目读 webrtc_ip，旧字符串条目直接读值）；""=无
 static std::string FpConfigSpoofIpRaw(const std::wstring& profile) {
     std::string txt;
     if (!FpReadTextFile(FpSpoofIpCfgPath(), txt) || txt.empty()) return "";
     std::string v = FpJsonGet(txt, N(profile));
-    if (v.size() >= 2 && v.front() == '"' && v.back() == '"') {
-        std::string s = v.substr(1, v.size() - 2), o;
-        for (size_t i = 0; i < s.size(); i++) {
-            if (s[i] == '\\' && i + 1 < s.size()) { o += s[i + 1]; i++; }
-            else o += s[i];
-        }
-        return o;
+    if (v.size() >= 2 && v.front() == '{') {
+        std::string ip = FpJsonGet(v, "webrtc_ip");
+        if (ip.empty()) ip = FpJsonGet(v, "webrtcIp");
+        return FpJsonUnquoteRaw(ip);
     }
-    return "";
+    return FpJsonUnquoteRaw(v);
 }
-// 写：ip 为空=删键；返回写盘是否成功。
+
+// 写：ip 非空=写入/更新；为空=删掉该指纹的 ip（对象条目只删 ip 字段，
+// 保住同指纹的两个目录；对象被删空则整条目移除）。返回写盘是否成功。
 static bool FpConfigSpoofIpSet(const std::wstring& profile, const std::string& ip) {
     std::wstring path = FpSpoofIpCfgPath();
     std::string txt;
-    bool hasFile = FpReadTextFile(path, txt) && !txt.empty();
-    if (!hasFile) {
+    if (!FpReadTextFile(path, txt) || txt.empty()) {
         if (ip.empty()) return true; // 无文件无写入=已是删后状态
         txt = "{}";
     }
-    std::string q = "\"" + N(profile) + "\"";
-    size_t ks = txt.find(q);
-    if (!ip.empty()) {
-        std::string nv = "\"" + ip + "\"";
-        std::string merged = FpJsonSet(txt, N(profile), nv);
-        if (merged.empty()) return false;
-        return FpWriteTextFile(path, merged);
+    const std::string key = N(profile);
+    const std::string cur = FpJsonGet(txt, key);
+    std::string out;
+    if (cur.size() >= 2 && cur.front() == '{') {
+        std::string inner = cur;
+        if (!ip.empty()) {
+            inner = FpJsonSet(inner, "webrtc_ip", "\"" + ip + "\"");
+            if (inner.empty()) return false;
+        } else {
+            inner = FpConfigRemoveKey(inner, "webrtc_ip");
+            if (FpConfigTrim(inner) == "{}") { // 条目里没别的字段了 -> 整条删掉
+                out = FpConfigRemoveKey(txt, key);
+                return out.empty() ? false : FpWriteTextFile(path, out);
+            }
+        }
+        out = FpJsonSet(txt, key, inner);
+    } else if (!ip.empty()) {
+        out = FpJsonSet(txt, key, "\"" + ip + "\"");
+    } else {
+        if (cur.empty()) return true; // 本就没有该条目
+        out = FpConfigRemoveKey(txt, key);
     }
-    // 删键：定位 "name" : "value" 片段并连带一个相邻逗号删掉
-    if (ks == std::string::npos) return true; // 本就没有
-    size_t p = ks + q.size();
-    while (p < txt.size() && (txt[p] == ' ' || txt[p] == '\t' || txt[p] == '\r' || txt[p] == '\n')) p++;
-    if (p >= txt.size() || txt[p] != ':') return false;
-    p++;
-    while (p < txt.size() && (txt[p] == ' ' || txt[p] == '\t' || txt[p] == '\r' || txt[p] == '\n')) p++;
-    if (p >= txt.size() || txt[p] != '"') return false;
-    size_t ve = p + 1;
-    while (ve < txt.size()) {
-        if (txt[ve] == '\\') { ve += 2; continue; }
-        if (txt[ve] == '"') { ve++; break; }
-        ve++;
+    if (out.empty()) return false;
+    return FpWriteTextFile(path, out);
+}
+
+// 指纹页保存 A2 时同步该指纹的两个目录。只在该指纹于 Config.json 已是“对象”条目时回写，
+// 不自动创建（旧的纯字符串条目=只管伪装 IP，保持不动；没条目则继续走 sunlauncher.json）。
+static bool FpConfigSyncProfileDirs(const std::wstring& profile,
+    const std::wstring& dataDirFull, const std::wstring& browserDir) {
+    std::string txt;
+    if (!FpReadTextFile(FpSpoofIpCfgPath(), txt) || txt.empty()) {
+        LOG(L"指纹保存 Config.json 目录 跳过（无 Config.json） " + profile);
+        return true;
     }
-    std::string o = txt;
-    o.erase(ks, ve - ks);
-    // 吃掉一个相邻逗号（优先后面，否则前面）
-    size_t t = ks;
-    while (t < o.size() && (o[t] == ' ' || o[t] == '\t' || o[t] == '\r' || o[t] == '\n')) t++;
-    if (t < o.size() && o[t] == ',') o.erase(t, 1);
-    else if (ks > 0) {
-        size_t b = ks;
-        while (b > 0 && (o[b - 1] == ' ' || o[b - 1] == '\t' || o[b - 1] == '\r' || o[b - 1] == '\n')) b--;
-        if (b > 0 && o[b - 1] == ',') o.erase(b - 1, 1);
+    const std::string key = N(profile);
+    const std::string cur = FpJsonGet(txt, key);
+    if (cur.size() < 2 || cur.front() != '{') {
+        LOG(L"指纹保存 Config.json 目录 跳过（该指纹无目录条目，沿用 sunlauncher.json） " + profile);
+        return true;
     }
-    return FpWriteTextFile(path, o);
+    std::string inner = FpJsonSet(cur, "data_dir", "\"" + JEsc(dataDirFull) + "\"");
+    inner = FpJsonSet(inner, "sun_browser_dir", "\"" + JEsc(browserDir) + "\"");
+    if (inner.empty()) return false;
+    std::string out = FpJsonSet(txt, key, inner);
+    if (out.empty()) return false;
+    if (out == txt) return true;
+    const bool ok = FpWriteTextFile(FpSpoofIpCfgPath(), out);
+    LOG(L"指纹保存 Config.json 目录 " + std::wstring(ok ? L"OK" : L"FAIL") +
+        L" dataDir=" + dataDirFull + L" browserDir=" + browserDir + L" " + profile);
+    return ok;
 }
 
 std::string FpFormToUiJson(const FpFormData& f) {
@@ -2332,6 +2419,8 @@ static LRESULT CALLBACK FpWndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
             std::wstring dd = effParent + L"\\" + w->profile;
             ::CreateDirectoryW(effParent.c_str(), NULL);
             ::CreateDirectoryW(dd.c_str(), NULL);
+            // Config.json 按指纹同步两个目录（data_dir 存完整指纹目录；只回写已有对象条目）
+            FpConfigSyncProfileDirs(w->profile, dd, w->form.profBrowserDir);
             // Cookie 保存守卫。根因：框内为空/非 JSON 数组时旧逻辑直接不写盘，
             // 但 ui 存档仍被写成空 cookie，重开又从 cookies 文件读回旧值 -> “改了保存不了”。
             // 现在：非法输入不覆盖既有 Cookie（回读磁盘值），并明确提示用户该怎么转格式。
