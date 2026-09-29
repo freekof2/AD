@@ -188,6 +188,8 @@ static bool FpConfigSyncProfileDirs(const std::wstring& profile,
     if (!FpReadTextFile(path, txt) || txt.empty()) txt = "{}";
     const std::string key = N(profile);
     const std::string cur = FpJsonGet(txt, key);
+    LOG(L"Config.json 目录同步输入 profile=" + profile + L" data=" + dataDirFull +
+        L" browser=" + browserDir + L" oldEntry=" + (cur.empty() ? L"missing" : W(cur)));
     std::string inner = (cur.size() >= 2 && cur.front() == '{') ? cur : "{}";
     // 兼容旧版字符串条目：把原伪装 IP 搬进新对象，再添加两个目录。
     if (cur.size() >= 2 && cur.front() == '"') {
@@ -198,8 +200,14 @@ static bool FpConfigSyncProfileDirs(const std::wstring& profile,
     if (!browserDir.empty()) inner = FpJsonSet(inner, "sun_browser_dir", "\"" + JEsc(browserDir) + "\"");
     if (inner.empty()) return false;
     std::string out = FpJsonSet(txt, key, inner);
-    if (out.empty()) return false;
-    if (out == txt) return true;
+    if (out.empty()) {
+        LOG(L"Config.json 目录同步 FAIL(FpJsonSet failed) " + profile);
+        return false;
+    }
+    if (out == txt) {
+        LOG(L"Config.json 目录同步 unchanged " + profile);
+        return true;
+    }
     const bool ok = FpWriteTextFile(path, out);
     LOG(L"指纹保存 Config.json 目录 " + std::wstring(ok ? L"OK" : L"FAIL") +
         L" dataDir=" + dataDirFull + L" browserDir=" + browserDir + L" " + profile);
@@ -1929,6 +1937,9 @@ static LRESULT CALLBACK FpWndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
                 }
                 FpSet(C(F_PBROWSERDIR), dir);
                 FpCollect(w);
+                // 保留文件选择器给出的目录作为本次编辑值；它是 SunBrowser.exe 的直接父目录。
+                w->form.profBrowserDir = FpCleanDirectoryField(dir);
+                LOG(L"指纹浏览器目录已收集 form=" + w->form.profBrowserDir + L" " + w->profile);
                 ::SetWindowTextW(w->hStatus, L"浏览器目录已选择（保存进独立目录）");
                 LOG(L"指纹浏览 浏览器目录=" + dir + L" file=" + f + L" " + w->profile);
             } else {
@@ -2423,6 +2434,11 @@ static LRESULT CALLBACK FpWndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
         }
         if (id == F_OK) {
             FpCollect(w);
+            // 保存前再次从控件取值，保证最近一次浏览/手工修改的目录不会被旧表单快照覆盖。
+            const std::wstring browserDirControl = FpCleanDirectoryField(FpGet(C(F_PBROWSERDIR)));
+            if (!browserDirControl.empty()) w->form.profBrowserDir = browserDirControl;
+            LOG(L"指纹保存收集目录 dataParent=" + w->form.profDataDir +
+                L" browserControl=" + browserDirControl + L" browserDir=" + w->form.profBrowserDir + L" " + w->profile);
             // A2 独立目录必填：两行都不能为空（无全局兜底），空则弹窗阻断保存。
             if (w->form.profDataDir.empty() || w->form.profBrowserDir.empty()) {
                 ::MessageBoxW(h, L"数据目录 / 浏览器目录不能为空。\r\n请在顶端 A2 行填写该指纹的独立目录后再保存。", L"指纹配置", MB_OK | MB_ICONWARNING);
@@ -2482,7 +2498,12 @@ static LRESULT CALLBACK FpWndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
             ::CreateDirectoryW(effParent.c_str(), NULL);
             ::CreateDirectoryW(dd.c_str(), NULL);
             // Config.json 按指纹同步两个目录（data_dir 存完整指纹目录；只回写已有对象条目）
-            FpConfigSyncProfileDirs(w->profile, dd, w->form.profBrowserDir);
+            const bool okConfigDirs = FpConfigSyncProfileDirs(w->profile, dd, w->form.profBrowserDir);
+            if (!okConfigDirs) {
+                LOG(L"指纹保存 Config.json 目录同步失败 " + w->profile);
+                ::MessageBoxW(h, L"Config.json 中该环境的目录保存失败；原 sunlauncher.json 仍保留。请检查启动器目录是否可写。",
+                    L"目录保存失败", MB_OK | MB_ICONWARNING);
+            }
             // Cookie 保存守卫。根因：框内为空/非 JSON 数组时旧逻辑直接不写盘，
             // 但 ui 存档仍被写成空 cookie，重开又从 cookies 文件读回旧值 -> “改了保存不了”。
             // 现在：非法输入不覆盖既有 Cookie（回读磁盘值），并明确提示用户该怎么转格式。

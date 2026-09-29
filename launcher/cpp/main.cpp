@@ -576,6 +576,13 @@ static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
             { std::lock_guard<std::mutex> lk(g.mu); cfgCopy = g.cfg; }
             // 模态指纹窗口（fp_ui.cpp）：Tab 5 页，保存写 ui_fingerprint.json + cookies
             if (FpUiShowModal(h, cfgCopy, name)) {
+                // 指纹页可改 Config.json / sunlauncher.json 的 per-profile 目录；
+                // g.cfg 是打开模态框前的快照，保存后必须重读，保证本进程下一次启动立刻用新浏览器目录。
+                Config latestCfg = LoadConfig();
+                { std::lock_guard<std::mutex> lk(g.mu); g.cfg = latestCfg; }
+                LOG(L"指纹保存后已重载目录配置 " + name +
+                    L" dataParent=" + EffDataDir(latestCfg, name) +
+                    L" browserDir=" + EffBrowserDir(latestCfg, name));
                 LOG(L"指纹已保存 " + name);
                 SetStatus(L"指纹已保存 " + name);
             }
