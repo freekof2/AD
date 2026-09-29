@@ -92,6 +92,22 @@ static void ApplyConfigJsonOverride(Config& c) {
     if (cfgTxt.empty()) return;
     std::wstring d = JsonGet(cfgTxt, L"data_dir");
     std::wstring b = JsonGet(cfgTxt, L"sun_browser_dir");
+    // 手改容错：去掉末尾分隔符；浏览器目录若粘成了 SunBrowser.exe 完整路径则自动取其父目录
+    //（参数语义是“目录”，见 main.cpp effBrowserDir + \SunBrowser.exe）。
+    auto trimSep = [](std::wstring s) {
+        while (!s.empty() && (s.back() == L'\\' || s.back() == L'/')) s.pop_back();
+        return s;
+    };
+    d = trimSep(d);
+    b = trimSep(b);
+    if (!b.empty()) {
+        size_t i = b.find_last_of(L"\\/");
+        if (i != std::wstring::npos) {
+            std::wstring tail = b.substr(i + 1);
+            for (auto& ch : tail) ch = towlower(ch);
+            if (tail == L"sunbrowser.exe") b = b.substr(0, i);
+        }
+    }
     if (!d.empty()) { c.dataDir = d; LOG(L"Config.json 覆盖 dataDir=" + d); }
     if (!b.empty()) { c.sunBrowserDir = b; LOG(L"Config.json 覆盖 browserDir=" + b); }
 }
