@@ -1965,8 +1965,19 @@ static LRESULT CALLBACK FpWndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
                 LOG(L"指纹导入 F_IMPORT BLOCKED(A2空) " + w->profile);
                 return 0;
             }
+            // A2 兼容两种写法：数据父目录（F:\...cache）或完整 profile 目录
+            // （F:\...cache\k1ds12lu_hyg6dd）。粘完整路径时不再重复拼环境名。
             std::wstring srcParent = w->form.profDataDir;
-            std::wstring srcDir = srcParent + L"\\" + w->profile;
+            while (!srcParent.empty() && (srcParent.back() == L'\\' || srcParent.back() == L'/'))
+                srcParent.pop_back();
+            std::wstring srcDir;
+            {
+                size_t bi = srcParent.find_last_of(L"\\/");
+                const std::wstring tail = (bi == std::wstring::npos)
+                    ? srcParent : srcParent.substr(bi + 1);
+                srcDir = (tail == w->profile) ? srcParent : (srcParent + L"\\" + w->profile);
+            }
+            LOG(L"指纹导入 F_IMPORT srcParent=" + srcParent + L" src=" + srcDir + L" " + w->profile);
             if (::GetFileAttributesW(srcDir.c_str()) == INVALID_FILE_ATTRIBUTES) {
                 ::SetWindowTextW(w->hStatus, (L"导入源目录不存在: " + srcDir).c_str());
                 LOG(L"指纹导入 F_IMPORT 无目录 src=" + srcDir + L" " + w->profile);
@@ -1979,6 +1990,8 @@ static LRESULT CALLBACK FpWndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
             if (FpLoadCookiesJson(srcDir, cj2) && !cj2.empty()) nRD++;
             if (nRD == 0) {
                 ::SetWindowTextW(w->hStatus, (L"导入源无三件套: " + srcDir).c_str());
+                LOG(L"指纹导入 F_IMPORT 无三件套（目录里没有 md5(fbcc+\"_static/_webrtc/_cookies\"）) src=" +
+                    srcDir + L" " + w->profile);
                 return 0;
             }
             // 复用打开时回填链：先 ui 侧车（若有），再 static/dynamic/cookies。

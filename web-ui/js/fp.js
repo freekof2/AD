@@ -120,6 +120,47 @@
     }
     return out;
   }
+
+  // 从 webkitdirectory / File 列表导入（File System Access 被拒或 file:// 打开时的回退路径）。
+  // 旧回退只扫 Preferences/Cookies 提示，不解码三件套，表现为“点了导入没效果”。
+  async function importFromFiles(files, dirName) {
+    const fbcc = fbccOf(dirName);
+    const out = { fbcc, dirName, static: "", dynamic: "", cookies: "", uiExtra: "", notes: [] };
+    // 只认所选目录根层文件（三件套与 ui_fingerprint.json 都在根层），Default/ 子目录忽略
+    const byName = {};
+    for (const f of files) {
+      const rel = f.webkitRelativePath || "";
+      const segs = rel ? rel.split(/[\\/]/) : [];
+      if (segs.length > 1 && segs[0] !== dirName) continue;
+      if (segs.length > 1 && f.name.toLowerCase() === "preferences") continue; // Default/Preferences 不覆盖根层同名
+      const key = f.name.toLowerCase();
+      if (!byName[key]) byName[key] = f;
+    }
+    const read = async (name) => {
+      const f = byName[String(name).toLowerCase()];
+      if (!f) return "";
+      try { return (await f.text()).trim(); } catch (e) { return ""; }
+    };
+    const sRaw = await read(staticName(fbcc));
+    if (sRaw) { try { out.static = fpDecode(sRaw); out.notes.push("static 已解码"); } catch (e) { out.notes.push("static 解码失败"); } }
+    const dRaw = await read(dynamicName(fbcc));
+    if (dRaw) { try { out.dynamic = fpDecode(dRaw); out.notes.push("dynamic 已解码"); } catch (e) { out.notes.push("dynamic 解码失败"); } }
+    const cRaw = await read(cookiesName(fbcc));
+    if (cRaw) {
+      let done = false;
+      try { const dec = fpDecode(cRaw); if (dec) { out.cookies = dec; out.notes.push("cookies 已解码"); done = true; } } catch (e) { /* 非换表编码，走明文分支 */ }
+      if (!done) {
+        const t = cRaw.trim();
+        if (t[0] === "[" || t[0] === "{") { out.cookies = t; out.notes.push("cookies 明文已读取（官方格式）"); }
+        else out.notes.push("cookies 解码失败（既非换表编码也非明文JSON）");
+      }
+    }
+    out.uiExtra = await read("ui_fingerprint.json");
+    if (out.uiExtra) out.notes.push("ui_fingerprint.json 已读取");
+    if (!out.static && !out.dynamic && !out.cookies && !out.uiExtra)
+      out.notes.push("未找到三件套（md5(fbcc+\"_static/_webrtc/_cookies\")），请确认选中的是 profile 目录本身");
+    return out;
+  }
   // 导出：把 static/dynamic/cookies（换表编码后）+ ui_fingerprint.json（明文）写回目录
   async function exportToDirHandle(handle, dirName, payload) {
     const fbcc = fbccOf(dirName);
@@ -187,6 +228,6 @@
     C1, C2, PROTECTED_KEYS, ASAR_FONTS_U, ASAR_MOBILE_FONTS,
     asarPlatformOf, asarDisabledFonts, asarFakeKeys,
     fpEncode, fpDecode, md5Hex, fbccOf, staticName, dynamicName, cookiesName,
-    pickDir, readFile, writeFile, importFromDirHandle, exportToDirHandle, sanitizeCookies,
+    pickDir, readFile, writeFile, importFromDirHandle, importFromFiles, exportToDirHandle, sanitizeCookies,
   };
 })();

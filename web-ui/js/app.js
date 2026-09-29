@@ -205,6 +205,11 @@
       hitCount++;
     }
     if (out.ua) { $("fpUA").value = out.ua; syncUaPresetFromUA(); notes.push("UA已回填"); hitCount++; }
+    // ui 存档优先级最高（用户最后一次保存的全量配置），放在 static/dynamic 之后应用
+    if (out.uiExtra) {
+      try { applyUiExtra(JSON.parse(out.uiExtra)); notes.push("ui 存档已回填"); hitCount++; }
+      catch (e) { notes.push("ui 存档解析失败"); }
+    }
     // 注册到环境列表（目录即环境）
     if (out.dirName && !db().profiles.some((p) => pname(p) === out.dirName)) {
       db().profiles.push({ name: out.dirName, group: "默认", proxy: "-", kernel: "Chrome 152 (SunBrowser)", status: "closed", remark: "", browser: "sun", browserDir: out.dirName, ua: $("fpUA").value, cookie: $("fpCookie").value });
@@ -432,6 +437,18 @@
       let hitCount = 1; // 目录名本身算 1 项
       const notes = [`浏览器目录=${dirName}`];
       try {
+        // 三件套回填（回退路径与 File System Access 路径同表）：
+        // 旧回退只扫 Preferences/Cookies 提示、不解码 md5(fbcc+"_static/_webrtc/_cookies")，
+        // 表现为“点了从目录导入指纹没效果”。
+        if (window.FP && window.FP.importFromFiles) {
+          const fpOut = await window.FP.importFromFiles(files, dirName);
+          if (fpOut.static || fpOut.dynamic || fpOut.cookies || fpOut.uiExtra) {
+            applyImportResult(fpOut);
+            fpPicker.value = "";
+            return;
+          }
+          notes.push(...fpOut.notes);
+        }
         if (byName["preferences"]) {
           const txt = await readText(byName["preferences"]);
           try {

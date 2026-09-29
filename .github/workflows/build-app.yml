@@ -325,6 +325,25 @@ jobs:
             throw "cookie guard contract missing in web-ui/js/app.js"
           }
           Write-Host "cookie guard contract ok"
+          # 路径/导入契约：JsonGet 必须反转义（SaveConfig 写标准 JSON，读侧不还原会让
+          # dataDir 变成双反斜杠 -> A2 目录/打开/从目录导入全失效）；Config.json 启动优先；
+          # 原生导入兼容粘完整 profile 路径；web 回退路径（file:// / picker 被拒）也解码三件套。
+          $utilCfg = Get-Content launcher\cpp\util.cpp -Raw
+          foreach ($s in @("Config.json 覆盖 dataDir=", "反转义", "raw.find")) {
+            if ($utilCfg -notmatch [regex]::Escape($s)) { throw "config load contract '$s' missing in util.cpp" }
+          }
+          if ($fpc2 -notmatch [regex]::Escape("指纹导入 F_IMPORT srcParent=")) {
+            throw "import path contract missing in fp_ui.cpp"
+          }
+          $fpJsCfg = Get-Content web-ui\js\fp.js -Raw
+          if ($fpJsCfg -notmatch [regex]::Escape("importFromFiles")) {
+            throw "fallback import contract missing in web-ui/js/fp.js"
+          }
+          $appJsCfg = Get-Content web-ui\js\app.js -Raw
+          foreach ($s in @("三件套回填", "ui 存档已回填")) {
+            if ($appJsCfg -notmatch [regex]::Escape($s)) { throw "import contract '$s' missing in web-ui/js/app.js" }
+          }
+          Write-Host "path/import contract ok"
           $rtcFpCpp = Get-Content launcher\cpp\fingerprint.cpp -Raw
           foreach ($s in @("webrtc.mode=", "FpBuildWebRtcSunParams", "sunBrowserParams.WebRTCAddress",
                            "ext.webrtc.disabled=", "FpBuildTimeZoneSunParam", "WebGLFP",

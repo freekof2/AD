@@ -39,9 +39,36 @@ static std::wstring JsonGet(const std::wstring& json, const std::wstring& key) {
     while (p < json.size() && (json[p] == L' ' || json[p] == L'\t' || json[p] == L'\r' || json[p] == L'\n')) p++;
     if (p >= json.size()) return L"";
     if (json[p] == L'"') {
-        size_t q = json.find(L'"', p + 1);
-        if (q == std::wstring::npos) return L"";
-        return json.substr(p + 1, q - p - 1);
+        // 扫描到结束引号（跳过 \" 转义），取出原始串
+        size_t q = p + 1;
+        while (q < json.size()) {
+            if (json[q] == L'"') break;
+            if (json[q] == L'\\' && q + 1 < json.size()) { q += 2; continue; }
+            q++;
+        }
+        if (q >= json.size()) return L"";
+        std::wstring raw = json.substr(p + 1, q - p - 1);
+        // SaveConfig 用 Esc() 写出标准 JSON（\\ 转义），读侧必须反转义，
+        // 否则 dataDir 读回 F:\\.ADSPOWER... 双反斜杠：路径展示错、A2 目录错、
+        // 从目录导入/打开指纹全失效（09-29 实测根因）。
+        // 只在确实含 \\ 或 \" 时反转义，保留旧手写“单反斜杠”文件的原样行为。
+        if (raw.find(L"\\\\") == std::wstring::npos && raw.find(L"\\\"") == std::wstring::npos)
+            return raw;
+        std::wstring out;
+        for (size_t i = 0; i < raw.size(); i++) {
+            if (raw[i] == L'\\' && i + 1 < raw.size()) {
+                wchar_t c = raw[i + 1];
+                if (c == L'\\') out += L'\\';
+                else if (c == L'"') out += L'"';
+                else if (c == L'/') out += L'/';
+                else if (c == L'n') out += L'\n';
+                else if (c == L'r') out += L'\r';
+                else if (c == L't') out += L'\t';
+                else { out += L'\\'; out += c; }
+                i++;
+            } else out += raw[i];
+        }
+        return out;
     }
     size_t q = p;
     while (q < json.size() && (iswdigit(json[q]) || json[q] == L'-')) q++;
@@ -57,10 +84,22 @@ static std::wstring ReadFileW(const std::wstring& path) {
     return ss.str();
 }
 
+// Config.json 优先（同目录、手改即生效）：数据目录 / 浏览器目录两个全局参数。
+// 与伪装 IP 共用一个文件；sunlauncher.json 保留作兜底（没有这两个键才用它）。
+// 注意 profiles 段的 per-profile 覆盖仍然优先于这里的全局值（EffDataDir 语义不变）。
+static void ApplyConfigJsonOverride(Config& c) {
+    std::wstring cfgTxt = ReadFileW(ExeDir() + L"\\Config.json");
+    if (cfgTxt.empty()) return;
+    std::wstring d = JsonGet(cfgTxt, L"data_dir");
+    std::wstring b = JsonGet(cfgTxt, L"sun_browser_dir");
+    if (!d.empty()) { c.dataDir = d; LOG(L"Config.json 覆盖 dataDir=" + d); }
+    if (!b.empty()) { c.sunBrowserDir = b; LOG(L"Config.json 覆盖 browserDir=" + b); }
+}
+
 Config LoadConfig() {
     Config c;
     std::wstring txt = ReadFileW(ExeDir() + L"\\sunlauncher.json");
-    if (txt.empty()) return c;
+    if (txt.empty()) { ApplyConfigJsonOverride(c); return c; }
     std::wstring v;
     if (!(v = JsonGet(txt, L"sun_browser_dir")).empty()) c.sunBrowserDir = v;
     if (!(v = JsonGet(txt, L"data_dir")).empty())        c.dataDir = v;
@@ -99,6 +138,8 @@ Config LoadConfig() {
             }
         }
     }
+    // Config.json 覆盖（放最后：优先级高于 sunlauncher.json）
+    ApplyConfigJsonOverride(c);
     return c;
 }
 
