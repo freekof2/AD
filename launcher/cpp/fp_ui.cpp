@@ -70,6 +70,8 @@ static std::wstring WJ(const std::string& raw) {
 // data_dir 存**完整指纹目录**（数据就在该目录下）；LoadConfig 读取时去掉末尾环境名
 // 还原成父目录，以适配 EffDataDir（父目录 + "\" + 环境名）的既有调用约定。
 // 读优先级：Config.json（按指纹）> ui 存档 webrtcIp > static/dynamic 后备。
+static std::wstring FpCleanDirectoryField(std::wstring path);
+static std::wstring FpDirectoryLeaf(const std::wstring& path);
 static std::wstring FpSpoofIpCfgPath() { return AppDir() + L"\\Config.json"; }
 
 // 去引号 + 反转义（\" \\ \/ \b \f \n \r \t）；非字符串返回 ""
@@ -161,55 +163,73 @@ static bool FpConfigSpoofIpSet(const std::wstring& profile, const std::string& i
     }
     const std::string key = N(profile);
     const std::string cur = FpJsonGet(txt, key);
-    std::string out;
-    if (cur.size() >= 2 && cur.front() == '{') {
-        std::string inner = cur;
-        if (!ip.empty()) {
-            inner = FpJsonSet(inner, "webrtc_ip", "\"" + ip + "\"");
-            if (inner.empty()) return false;
-        } else {
-            inner = FpConfigRemoveKey(inner, "webrtc_ip");
-            if (FpConfigTrim(inner) == "{}") { // 条目里没别的字段了 -> 整条删掉
-                out = FpConfigRemoveKey(txt, key);
-                return out.empty() ? false : FpWriteTextFile(path, out);
-            }
-        }
-        out = FpJsonSet(txt, key, inner);
-    } else if (!ip.empty()) {
-        out = FpJsonSet(txt, key, "\"" + ip + "\"");
-    } else {
-        if (cur.empty()) return true; // 本就没有该条目
-        out = FpConfigRemoveKey(txt, key);
+    std::string inner = (cur.size() >= 2 && cur.front() == '{') ? cur : "{}";
+    // 老格式纯字符串只含 IP；升级为对象时保留该 IP。
+    if (cur.size() >= 2 && cur.front() == '"') {
+        const std::string oldIp = FpJsonUnquoteRaw(cur);
+        if (!oldIp.empty()) inner = FpJsonSet(inner, "webrtc_ip", "\"" + oldIp + "\"");
     }
+    if (!ip.empty()) inner = FpJsonSet(inner, "webrtc_ip", "\"" + ip + "\"");
+    else inner = FpConfigRemoveKey(inner, "webrtc_ip");
+    if (inner.empty()) return false;
+    std::string out;
+    if (FpConfigTrim(inner) == "{}") out = FpConfigRemoveKey(txt, key);
+    else out = FpJsonSet(txt, key, inner);
     if (out.empty()) return false;
+    if (out == txt) return true;
     return FpWriteTextFile(path, out);
 }
 
-// 指纹页保存 A2 时同步该指纹的两个目录。只在该指纹于 Config.json 已是“对象”条目时回写，
-// 不自动创建（旧的纯字符串条目=只管伪装 IP，保持不动；没条目则继续走 sunlauncher.json）。
+// 每个指纹都在 Config.json 有一个对象；首次保存 A2 目录时创建对象，目录和伪装 IP 互不覆盖。
 static bool FpConfigSyncProfileDirs(const std::wstring& profile,
     const std::wstring& dataDirFull, const std::wstring& browserDir) {
+    std::wstring path = FpSpoofIpCfgPath();
     std::string txt;
-    if (!FpReadTextFile(FpSpoofIpCfgPath(), txt) || txt.empty()) {
-        LOG(L"指纹保存 Config.json 目录 跳过（无 Config.json） " + profile);
-        return true;
-    }
+    if (!FpReadTextFile(path, txt) || txt.empty()) txt = "{}";
     const std::string key = N(profile);
     const std::string cur = FpJsonGet(txt, key);
-    if (cur.size() < 2 || cur.front() != '{') {
-        LOG(L"指纹保存 Config.json 目录 跳过（该指纹无目录条目，沿用 sunlauncher.json） " + profile);
-        return true;
+    std::string inner = (cur.size() >= 2 && cur.front() == '{') ? cur : "{}";
+    // 兼容旧版字符串条目：把原伪装 IP 搬进新对象，再添加两个目录。
+    if (cur.size() >= 2 && cur.front() == '"') {
+        const std::string oldIp = FpJsonUnquoteRaw(cur);
+        if (!oldIp.empty()) inner = FpJsonSet(inner, "webrtc_ip", "\"" + oldIp + "\"");
     }
-    std::string inner = FpJsonSet(cur, "data_dir", "\"" + JEsc(dataDirFull) + "\"");
-    inner = FpJsonSet(inner, "sun_browser_dir", "\"" + JEsc(browserDir) + "\"");
+    if (!dataDirFull.empty()) inner = FpJsonSet(inner, "data_dir", "\"" + JEsc(dataDirFull) + "\"");
+    if (!browserDir.empty()) inner = FpJsonSet(inner, "sun_browser_dir", "\"" + JEsc(browserDir) + "\"");
     if (inner.empty()) return false;
     std::string out = FpJsonSet(txt, key, inner);
     if (out.empty()) return false;
     if (out == txt) return true;
-    const bool ok = FpWriteTextFile(FpSpoofIpCfgPath(), out);
+    const bool ok = FpWriteTextFile(path, out);
     LOG(L"指纹保存 Config.json 目录 " + std::wstring(ok ? L"OK" : L"FAIL") +
         L" dataDir=" + dataDirFull + L" browserDir=" + browserDir + L" " + profile);
     return ok;
+}
+
+// 检查 profile 目录是否至少包含一份官方三件套，用于区分“数据父目录”和“完整 profile 目录”。
+static bool FpHasFingerprintFiles(const std::wstring& profileDir) {
+    DWORD attr = ::GetFileAttributesW(profileDir.c_str());
+    if (attr == INVALID_FILE_ATTRIBUTES || !(attr & FILE_ATTRIBUTE_DIRECTORY)) return false;
+    if (::GetFileAttributesW((profileDir + L"\\ui_fingerprint.json").c_str()) != INVALID_FILE_ATTRIBUTES)
+        return true;
+    const std::wstring leaf = FpDirectoryLeaf(profileDir);
+    const std::string fbcc = FpFbccIdOf(leaf);
+    for (const std::string& file : { FpStaticName(fbcc), FpDynamicName(fbcc), FpCookiesName(fbcc) })
+        if (::GetFileAttributesW((profileDir + L"\\" + W(file)).c_str()) != INVALID_FILE_ATTRIBUTES) return true;
+    return false;
+}
+
+static std::wstring FpImportSourceProfileDir(const std::wstring& raw,
+    const std::wstring& currentProfile, bool& directProfilePath) {
+    const std::wstring path = FpCleanDirectoryField(raw);
+    if (path.empty()) { directProfilePath = false; return L""; }
+    DWORD attr = ::GetFileAttributesW(path.c_str());
+    const bool existsDirectory = attr != INVALID_FILE_ATTRIBUTES && (attr & FILE_ATTRIBUTE_DIRECTORY);
+    const bool hasFingerprintFiles = existsDirectory && FpHasFingerprintFiles(path);
+    const FpImportSourceResolution resolved = FpResolveImportSourcePath(
+        path, currentProfile, existsDirectory, hasFingerprintFiles);
+    directProfilePath = resolved.directProfilePath;
+    return resolved.profilePath;
 }
 
 std::string FpFormToUiJson(const FpFormData& f) {
@@ -1315,6 +1335,45 @@ static void FpFill(FpWnd* w) {
     FpSet(C(F_TLS), f.tlsBlacklist);
     FpSet(C(F_ARGS), f.launchArgs);
 }
+static std::wstring FpCleanDirectoryField(std::wstring path) {
+    for (const wchar_t* tag : { L"（默认全局，可改）", L"（跟随全局）" }) {
+        size_t p = path.find(tag);
+        if (p != std::wstring::npos) path = path.substr(0, p);
+    }
+    size_t first = path.find_first_not_of(L" \t\r\n");
+    if (first == std::wstring::npos) return L"";
+    path = path.substr(first, path.find_last_not_of(L" \t\r\n") - first + 1);
+    // 保留盘符根目录 F:\，其他路径去掉尾部分隔符。
+    while (path.size() > 3 && (path.back() == L'\\' || path.back() == L'/')) path.pop_back();
+    return path;
+}
+static std::wstring FpDirectoryLeaf(const std::wstring& path) {
+    size_t p = path.find_last_of(L"\\/");
+    return (p == std::wstring::npos) ? path : path.substr(p + 1);
+}
+static std::wstring FpDirectoryParent(const std::wstring& path) {
+    size_t p = path.find_last_of(L"\\/");
+    if (p == std::wstring::npos) return L"";
+    if (p == 2 && path.size() >= 3 && path[1] == L':') return path.substr(0, 3);
+    return path.substr(0, p);
+}
+static bool FpLooksLikeProfileDir(const std::wstring& path) {
+    if (::GetFileAttributesW(path.c_str()) == INVALID_FILE_ATTRIBUTES) return false;
+    // UI 侧车也标识一个 profile 目录（允许用户导入只剩 ui_fingerprint.json 的备份）。
+    if (::GetFileAttributesW((path + L"\\ui_fingerprint.json").c_str()) != INVALID_FILE_ATTRIBUTES)
+        return true;
+    const std::wstring leaf = FpDirectoryLeaf(path);
+    const std::string fbcc = FpFbccIdOf(leaf);
+    for (const std::string& file : { FpStaticName(fbcc), FpDynamicName(fbcc), FpCookiesName(fbcc) })
+        if (::GetFileAttributesW((path + L"\\" + W(file)).c_str()) != INVALID_FILE_ATTRIBUTES) return true;
+    return false;
+}
+static std::wstring FpDataParentFromProfileOrParent(const std::wstring& raw) {
+    const std::wstring path = FpCleanDirectoryField(raw);
+    if (path.empty() || !FpLooksLikeProfileDir(path)) return path;
+    const std::wstring parent = FpDirectoryParent(path);
+    return parent.empty() ? path : parent;
+}
 static void FpCollect(FpWnd* w) {
     FpFormData& f = w->form;
     auto C = [&](int id) { return w->ctl[id - F_BASE]; };
@@ -1323,18 +1382,14 @@ static void FpCollect(FpWnd* w) {
     // chrome_152→chrome143；browser 类型同步（flower_100→flower，其余 sun）。
     // browserDir 恒等于环境名（只存名，不存路径；路径走 A2）。
     {
-        auto stripTag = [](std::wstring s) -> std::wstring {
-            size_t p = s.find(L"（默认全局，可改）");
-            if (p != std::wstring::npos) s = s.substr(0, p);
-            p = s.find(L"（跟随全局）"); // 兼容旧版后缀
-            if (p != std::wstring::npos) s = s.substr(0, p);
-            s.erase(0, s.find_first_not_of(L" \t"));
-            if (!s.empty()) s.erase(s.find_last_not_of(L" \t") + 1);
-            return s;
-        };
         // 先收目录（推导需要它）
-        f.profDataDir = stripTag(FpGet(C(F_PDATADIR)));
-        f.profBrowserDir = stripTag(FpGet(C(F_PBROWSERDIR)));
+        f.profDataDir = FpDataParentFromProfileOrParent(FpGet(C(F_PDATADIR)));
+        f.profBrowserDir = FpCleanDirectoryField(FpGet(C(F_PBROWSERDIR)));
+        if (!f.profBrowserDir.empty()) {
+            std::wstring leaf = FpDirectoryLeaf(f.profBrowserDir);
+            for (auto& c : leaf) c = towlower(c);
+            if (leaf == L"sunbrowser.exe") f.profBrowserDir = FpDirectoryParent(f.profBrowserDir);
+        }
         std::wstring low = f.profBrowserDir;
         for (auto& c : low) c = towlower(c);
         auto tail = [&](const wchar_t* t) {
@@ -2041,30 +2096,24 @@ static LRESULT CALLBACK FpWndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
         }
         if (id == F_IMPORT) {
-            // 从目录导入指纹：导入源 = A2 行“数据目录”输入框里的父目录 + 环境目录名。
-            // 逻辑：A2 必填（F_OK 同规则），先 FpCollect 取 A2 当前输入，源目录不存在/
-            // 无三件套则状态条报错并记日志；导入成功回填表单（覆盖当前编辑）+ FpFill。
-            // 注意：改了 A2 再点导入 = 换源目录导入；导入不改 A2 本身，不写盘。
+            // 从目录导入：A2 可填数据父目录（cache -> cache\当前环境）或完整 profile 目录。
+            // 日志根因为用户填完整的另一个环境目录时，旧逻辑仍机械追加“当前环境名”，
+            // 例如 ...\k1hf...\1111_local，因此源目录不存在。导入读路径与保存目标分开：
+            // 完整 profile 输入只作为源；FpCollect 仍把数据目录规范成其父目录。
+            std::wstring sourceInput = FpCleanDirectoryField(FpGet(C(F_PDATADIR)));
             FpCollect(w);
             if (w->form.profDataDir.empty()) {
-                ::MessageBoxW(h, L"请先在顶端 A2 行填写数据目录（导入源父目录），再点导入。", L"从目录导入指纹", MB_OK | MB_ICONWARNING);
+                ::MessageBoxW(h, L"请先在顶端 A2 行填写数据父目录，或粘贴完整的 profile 目录，再点导入。", L"从目录导入指纹", MB_OK | MB_ICONWARNING);
                 ::SetWindowTextW(w->hStatus, L"导入已阻断：A2 数据目录为空");
                 LOG(L"指纹导入 F_IMPORT BLOCKED(A2空) " + w->profile);
                 return 0;
             }
-            // A2 兼容两种写法：数据父目录（F:\...cache）或完整 profile 目录
-            // （F:\...cache\k1ds12lu_hyg6dd）。粘完整路径时不再重复拼环境名。
-            std::wstring srcParent = w->form.profDataDir;
-            while (!srcParent.empty() && (srcParent.back() == L'\\' || srcParent.back() == L'/'))
-                srcParent.pop_back();
-            std::wstring srcDir;
-            {
-                size_t bi = srcParent.find_last_of(L"\\/");
-                const std::wstring tail = (bi == std::wstring::npos)
-                    ? srcParent : srcParent.substr(bi + 1);
-                srcDir = (tail == w->profile) ? srcParent : (srcParent + L"\\" + w->profile);
-            }
-            LOG(L"指纹导入 F_IMPORT srcParent=" + srcParent + L" src=" + srcDir + L" " + w->profile);
+            if (sourceInput.empty()) sourceInput = w->form.profDataDir;
+            bool directSource = false;
+            std::wstring srcDir = FpImportSourceProfileDir(sourceInput, w->profile, directSource);
+            LOG(L"指纹导入 F_IMPORT input=" + sourceInput + L" direct=" +
+                (directSource ? L"1" : L"0") + L" src=" + srcDir + L" targetParent=" +
+                w->form.profDataDir + L" " + w->profile);
             if (::GetFileAttributesW(srcDir.c_str()) == INVALID_FILE_ATTRIBUTES) {
                 ::SetWindowTextW(w->hStatus, (L"导入源目录不存在: " + srcDir).c_str());
                 LOG(L"指纹导入 F_IMPORT 无目录 src=" + srcDir + L" " + w->profile);
@@ -2075,9 +2124,10 @@ static LRESULT CALLBACK FpWndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
             if (FpLoadStaticJson(srcDir, sj2) && !sj2.empty()) nRD++;
             if (FpLoadDynamicJson(srcDir, dj2) && !dj2.empty()) nRD++;
             if (FpLoadCookiesJson(srcDir, cj2) && !cj2.empty()) nRD++;
+            if (FpLoadUiExtra(srcDir, ui2) && !ui2.empty()) nRD++;
             if (nRD == 0) {
-                ::SetWindowTextW(w->hStatus, (L"导入源无三件套: " + srcDir).c_str());
-                LOG(L"指纹导入 F_IMPORT 无三件套（目录里没有 md5(fbcc+\"_static/_webrtc/_cookies\"）) src=" +
+                ::SetWindowTextW(w->hStatus, (L"导入源无指纹文件: " + srcDir).c_str());
+                LOG(L"指纹导入 F_IMPORT 无三件套/ui存档（没有 md5(fbcc+\"_static/_webrtc/_cookies\") 或 ui_fingerprint.json）src=" +
                     srcDir + L" " + w->profile);
                 return 0;
             }
@@ -2086,7 +2136,7 @@ static LRESULT CALLBACK FpWndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
             // 简单做法：临时把 w->cfg.dataDir 指向源父目录，调回填段——此处直接内联：
             {
                 // ui 侧车
-                if (FpLoadUiExtra(srcDir, ui2) && !ui2.empty())
+                if (!ui2.empty())
                     FpFormFromUiJson(ui2, w->form);
                 // static 关键字段（与打开回填同表：语言三键 ui 有值不覆盖，无才用 Langs/首项派生）
                 std::string v;

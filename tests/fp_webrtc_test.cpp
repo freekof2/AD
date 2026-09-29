@@ -62,6 +62,22 @@ int main() {
         "{\"UNMASKED_VENDOR_WEBGL\":\"Google Inc.\",\"UNMASKED_RENDERER_WEBGL\":\"ANGLE Renderer\",\"GPUAdapterInfo\":{\"vendor\":\"amd\",\"architecture\":\"gcn-5\"},\"SUPPORTED_EXTENSIONS\":[]}");
     CHECK(FpBuildWebGlConfigJson("", "ANGLE Renderer", "1", "amd", "gcn-5").empty());
 
+    const auto fullProfile = FpResolveImportSourcePath(
+        L"F:\\.ADSPOWER_GLOBAL\\cache\\k1ds12lu_hyg6dd\\",
+        L"1111_local", true, true);
+    CHECK(fullProfile.directProfilePath);
+    CHECK(fullProfile.profilePath == L"F:\\.ADSPOWER_GLOBAL\\cache\\k1ds12lu_hyg6dd");
+
+    const auto parentWithUnderscore = FpResolveImportSourcePath(
+        L"F:\\user_cache", L"1111_local", true, false);
+    CHECK(!parentWithUnderscore.directProfilePath);
+    CHECK(parentWithUnderscore.profilePath == L"F:\\user_cache\\1111_local");
+
+    const auto currentProfilePath = FpResolveImportSourcePath(
+        L"F:\\cache\\1111_local", L"1111_local", true, false);
+    CHECK(currentProfilePath.directProfilePath);
+    CHECK(currentProfilePath.profilePath == L"F:\\cache\\1111_local");
+
     ::WSACleanup();
     return 0;
 }

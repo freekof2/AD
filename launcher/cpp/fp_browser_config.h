@@ -68,3 +68,35 @@ inline std::string FpBuildWebGlConfigJson(const std::string& vendor,
     json += ",\"SUPPORTED_EXTENSIONS\":[]}";
     return json;
 }
+
+struct FpImportSourceResolution {
+    std::wstring profilePath;
+    bool directProfilePath = false;
+};
+
+inline std::wstring FpImportTrimDirectory(std::wstring path) {
+    size_t first = path.find_first_not_of(L" \t\r\n");
+    if (first == std::wstring::npos) return L"";
+    path = path.substr(first, path.find_last_not_of(L" \t\r\n") - first + 1);
+    while (path.size() > 3 && (path.back() == L'\\' || path.back() == L'/')) path.pop_back();
+    return path;
+}
+
+// The A2 field accepts either a cache parent (append currentProfile) or an actual
+// profile directory (use it directly). Never infer profile-ness from underscores:
+// ordinary parent directories such as "user_cache" also contain underscores.
+inline FpImportSourceResolution FpResolveImportSourcePath(const std::wstring& raw,
+    const std::wstring& currentProfile, bool directoryExists, bool hasFingerprintFiles) {
+    const std::wstring path = FpImportTrimDirectory(raw);
+    FpImportSourceResolution out;
+    if (path.empty()) return out;
+    size_t slash = path.find_last_of(L"\\/");
+    const std::wstring leaf = slash == std::wstring::npos ? path : path.substr(slash + 1);
+    if (directoryExists && (hasFingerprintFiles || leaf == currentProfile)) {
+        out.profilePath = path;
+        out.directProfilePath = true;
+        return out;
+    }
+    out.profilePath = path + L"\\" + currentProfile;
+    return out;
+}
