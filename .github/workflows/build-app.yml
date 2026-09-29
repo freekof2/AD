@@ -490,8 +490,9 @@ jobs:
             if ($fpc -match [regex]::Escape($s)) { throw "legacy overlap rect still in fp_ui.cpp" }
             Write-Host "nooverlap ok"
           }
-          # 单页 24 行顺序锚点（A/B/C/D + 1..19，见上方 2f 注释）
-          # 单页 24 行顺序锚点（A/B/C/D + 1..19）
+          # 单页各区域顺序锚点（A/A2/B/C + 指纹项；Tab/section 布局不回退）
+          foreach ($s in @("---- A. 浏览器", "---- A2. 数据目录", "---- B. 系统/UA", "---- C. 代理",
+                           "---- 1. WebRTC", "---- 6. 分辨率", "---- 8. 硬件噪音",
                            "---- 9. WebGL", "---- 10. WebGPU", "---- 11. CPU",
                            "---- 13. 设备名称", "---- 15. Do Not Track",
                            "---- 17. 硬件加速", "---- 19. 启动参数")) {
