@@ -180,8 +180,8 @@ jobs:
           }
           # 2a5d. 语言三键对齐（k1h60tsv 实测：AcceptLang 缺失致浏览器中文显示错乱）：
           #     旧 /api/fp/save（已删除）对 Langs/AcceptLang 放行表单新值；打开/导入回填同表。
-          #     /api/fp/save 对 Langs/AcceptLang 放行表单新值；打开/导入回填同表。
-          foreach ($s in @("pageLanguageSwitch", "AcceptLang", "buildAccept", "allowNew")) {
+          #     原生 F_OK 等价逻辑是 forceForm（语言三键+代理表单优先，见 fp_ui.cpp）。
+          foreach ($s in @("pageLanguageSwitch", "AcceptLang", "buildAccept", "forceForm")) {
             $hit = ($fpcProf -match [regex]::Escape($s)) -or ($mcppProf -match [regex]::Escape($s))
             if (-not $hit) { throw "missing lang-align symbol '$s'" }
             Write-Host "langalign ok: $s"
@@ -465,7 +465,7 @@ jobs:
             Write-Host "contentrect ok: $s"
           }
           # 旧重叠坐标不得残留（Tab 5 页时代的错误 y：130/156 噪音行、112 MAC、46 CPU/RAM/白名单、146 启动参数、42 换一换）
-          foreach ($s in @("L`"换一换`", 260, 42, 80", "L`"MAC`", 12, 1356, 80);`n    FpMkCombo(p, w, F_MACM, 100, 112, 150")) {
+          foreach ($s in @('L"换一换", 260, 42, 80', 'L"MAC", 12, 1356, 80', 'FpMkCombo(p, w, F_MACM, 100, 112, 150')) {
             if ($fpc -match [regex]::Escape($s)) { throw "legacy overlap rect still in fp_ui.cpp" }
             Write-Host "nooverlap ok"
           }
