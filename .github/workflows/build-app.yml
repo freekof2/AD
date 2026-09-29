@@ -174,7 +174,7 @@ jobs:
             Write-Host "profdir ok: $s"
           }
           # 2a5d. 语言三键对齐（k1h60tsv 实测：AcceptLang 缺失致浏览器中文显示错乱）：
-#     旧 /api/fp/save（已删除）对 Langs/AcceptLang 放行表单新值；打开/导入回填同表。
+          #     旧 /api/fp/save（已删除）对 Langs/AcceptLang 放行表单新值；打开/导入回填同表。
           #     /api/fp/save 对 Langs/AcceptLang 放行表单新值；打开/导入回填同表。
           foreach ($s in @("pageLanguageSwitch", "AcceptLang", "buildAccept", "allowNew")) {
             $hit = ($fpcProf -match [regex]::Escape($s)) -or ($mcppProf -match [regex]::Escape($s))
