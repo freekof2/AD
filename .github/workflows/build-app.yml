@@ -77,7 +77,9 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
           # 1. C++ 不得引用云端域名 / token / 云端路由（web-ui 已删除，查 C++ 三文件）
-          $banned = @("adspower.net", "adspower.com", "adspowerapp.com", "loginkits.com", "xmp.one",
+          #    例外：代理 bypass 名单三域名（download/start/sys.adspower.net）是官方要求直连项，
+          #    只许出现在 proxy-bypass-list 上下文，单独校验作用域。
+          $banned = @("adspower.com", "adspowerapp.com", "loginkits.com", "xmp.one",
                       "acczing.com", "login-token", "apiKey", "api-key", "get-token",
                       "/api/v1/", "/api/v2/", "/api/tabAssistant", "ENV-",
                       "activeProfile", "page-profiles", "page-groups", "xrkClientAPI")
@@ -88,6 +90,9 @@ jobs:
             }
             Write-Host "clean: $f"
           }
+          $fpBypassScope = (Get-Content launcher\cpp\fingerprint.cpp -Raw) -replace 'download\.adspower\.net|start\.adspower\.net|sys\.adspower\.net', ''
+          if ($fpBypassScope -match [regex]::Escape("adspower.net")) { throw "banned string 'adspower.net' outside proxy-bypass list" }
+          Write-Host "bypass-domain scope ok (only proxy-bypass-list)"
           # 2. C++ 指纹模块必备符号（换表/三件套/注入/树杀/侧车）
           $cpp = Get-Content launcher\cpp\fingerprint.cpp -Raw
           foreach ($s in @("FpEncode", "FpDecode", "FpMd5Hex", "FpBuildCmdline", "FpKillProfileTree",
