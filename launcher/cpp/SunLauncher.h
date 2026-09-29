@@ -36,8 +36,8 @@
 // ---------- 默认值 ----------
 static const wchar_t* kDefaultBrowserDir = L"C:\\Users\\admin6\\AppData\\Roaming\\adspower_global\\cwd_global\\chrome_152";
 static const wchar_t* kDefaultDataDir    = L"F:\\.ADSPOWER_GLOBAL\\cache";
-static const wchar_t* kDefaultListen     = L"127.0.0.1:18900";
-static const int      kDefaultPortBase   = 19222;
+// 注：HTTP 离线接口（18900 + /api/*）已整体删除，不再开任何监听端口；
+// listen/port_base 配置键一并移除（旧文件里的残留键读取时忽略、不再写回）。
 
 // ---------- 配置 ----------
 // 全局默认 + per-profile 覆盖（profiles.<name>.data_dir / .sun_browser_dir 为空即跟随全局）。
@@ -50,7 +50,6 @@ struct ProfileOverride {
 struct Config {
     std::wstring sunBrowserDir = kDefaultBrowserDir;
     std::wstring dataDir       = kDefaultDataDir;
-    std::wstring listen        = kDefaultListen;
     std::map<std::wstring, ProfileOverride> profiles; // profile 名 -> 独立目录覆盖
 };
 // 取 profile 实际生效目录：覆盖优先，全局兜底。

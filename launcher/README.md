@@ -1,7 +1,9 @@
 # SunLauncher（离线指纹注入版）
 
-Win32 原生单窗口 + 内置 web-ui（`http://127.0.0.1:18900/`）：列出数据目录下的
+Win32 原生单窗口：列出数据目录下的
 profile，一键**指纹注入启动**/关闭。只读写本地缓存目录，**不连接 AdsPower 云端**。
+注：HTTP 离线接口（18900 + /api/*）与 web-ui 已整体删除，不再开任何监听端口；
+指纹配置走原生窗口直调内部函数。
 
 实现见 `cpp/`（C++ Win32，无第三方依赖）：
 
@@ -12,13 +14,11 @@ profile，一键**指纹注入启动**/关闭。只读写本地缓存目录，**
   `--remote-debugging-port=<自动分配> --extended-parameters=<注入>`
   `--no-first-run --no-default-browser-check about:blank`。
 - 停止：先按 `user-data-dir` 树杀 SunBrowser 进程，再结束 launcher 句柄兜底。
-- 离线 HTTP（127.0.0.1:18900）：`GET /api/profiles`、`POST /api/start|stop`、
-  `GET /api/fp/<static|dynamic|cookies|ui>?name=`、`POST /api/fp/save`、
-  `GET /` 直接 serving 同目录 `web-ui/`。
+- 代理检测：指纹配置窗口内的测速按钮（本机 TCP connect，3s 超时）。
 - 冲突规则（以缓存为准）：`UserId/CanvasMark/WebGLMark/AudioFp/ClientRects/`
   `ProxyChain/DeviceName/MacAddress/MediaDevices/TTSEngines/Langs/`
   `TimeZone/Geoposition/WebRTCAddress/DisableWebRTC` 等保护键在注入与
-  `/api/fp/save` 写 static/dynamic 时被缓存值覆盖；UI 全量参数存
+  原生保存写 static/dynamic 时被缓存值覆盖；UI 全量参数存
   `ui_fingerprint.json` 明文侧车。
 
 点启动后无窗口时看 `debug.log`（exe 同目录）：完整命令行、
@@ -59,7 +59,7 @@ profile，一键**指纹注入启动**/关闭。只读写本地缓存目录，**
 
 ## 构建（GitHub Actions，MSVC）
 
-`.github/workflows/build-offline.yml` 在 `windows-latest` 上编译
-`launcher/cpp/SunLauncher.vcxproj`，校验 web-ui 离线契约，并打包
-`offline-app.zip`（SunLauncher.exe + web-ui/）。
+`.github/workflows/build-app.yml` 在 `windows-latest` 上编译
+`launcher/cpp/SunLauncher.vcxproj`，校验原生指纹契约，并打包
+`offline-app.zip`（SunLauncher.exe + PDB 符号）。
 不在本地测试时直接去 Actions 下载。

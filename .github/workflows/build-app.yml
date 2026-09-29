@@ -1,56 +1,37 @@
 name: Build SunLauncher App
-
-# SunLauncher 离线启动器构建（唯一构建工作流；旧 build-launcher/build-offline/
-# build-sunlauncher 已删除，逻辑合并于此）。
-# 触发：手动 / 推送 launcher/**、web-ui/**、本文件。
 # 约束：
-#   - 只在 windows-latest 上 MSVC 编译 + node --check + 离线契约校验 + 打包；
+#   - 只在 windows-latest 上 MSVC 编译 + 离线契约校验 + 打包；
 #   - 不在本地测试、不启动 SunBrowser、不连接 AdsPower 云端（无 token、无上报）；
+#   - 不开任何监听端口（HTTP 离线接口 18900 + /api/* + web-ui 已整体删除，
+#     主窗口原生操作直调内部函数；web-ui/ 目录已从仓库移除，不再打包）；
 #   - 产物只压缩一次：upload-artifact 上传 offline-pkg/*（下载即 zip，解压一次即用），
 #     工作流内不再手动 Compress-Archive，避免 zip 套 zip。
-# 后端接口来源（只读静态分析，样本未执行）：
-#   - F:\manus\AD\asar\asar-full\dist\static\lib\main.min.js（live 版 v2.8.8.7，
-#     8.7MB webpack Node 包）：本地 Koa 路由 De.get/De.post 共 162 条，
-#     其中 whitelist 免鉴权 20 条；openBrowser/openBrowserV3/checkOpen/
-#     getOpenStatus/formatOpenRes 等调用链即启动时序；
-#     sunBrowserParams/staticConfig/dynamicConfig 三层指纹 + --extended-parameters
-#     换表 Base64 注入；白名单 pathInWhitelist 含 /api/getVersion、/api/cacheSize 等。
-#   - F:\manus\AD\asar\reports\ + F:\manus\AD\reports\：PE 静态指纹
-#     （151MB x64、无 CLR）、Ghidra 24 片缺件说明、asar 头/文件清单。
-#   - 云端 /api/v1/* /api/v2/*（需 login-token）与 PE 原生层不在离线范围，一律不实现。
-# UI 逻辑（web-ui/）即契约：
-#   - 目录即环境：数据目录子目录名 = profile（如 k1h60tsv_hyg6dd = <fbccId>_<invite>）；
-#   - 导入：File System Access 直读目录内 md5(fbcc+"_static/_webrtc/_cookies") 三件套，
+# 原生指纹窗逻辑即契约（原 web-ui/ 已删除，对照 git 历史）：
+#   - 目录即环境：数据目录子目录名 = profile；
+#   - 导入：直读目录内 md5(fbcc+"_static/_webrtc/_cookies") 三件套，
 #     换表 Base64 解码回填 35+ 指纹表单；CLIENT_HOST 一律剥离，BROWSER_ID 按目录名校正；
 #   - 导出/保存：写回三件套（md5 比对一致跳过）+ ui_fingerprint.json 明文侧车（35+ 参数全量）；
-#   - 启动：POST /api/start -> C++ FpBuildCmdline 注入 --extended-parameters（含
+#   - 启动：原生启动按钮 -> C++ FpBuildCmdline 注入 --extended-parameters（含
 #     StaticConfig/DynamicConfig/CookiesFile 三文件绝对路径 + UserId + fbcc 噪声种子），
 #     spawn SunBrowser.exe + --user-data-dir=<profile> --remote-debugging-port=0（官方随机端口，
 #     实际值读 profile 目录 DevToolsActivePort，无 ports.json）；
-#   - 停止：POST /api/stop -> FpKillProfileTree 按 user-data-dir 树杀 + 句柄兜底；
-#   - 代理检测：GET /api/proxy/check?addr=host:port，只做本机 TCP connect（3s 超时），
+#   - 停止：原生关闭按钮 -> FpKillProfileTree 按 user-data-dir 树杀 + 句柄兜底；
+#   - 代理检测：指纹窗内测速按钮，只做本机 TCP connect（3s 超时），
 #     不访问任何云端测速接口；
 #   - 以缓存为准：UserId/CanvasMark/WebGLMark/AudioFp/ClientRects/ProxyChain/DeviceName/
 #     MacAddress/MediaDevices/TTSEngines/Langs/TimeZone/Geoposition/WebRTCAddress/
 #     其余保护键以缓存为准；WebRTCAddress/DisableWebRTC 由 native WebRTC 模式解析器
-#     按 forward/proxy/disabled 明确同步写入 sunBrowserParams ext + static + dynamic，
-#     Web UI API 保持保护键策略。
-# asar 兼容路由（main.cpp 另有 B 组实现，行为对齐 main.min.js）：
-#   POST /api/openBrowser /api/openBrowserV3 /api/checkOpen /api/checkProfileOpen
-#     /api/batcCloseBrowser /api/updateTabs /api/frontBrowser /api/log
-#     /api/clearCache /api/deleteCacheById /api/checkProxy(POST)；
-#   GET /api/closeAllBrowser /api/stopAllBrowser /api/getOpenStatus
-#     /api/getChromeOpened /api/getVersion /api/getBrowserInfo /api/getTabUrls
-#     /api/cacheSize。
+#     按 forward/proxy/disabled 明确同步写入 sunBrowserParams ext + static + dynamic。
+# 注：main.min.js 的本地 Koa 路由（/api/openBrowser 等）仅作指纹字段语义的只读对照，
+#   不再实现为 HTTP 服务；未知路由概念已不存在（无监听端口）。
 
 on:
   workflow_dispatch:
   push:
     paths:
       - "launcher/**"
-      - "web-ui/**"
+      - "ports.json"
       - ".github/workflows/build-app.yml"
-
 permissions:
   contents: read
 
@@ -90,40 +71,17 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "WebRTC mode unit test failed: $LASTEXITCODE" }
           Write-Host "Fingerprint mode tests passed"
 
-      - name: Check web-ui required files
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-          $files = @("web-ui/index.html", "web-ui/css/app.css", "web-ui/js/fp.js",
-                     "web-ui/js/api.js", "web-ui/js/mock.js", "web-ui/js/app.js", "web-ui/README.md")
-          foreach ($f in $files) {
-            if (-not (Test-Path $f)) { throw "missing: $f" }
-            Write-Host "ok: $f ($((Get-Item $f).Length) bytes)"
-          }
-          # 端口跟随官方：无 ports.json 端口表（端口由浏览器随机写 DevToolsActivePort）
-          if (Test-Path "ports.json") { throw "ports.json must be removed (official: --remote-debugging-port=0)" }
-          Write-Host "ok: no ports.json"
 
-      - name: JS syntax check (node --check, no execution)
+      - name: Offline contract check (native only, no listen port)
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          node --version
-          foreach ($f in @("web-ui/js/fp.js", "web-ui/js/api.js", "web-ui/js/mock.js", "web-ui/js/app.js")) {
-            node --check $f
-            Write-Host "syntax ok: $f"
-          }
-
-      - name: Offline contract check (no cloud / no token / routes complete)
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-          # 1. web-ui 不得引用云端域名 / token / 云端路由 / 旧页面锚点
+          # 1. C++ 不得引用云端域名 / token / 云端路由（web-ui 已删除，查 C++ 三文件）
           $banned = @("adspower.net", "adspower.com", "adspowerapp.com", "loginkits.com", "xmp.one",
                       "acczing.com", "login-token", "apiKey", "api-key", "get-token",
                       "/api/v1/", "/api/v2/", "/api/tabAssistant", "ENV-",
                       "activeProfile", "page-profiles", "page-groups", "xrkClientAPI")
-          foreach ($f in @("web-ui/index.html", "web-ui/js/api.js", "web-ui/js/mock.js", "web-ui/js/app.js", "web-ui/js/fp.js")) {
+          foreach ($f in @("launcher/cpp/main.cpp", "launcher/cpp/fp_ui.cpp", "launcher/cpp/fingerprint.cpp", "launcher/cpp/util.cpp")) {
             $t = Get-Content $f -Raw
             foreach ($b in $banned) {
               if ($t -match [regex]::Escape($b)) { throw "banned string '$b' in $f" }
@@ -151,10 +109,6 @@ jobs:
             if ($cpp -match ('kExtraAllow[^;]*' + [regex]::Escape($s))) { throw "ui big field $s must not be in kExtraAllow" }
           }
           Write-Host "allowlist excludes ui big fields ok"
-          # 2a2. web-ui cookies 与 C++ 一致：明文直写（官方 setCookie 即 writeFile 明文）
-          $fpjs2 = Get-Content web-ui\js\fp.js -Raw
-          if ($fpjs2 -match "writeIfChanged\(cookiesName\(fbcc\), fpEncode\(payload\.cookies\)\)") { throw "web-ui cookies must be plaintext, not fpEncode" }
-          Write-Host "web-ui cookies plaintext ok"
           # 2a3. 指纹保存链路：EDIT 上限放宽 + JSON 全转义 + 保存结果日志
           #     （根因：cookie 16KB+ 被 EDIT 默认 30K 截断 / JEsc 未转义 \n\r\t 导致存档断裂）
           $fpcSave = Get-Content launcher\cpp\fp_ui.cpp -Raw
@@ -220,7 +174,7 @@ jobs:
             Write-Host "profdir ok: $s"
           }
           # 2a5d. 语言三键对齐（k1h60tsv 实测：AcceptLang 缺失致浏览器中文显示错乱）：
-          #     fpConfig 必写 pageLanguageSwitch/pageLanguage/AcceptLang(getAccept 派生)；
+#     旧 /api/fp/save（已删除）对 Langs/AcceptLang 放行表单新值；打开/导入回填同表。
           #     /api/fp/save 对 Langs/AcceptLang 放行表单新值；打开/导入回填同表。
           foreach ($s in @("pageLanguageSwitch", "AcceptLang", "buildAccept", "allowNew")) {
             $hit = ($fpcProf -match [regex]::Escape($s)) -or ($mcppProf -match [regex]::Escape($s))
@@ -279,23 +233,8 @@ jobs:
           if ($fpc -notmatch "kAsarFontsUCount = 181") { throw "kAsarFontsUCount != 181" }
           if ($fpc -notmatch "kAsarMobileFontsCount = 12") { throw "kAsarMobileFontsCount != 12" }
           Write-Host "font table counts ok (u=181, mobile=12)"
-          # 2d3. web-ui 侧 asar 字体表一致性（fp.js 与 C++ 同源）
-          $fpjs = Get-Content web-ui\js\fp.js -Raw
-          foreach ($s in @("ASAR_FONTS_U", "ASAR_MOBILE_FONTS", "asarPlatformOf",
-                           "asarDisabledFonts", "asarFakeKeys", "Caurier Regular")) {
-            if ($fpjs -notmatch [regex]::Escape($s)) { throw "missing '$s' in web-ui/js/fp.js" }
-            Write-Host "fp.js ok: $s"
-          }
-          # app.js 预览字段（fontsDisabledPreview/fontsFakePreviewKeys，与 C++ 预览同算法）
-          # 注意：$app 在下方 2d 节才赋值，此处用独立变量重读，避免空变量误报缺失
-          $appPreview = Get-Content web-ui\js\app.js -Raw
-          if ($appPreview -notmatch "fontsDisabledPreview") { throw "fontsDisabledPreview missing in app.js" }
-          if ($appPreview -notmatch "fontsFakePreviewKeys") { throw "fontsFakePreviewKeys missing in app.js" }
-          Write-Host "app.js font preview ok"
-          # 2d. 指纹设置内容对齐 web-ui（选项值/默认值/行为一致性）
+          # 2d. 原生指纹设置内容自洽（选项值/默认值/行为一致性，原 web-ui 已删除）
           $fpc2 = Get-Content launcher\cpp\fp_ui.cpp -Raw
-          $web = Get-Content web-ui\index.html -Raw
-          $app = Get-Content web-ui\js\app.js -Raw
           # (a) WebRTC 四选项：forward/proxy/disabled/disable_udp
           foreach ($v in @("forward", "proxy", "disabled", "disable_udp")) {
             if ($fpc2 -notmatch [regex]::Escape($v)) { throw "webrtc option '$v' missing in fp_ui.cpp" }
@@ -315,38 +254,11 @@ jobs:
           foreach ($s in @("FpNormalizeTimezone", "FpBrowserConfigJsonQuote", "TimeZone")) {
             if ($fpc2 -notmatch [regex]::Escape($s)) { throw "timezone save contract '$s' missing in fp_ui.cpp" }
           }
-          # Cookie 保存守卫（“改了保存不了/空保存清掉 Cookie”回归）：多行可编辑、
-          # 非法/为空不覆盖既有值、回填与变空两条日志、web-ui 同语义。
+          # Cookie 保存守卫（原生指纹窗多行可编辑 + 非法/为空不覆盖既有值 + 长度日志）
           foreach ($s in @("Cookie 保存守卫", "ES_MULTILINE", "指纹回填 cookie len", "Cookie框变空", "指纹载入 ui侧车 cookie", "FpLoadCookiesJson")) {
             if ($fpc2 -notmatch [regex]::Escape($s)) { throw "cookie guard contract '$s' missing in fp_ui.cpp" }
           }
-          $appJsCookie = Get-Content web-ui\js\app.js -Raw
-          if ($appJsCookie -notmatch [regex]::Escape("本次未覆盖已有 Cookie")) {
-            throw "cookie guard contract missing in web-ui/js/app.js"
-          }
-          Write-Host "cookie guard contract ok"
-          # 路径/导入契约：JsonGet 必须反转义（SaveConfig 写标准 JSON，读侧不还原会让
-          # dataDir 变成双反斜杠 -> A2 目录/打开/从目录导入全失效）；Config.json 启动优先；
-          # 原生导入兼容粘完整 profile 路径；web 回退路径（file:// / picker 被拒）也解码三件套。
-          $utilCfg = Get-Content launcher\cpp\util.cpp -Raw
-          foreach ($s in @("Config.json 指纹目录", "ApplyConfigJsonProfiles", "data_dir", "sun_browser_dir", "反转义", "raw.find")) {
-            if ($utilCfg -notmatch [regex]::Escape($s)) { throw "config load contract '$s' missing in util.cpp" }
-          }
-          if ($fpc2 -notmatch [regex]::Escape("指纹导入 F_IMPORT srcParent=")) {
-            throw "import path contract missing in fp_ui.cpp"
-          }
-          foreach ($s in @("FpConfigSyncProfileDirs", "webrtc_ip", "FpConfigRemoveKey")) {
-            if ($fpc2 -notmatch [regex]::Escape($s)) { throw "Config.json profile contract '$s' missing in fp_ui.cpp" }
-          }
-          $fpJsCfg = Get-Content web-ui\js\fp.js -Raw
-          if ($fpJsCfg -notmatch [regex]::Escape("importFromFiles")) {
-            throw "fallback import contract missing in web-ui/js/fp.js"
-          }
-          $appJsCfg = Get-Content web-ui\js\app.js -Raw
-          foreach ($s in @("三件套回填", "ui 存档已回填")) {
-            if ($appJsCfg -notmatch [regex]::Escape($s)) { throw "import contract '$s' missing in web-ui/js/app.js" }
-          }
-          Write-Host "path/import contract ok"
+          Write-Host "cookie guard contract ok (native only)"
           $rtcFpCpp = Get-Content launcher\cpp\fingerprint.cpp -Raw
           foreach ($s in @("webrtc.mode=", "FpBuildWebRtcSunParams", "sunBrowserParams.WebRTCAddress",
                            "ext.webrtc.disabled=", "FpBuildTimeZoneSunParam", "WebGLFP",
@@ -360,30 +272,27 @@ jobs:
             if ($fpc2 -notmatch [regex]::Escape($v)) { throw "geo/tz default '$v' missing in fp_ui.cpp" }
           }
           Write-Host "geo/tz defaults ok"
-          # (c) 开关默认值：Canvas关/WebGL关/Audio开/ClientRects开/Speech开（与 index.html checked 一致）
+          # (c) 开关默认值：Canvas关/WebGL关/Audio开/ClientRects开/Speech开
           if ($fpc2 -notmatch "swCanvas = false") { throw "swCanvas default mismatch" }
           if ($fpc2 -notmatch "swAudio = true") { throw "swAudio default mismatch" }
           Write-Host "switch defaults ok"
-          # (d) CPU 默认 20、RAM 默认 8、UA 默认 152（与 index.html selected/value 一致）
-          foreach ($v in @('value="20" selected', 'value="8" selected', 'value="152"')) {
-            if ($web -notmatch [regex]::Escape($v)) { throw "web default '$v' missing in index.html" }
-          }
+          # (d) CPU 默认 20、RAM 默认 8、UA 默认 152（原生指纹窗默认值）
           foreach ($v in @('"20"', '"8"')) {
             if ($fpc2 -notmatch [regex]::Escape($v)) { throw "native default '$v' missing in fp_ui.cpp" }
           }
+          if ($fpc2 -notmatch '"152"') { throw "native UA default 152 missing in fp_ui.cpp" }
           Write-Host "cpu/ram/ua defaults ok"
-          # (e) 随机库一致：渲染器 5 项、字体 3 项（与 app.js RENDERER_LIST/FONT_PRESETS 同数）
+          # (e) 随机库：渲染器 5 项、字体 3 项
           if ($fpc2 -notmatch "Apple M1 Max") { throw "renderer list incomplete in fp_ui.cpp" }
           if ($fpc2 -notmatch "San Francisco, Monaco") { throw "font presets incomplete in fp_ui.cpp" }
           Write-Host "random libs ok"
-          # (f) 一键随机含精度 500~3500（与 app.js btnFpRandom 一致）
+          # (f) 一键随机含精度 500~3500
           if ($fpc2 -notmatch "rand\(\) % 3000 \+ 500") { throw "random accuracy range missing in fp_ui.cpp" }
-          if ($app -notmatch "Math\.floor\(Math\.random\(\) \* 3000 \+ 500\)") { throw "web random accuracy changed?" }
           Write-Host "random accuracy ok"
-          # (g) 语言计数分隔符：逗号/分号/换行（与 collectFp split(/[,;\n]+/) 一致，查注释行）
+          # (g) 语言计数分隔符：逗号/分号/换行（查注释行）
           if ($fpc2 -notmatch '按逗号/分号/换行切分计数') { throw "lang split separators missing in fp_ui.cpp" }
           Write-Host "lang split ok"
-          # (h) 字体切分含中文逗号 U+FF0C（与 collectFp split(/[,，\n]+/) 一致）
+          # (h) 字体切分含中文逗号 U+FF0C
           if ($fpc2 -notmatch "0xEF") { throw "fonts chinese-comma handling missing in fp_ui.cpp" }
           Write-Host "fonts split ok"
           # 2c. vcxproj 必须编译新模块
@@ -392,9 +301,7 @@ jobs:
             if ($vcx -notmatch [regex]::Escape($s)) { throw "missing '$s' in vcxproj" }
             Write-Host "vcxproj ok: $s"
           }
-          # 2d. 指纹内容对齐 web-ui 注释溯源（注释即契约，防实现漂移）
-          #     注释关键词与 web-ui 函数/按钮名一一对应：syncUaPresetFromUA=UA反解析、
-          #     parseCookieRaw=合并Cookie解析、btnFpRandom=一键随机（含精度500~3500）。
+          # 2d. 注释溯源：关键函数名必须出现在 fp_ui.cpp（防实现漂移）
           foreach ($s in @("clampMedia", "syncUaPresetFromUA", "parseCookieRaw", "btnFpRandom")) {
             if ($fpc -notmatch $s) { throw "alignment comment '$s' missing in fp_ui.cpp" }
             Write-Host "align comment ok: $s"
@@ -557,50 +464,21 @@ jobs:
             if ($fpc -match [regex]::Escape($s)) { throw "legacy overlap rect still in fp_ui.cpp" }
             Write-Host "nooverlap ok"
           }
-          # 单页 24 行顺序锚点（与 web-ui fp-row 顺序一致：A/B/C/D + 1..19）
-          foreach ($s in @("---- A.", "---- C.", "---- 1. WebRTC", "---- 6. 分辨率",
+          # 单页 24 行顺序锚点（A/B/C/D + 1..19，见上方 2f 注释）
+          # 单页 24 行顺序锚点（A/B/C/D + 1..19）
                            "---- 9. WebGL", "---- 10. WebGPU", "---- 11. CPU",
                            "---- 13. 设备名称", "---- 15. Do Not Track",
                            "---- 17. 硬件加速", "---- 19. 启动参数")) {
             if ($fpc -notmatch [regex]::Escape($s)) { throw "section anchor '$s' missing in fp_ui.cpp" }
             Write-Host "section ok: $s"
           }
-          # 3. C++ 离线 HTTP 路由齐备：
-          #    A 组离线自有（web-ui/api.js 契约）：profiles/start/stop/fp/proxy/check + serveFile；
-          #    B 组 asar 兼容（main.min.js 本地 Koa 路由离线版，见 main.cpp 注释）：
-          #    openBrowser/openBrowserV3/checkOpen/checkProfileOpen/batcCloseBrowser/
-          #    closeAllBrowser/stopAllBrowser/getOpenStatus/getChromeOpened/getVersion/
-          #    getBrowserInfo/getTabUrls/cacheSize/clearCache/deleteCacheById/
-          #    checkProxy(POST)/updateTabs/frontBrowser/log。
+          # 3. HTTP 服务已删除回归：main.cpp 不得重现监听/路由符号，
+          #    /api/*、serveFile、18900、listen 只能出现在说明性注释里。
           $main = Get-Content launcher\cpp\main.cpp -Raw
-          foreach ($r in @("/api/profiles", "/api/start", "/api/stop", "/api/fp/", "/api/fp/save",
-                           "/api/proxy/check", "serveFile",
-                           "/api/openBrowser", "/api/openBrowserV3", "/api/checkOpen",
-                           "/api/checkProfileOpen", "/api/batcCloseBrowser",
-                           "/api/closeAllBrowser", "/api/stopAllBrowser",
-                           "/api/getOpenStatus", "/api/getChromeOpened", "/api/getVersion",
-                           "/api/getBrowserInfo", "/api/getTabUrls", "/api/cacheSize",
-                           "/api/clearCache", "/api/deleteCacheById", "/api/checkProxy",
-                           "/api/updateTabs", "/api/frontBrowser", "/api/log")) {
-            if ($main -notmatch [regex]::Escape($r)) { throw "missing route '$r' in main.cpp" }
-            Write-Host "route ok: $r"
-          }
-          # 4. 前端 API 封装与路由一一对应（含 checkProxy）
-          $api = Get-Content web-ui\js\api.js -Raw
-          foreach ($r in @("/api/profiles", "/api/start", "/api/stop", "/api/fp/", "/api/fp/save", "/api/proxy/check")) {
-            if ($api -notmatch [regex]::Escape($r)) { throw "missing api '$r' in web-ui/js/api.js" }
-            Write-Host "api ok: $r"
-          }
-          # 5. 脚本引用顺序（fp.js 编解码必须在 api.js 之前）
-          $html = Get-Content web-ui/index.html -Raw
-          $iFp = $html.IndexOf("js/fp.js"); $iApi = $html.IndexOf("js/api.js")
-          if ($iFp -lt 0 -or $iApi -lt 0 -or $iFp -gt $iApi) { throw "fp.js must load before api.js" }
-          Write-Host "script order ok"
-          # 6. mock 覆盖全部离线路由（file:// 演示模式不断链）
-          $mock = Get-Content web-ui\js\mock.js -Raw
-          foreach ($r in @("/api/profiles", "/api/start", "/api/stop", "/api/fp/", "/api/fp/save")) {
-            if ($mock -notmatch [regex]::Escape($r)) { throw "missing mock '$r' in web-ui/js/mock.js" }
-            Write-Host "mock ok: $r"
+          $mainCode = (($main -split "`r?`n") | Where-Object { $_ -notmatch '^\s*//' }) -join "`n"
+          foreach ($r in @("/api/", "serveFile", "18900", "listen", "closesocket", "accept(")) {
+            if ($mainCode -match [regex]::Escape($r)) { throw "removed HTTP symbol '$r' still in main.cpp code" }
+            Write-Host "nohttp ok: $r gone"
           }
 
       - name: Prepare offline-pkg (single-pack source dir)
@@ -614,17 +492,15 @@ jobs:
           # PDB 符号随包（本地 dumpbin/windbg 符号化崩溃 offset 用，不影响离线运行）
           $pdbFiles = Get-ChildItem launcher\cpp\x64\Release\*.pdb -ErrorAction SilentlyContinue
           foreach ($p in $pdbFiles) { Copy-Item $p.FullName (Join-Path $out $p.Name) -Force; Write-Host "packed symbol: $($p.Name)" }
-          Copy-Item web-ui (Join-Path $out "web-ui") -Recurse -Force
           if (Test-Path ports.json) { throw "ports.json must not be packaged" }
+          if (Test-Path web-ui) { throw "web-ui/ must not be packaged" }
           @"
           # SunLauncher 离线启动器包（本机使用，不联网、不上传、不与 AdsPower 云端通信）
           # 1. 把 SunLauncher.exe 放到任意目录，双击运行（Win32 原生窗口：profile 列表 + 启动/关闭）
-          # 2. 数据目录默认 F:\.ADSPOWER_GLOBAL\cache（窗口里可改；子目录名即环境，如 k1h60tsv_hyg6dd）
-          # 3. 浏览器目录默认 ...\cwd_global\chrome_152（窗口里可改；cmd.Dir 必须设在含版本子目录那一级）
-          # 4. UI：窗口启动后访问 http://127.0.0.1:18900/（SunLauncher 内置 serving web-ui/）；
-          #    也可 file:// 双击 web-ui/index.html（演示模式：目录导入可用，启动/保存为 mock）
-          # 5. UI 逻辑：导入=解码三件套回填 35+ 参数（CLIENT_HOST 剥离）；保存=写回三件套 + ui_fingerprint.json；
-          #    启动=--extended-parameters 指纹注入；停止=按 user-data-dir 树杀；代理检测=本机 TCP connect
+          # 2. 数据目录默认 F:\.ADSPOWER_GLOBAL\cache（指纹配置 A2 行可按指纹改）
+          # 3. 浏览器目录默认 ...\cwd_global\chrome_152（指纹配置 A2 行可按指纹改）
+          # 4. 指纹配置：点环境再点指纹配置——35+ 参数面板；保存=写回三件套 + ui_fingerprint.json
+          # 5. 启动=--extended-parameters 指纹注入；停止=按 user-data-dir 树杀；代理检测=指纹窗内测速按钮
           # 6. 以缓存为准：保护键（UserId/CanvasMark/WebGLMark/ProxyChain/TimeZone 等）在注入与写回时被缓存值覆盖
           # 7. 调试：点启动后无窗口，看 exe 同目录 debug.log（完整命令行 / 3 秒退出码 / [browser] 输出）
           "@ | Out-File (Join-Path $out "README.txt") -Encoding utf8

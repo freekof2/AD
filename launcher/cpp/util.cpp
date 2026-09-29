@@ -157,7 +157,7 @@ Config LoadConfig() {
     std::wstring v;
     if (!(v = JsonGet(txt, L"sun_browser_dir")).empty()) c.sunBrowserDir = v;
     if (!(v = JsonGet(txt, L"data_dir")).empty())        c.dataDir = v;
-    if (!(v = JsonGet(txt, L"listen")).empty())          c.listen = v;
+    // listen/port_base 已废弃（HTTP 接口整体删除）：旧文件残留键直接忽略，不再读回。
     // 端口不落盘：官方只传 --remote-debugging-port=0（浏览器随机，写 DevToolsActivePort），
     // 旧 sunlauncher.json 里的 port_base 键读取时直接忽略。
     // per-profile 覆盖：profiles: { "<name>": { "data_dir": "...", "sun_browser_dir": "..." } }
@@ -212,8 +212,7 @@ bool SaveConfig(const Config& c) {
     // 此处再加 nothrow 守卫：任何异常一律返回 false，不穿越持锁区（闪退根因之一）。
     try {
         std::wstring j = L"{\r\n  \"sun_browser_dir\": \"" + Esc(c.sunBrowserDir) +
-            L"\",\r\n  \"data_dir\": \"" + Esc(c.dataDir) +
-            L"\",\r\n  \"listen\": \"" + Esc(c.listen) + L"\"";
+            L"\",\r\n  \"data_dir\": \"" + Esc(c.dataDir) + L"\"";
         if (!c.profiles.empty()) {
             j += L",\r\n  \"profiles\": {\r\n";
             bool first = true;

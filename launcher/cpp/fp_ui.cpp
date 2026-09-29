@@ -2310,7 +2310,19 @@ static LRESULT CALLBACK FpWndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
                 ::SetWindowTextW(w->hStatus, L"请先填写代理主机和端口");
                 return 0;
             }
-            // 本机 TCP connect 探测（与 /api/proxy/check 一致，3s 超时）
+            // 本机 TCP connect 探测（3s 超时，旧 /api/proxy/check 同语义，已删除）
+            // 注意：HTTP 监听线程已删除，Winsock 须在此 lazily 初始化（进程级一次）。
+            {
+                static bool wsaOk = false;
+                if (!wsaOk) {
+                    WSADATA wd{};
+                    if (::WSAStartup(MAKEWORD(2, 2), &wd) == 0) wsaOk = true;
+                    else {
+                        ::SetWindowTextW(w->hStatus, L"网络初始化失败，无法检测");
+                        return 0;
+                    }
+                }
+            }
             std::string hh = N(w->form.proxyHost);
             int pport = _wtoi(w->form.proxyPort.c_str());
             bool okc = false;
@@ -2553,7 +2565,7 @@ static LRESULT CALLBACK FpWndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
                 if (w->form.fontMode == L"all") ui = FpJsonSet(ui, "fonts", "[\"all\"]");
                 // asar 1:1：fonts=all 时 static.DisabledFonts=getFonts-mobileFonts；
                 // custom 时 static.DisabledFonts=表单切分数组（setFonts 语义：disabledFonts 直写）。
-                // 注意 main.cpp /api/fp/save 的 protectFill 会用缓存值覆盖这 3 个键（以缓存为准），
+                // 注意旧 main.cpp /api/fp/save 的 protectFill（已删除）：缓存为准，已有值时不覆盖空值。
                 // 此处写入的是“首次建档”值；已有缓存时以缓存为准，与 asar 行为一致。
                 {
                     std::string asarPlatform = N(FpOsToAsarPlatform(w->form.os));
@@ -2670,7 +2682,7 @@ static LRESULT CALLBACK FpWndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
                         }
                         cfg = mergedBase;
                     } else {
-                    // 保護鍵回填（与 main.cpp /api/fp/save protectFill 同表），例外见上：
+                    // 保護鍵回填（与旧 protectFill 同表，已删除），例外见上：
                     static const char* prot[] = { "DeviceName","MacAddress",
                         "MediaDevices","TTSEngines","HardwareConcurrency",
                         "DeviceMemory","Platform","UserId","CanvasMark","WebGLMark","AudioFp",
