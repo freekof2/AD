@@ -460,6 +460,13 @@ jobs:
             if ($fpc -match [regex]::Escape($s)) { throw "deduped symbol '$s' still in fp_ui.cpp" }
             Write-Host "dedup ok: $s gone"
           }
+          # 时区回填不得把下划线转空格（k1hhv9wo 实测：dynamic TimeZone=America/New_York
+          # 转空格后下拉精确匹配失败，回退首项 Etc/GMT+12，一次保存即永久覆盖真实时区）
+          if ($fpc -match [regex]::Escape("if (c == '_') c = ' '")) { throw "lossy timezone underscore-to-space conversion still in fp_ui.cpp" }
+          Write-Host "tz-nospace ok"
+          # 时区显示前必须归一化（兼容旧空格存档），否则精确匹配失败同样回退首项
+          if ($fpc -notmatch [regex]::Escape("FpNormalizeTimezone(N(f.timezone))")) { throw "timezone normalize-before-select missing in fp_ui.cpp" }
+          Write-Host "tz-normalize ok"
           # 2f2. 语言三键对齐（main.min.js setLangs/setUILanguage 实测）：
           #     界面语言决定 --lang（浏览器 UI 中文/英文）；语言列表决定 Langs/AcceptLang。
           #     k1h60tsv 实测：AcceptLang=en-US,en;q=0.9 由 getAccept 派生，保存必写。

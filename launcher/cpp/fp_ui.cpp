@@ -1269,6 +1269,9 @@ static void FpFill(FpWnd* w) {
     FpSet(C(F_WEBRTCIP), f.webrtcIp);
     ::EnableWindow(C(F_WEBRTCIP), f.webrtc.empty() || f.webrtc == L"proxy");
     selByVal(F_TZM, f.timezoneMode.empty() ? L"custom" : f.timezoneMode);
+    // 时区下拉是精确匹配：先归一为空格→下划线，兼容旧存档里的空格格式
+    //（如 "America/New York"），否则会回退到首项 Etc/GMT+12。
+    f.timezone = W(FpNormalizeTimezone(N(f.timezone)));
     FpComboSel(C(F_TZ), f.timezone.c_str());
     selByVal(F_GEOM, f.geoMode.empty() ? L"allow" : f.geoMode);
     selByVal(F_GEOIP, f.geoIp.empty() ? L"custom" : f.geoIp);
@@ -1666,9 +1669,9 @@ static LRESULT CALLBACK FpWndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
                         if (v.empty() || v == "\"\"") v = FpJsonGet(sj, "timezone");
                         if (v.empty() || v == "\"\"") v = FpJsonGet(dj, "timezone");
                         if (!v.empty() && v.front() == '"') {
-                            std::string t = N(WJ(v));
-                            for (auto& c : t) if (c == '_') c = ' ';
-                            w->form.timezone = W(t);
+                            // 保持官方下划线格式（与时区下拉表 kTz / 保存归一化一致）；
+                            // 转空格会导致 FpComboSel 精确匹配失败并回退首项。
+                            w->form.timezone = WJ(v);
                             w->form.timezoneMode = L"custom";
                         }
                     }
@@ -2262,8 +2265,8 @@ static LRESULT CALLBACK FpWndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
                         if (v.empty() || v == "\"\"") v = FpJsonGet(sj2, "timezone");
                         if (v.empty() || v == "\"\"") v = FpJsonGet(dj2, "timezone");
                         if (!v.empty() && v.front() == '"') {
-                            std::string t = N(WJ(v)); for (auto& c : t) if (c == '_') c = ' ';
-                            w->form.timezone = W(t); w->form.timezoneMode = L"custom";
+                            // 同上：保持下划线格式，避免下拉精确匹配失败。
+                            w->form.timezone = WJ(v); w->form.timezoneMode = L"custom";
                         }
                     }
                     std::string uiTzm2 = FpJsonGet(ui2, "timezoneMode");
