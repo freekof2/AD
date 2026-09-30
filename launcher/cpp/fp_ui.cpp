@@ -1223,15 +1223,15 @@ static void FpFill(FpWnd* w) {
     selByVal(F_BROWSER, f.browser.empty() ? L"sun" : f.browser);
     // 内核无独立下拉：由浏览器目录尾段推导（chrome_152→chrome143、chrome_121→chrome121、
     // flower_100→firefox128），f.kernelVer 保留载入值用于存档兼容，显示层不再设置。
-    // A2 独立目录回填：必填（无全局兜底）。显示已保存的独立值；从未保存过则
-    // 显示全局值作参考（带“（默认全局，可改）”后缀），保存时以前缀判断落盘。
+    // A2 数据目录显示完整指纹目录（父目录 + 环境名），与 Config.json data_dir 同形；
+    // 从未保存过则显示全局值作参考（带“（默认全局，可改）”后缀）。
     {
         std::wstring effD = EffDataDir(w->cfg, w->profile);
         std::wstring effB = EffBrowserDir(w->cfg, w->profile);
         auto it = w->cfg.profiles.find(w->profile);
         bool hasD = (it != w->cfg.profiles.end() && !it->second.dataDir.empty());
         bool hasB = (it != w->cfg.profiles.end() && !it->second.sunBrowserDir.empty());
-        FpSet(C(F_PDATADIR), effD + (hasD ? L"" : L"（默认全局，可改）"));
+        FpSet(C(F_PDATADIR), effD + L"\\" + w->profile + (hasD ? L"" : L"（默认全局，可改）"));
         FpSet(C(F_PBROWSERDIR), effB + (hasB ? L"" : L"（默认全局，可改）"));
         // 表单存有效值（Collect 时去后缀回写覆盖）
         f.profDataDir = effD;
@@ -1376,9 +1376,25 @@ static bool FpLooksLikeProfileDir(const std::wstring& path) {
         if (::GetFileAttributesW((path + L"\\" + W(file)).c_str()) != INVALID_FILE_ATTRIBUTES) return true;
     return false;
 }
-static std::wstring FpDataParentFromProfileOrParent(const std::wstring& raw) {
+static std::wstring FpDataParentFromProfileOrParent(const std::wstring& raw, const std::wstring& profile) {
     const std::wstring path = FpCleanDirectoryField(raw);
-    if (path.empty() || !FpLooksLikeProfileDir(path)) return path;
+    if (path.empty()) return path;
+    // 显示层存完整目录：末段=环境名（Windows 路径不区分大小写）→ 去掉一段，还原父目录。
+    // 末段比较优先于三件套探测，保证新建环境（目录尚不存在）也能正确还原，不会越存越长。
+    {
+        std::wstring leaf = FpDirectoryLeaf(path);
+        if (leaf.size() == profile.size()) {
+            bool same = true;
+            for (size_t i = 0; i < leaf.size(); i++)
+                if (towlower(leaf[i]) != towlower(profile[i])) { same = false; break; }
+            if (same) {
+                const std::wstring parent = FpDirectoryParent(path);
+                return parent.empty() ? path : parent;
+            }
+        }
+    }
+    // 兼容：目录里有三件套但末段不是本环境名（如粘了别的指纹目录）→ 同样还原一级。
+    if (!FpLooksLikeProfileDir(path)) return path;
     const std::wstring parent = FpDirectoryParent(path);
     return parent.empty() ? path : parent;
 }
@@ -1390,8 +1406,8 @@ static void FpCollect(FpWnd* w) {
     // chrome_152→chrome143；browser 类型同步（flower_100→flower，其余 sun）。
     // browserDir 恒等于环境名（只存名，不存路径；路径走 A2）。
     {
-        // 先收目录（推导需要它）
-        f.profDataDir = FpDataParentFromProfileOrParent(FpGet(C(F_PDATADIR)));
+        // 先收目录（推导需要它；数据目录框存完整指纹目录，此处还原成父目录）
+        f.profDataDir = FpDataParentFromProfileOrParent(FpGet(C(F_PDATADIR)), w->profile);
         f.profBrowserDir = FpCleanDirectoryField(FpGet(C(F_PBROWSERDIR)));
         if (!f.profBrowserDir.empty()) {
             std::wstring leaf = FpDirectoryLeaf(f.profBrowserDir);
@@ -1896,15 +1912,23 @@ static LRESULT CALLBACK FpWndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
             BROWSEINFOW bi{};
             bi.hwndOwner = h;
             bi.pszDisplayName = dir;
-            bi.lpszTitle = L"选择该指纹的数据父目录（指纹目录=父目录+环境名）";
+            bi.lpszTitle = L"选择该指纹的数据父目录（将自动拼上环境名显示完整目录）";
             bi.ulFlags = BIF_RETURNONLYFSDIRS | BIF_NEWDIALOGSTYLE;
             PIDLIST_ABSOLUTE pidl = ::SHBrowseForFolderW(&bi);
             if (pidl) {
                 if (::SHGetPathFromIDListW(pidl, dir) && dir[0]) {
-                    FpSet(C(F_PDATADIR), dir);
+                    // 浏览到环境目录本身 → 直接用；选到父目录 → 补环境名；显示层统一完整目录。
+                    std::wstring picked = FpCleanDirectoryField(dir);
+                    std::wstring leaf = FpDirectoryLeaf(picked);
+                    bool isSelf = (leaf.size() == w->profile.size());
+                    for (size_t i = 0; isSelf && i < leaf.size(); i++)
+                        if (towlower(leaf[i]) != towlower(w->profile[i])) isSelf = false;
+                    if (!isSelf && !FpLooksLikeProfileDir(picked))
+                        picked = picked + L"\\" + w->profile;
+                    FpSet(C(F_PDATADIR), picked);
                     FpCollect(w);
-                    ::SetWindowTextW(w->hStatus, L"数据目录已选择（指纹目录=该目录+环境名，保存进独立目录）");
-                    LOG(L"指纹浏览 数据目录=" + std::wstring(dir) + L" " + w->profile);
+                    ::SetWindowTextW(w->hStatus, L"数据目录已选择（完整指纹目录，保存进独立目录）");
+                    LOG(L"指纹浏览 数据目录=" + picked + L" " + w->profile);
                 }
                 ::CoTaskMemFree(pidl);
             } else {

@@ -445,11 +445,13 @@ jobs:
           # 2f. 指纹单页（860x640 滚动，无 Tab；数据层符号保留；去重后内容高 1744）
           #     A 区只留浏览器下拉 + 数据目录 + 浏览器目录（指纹目录=数据目录+环境名，不单列；
           #     内核由浏览器目录尾段推导，不单独下拉）。
+          #     数据目录显示完整指纹目录（与 Config.json data_dir 同形），收集时还原成父目录。
           foreach ($s in @("kFpWinW = 860", "kFpWinH = 640", "kFpContentW = 828", "kFpContentH = 1744",
                            "F_PDATADIR", "F_PBROWSERDIR", "F_BROWSEDATA", "F_BROWSEBROWSER",
                            "SHBrowseForFolderW", "GetOpenFileNameW", "SunBrowser.exe",
                            "FpMkScroll", "FpScrollTo", "FpScrollInit", "WS_VSCROLL",
-                           "SW_SCROLLCHILDREN", "SB_THUMBTRACK", "WM_MOUSEWHEEL")) {
+                           "SW_SCROLLCHILDREN", "SB_THUMBTRACK", "WM_MOUSEWHEEL",
+                           "完整指纹目录", "FpDataParentFromProfileOrParent")) {
             if ($fpc -notmatch [regex]::Escape($s)) { throw "single-page symbol '$s' missing in fp_ui.cpp" }
             Write-Host "singlepage ok: $s"
           }
