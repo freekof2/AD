@@ -189,6 +189,14 @@ jobs:
             if ($utilCfg -notmatch [regex]::Escape($s)) { throw "Config.json profile-directory symbol '$s' missing in util.cpp" }
             Write-Host "config-profile ok: $s"
           }
+          # 默认数据目录 + config.json 首启自建：exe 同目录 cache、缺失时按初始参数建文件、
+          # 顶层 data_dir/sun_browser_dir 可手改且优先于 sunlauncher.json。
+          foreach ($s in @("EnsureConfigJson", "DefaultDataDir", "已创建 Config.json 初始参数",
+                           "Config.json 全局 dataDir", "Config.json 全局 browserDir",
+                           "DefaultDataDir() { return ExeDir()", "CreateDirectoryW(c.dataDir.c_str()")) {
+            if ($utilCfg -notmatch [regex]::Escape($s)) { throw "default cache/config symbol '$s' missing in util.cpp" }
+            Write-Host "defaultcfg ok: $s"
+          }
           foreach ($s in @("Config.json 目录同步输入", "FpJsonSet failed", "指纹保存收集目录")) {
             if ($fpcProxy -notmatch [regex]::Escape($s)) { throw "missing browser-dir save diagnostic '$s'" }
           }

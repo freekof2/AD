@@ -35,6 +35,9 @@
 
 // ---------- 默认值 ----------
 static const wchar_t* kDefaultBrowserDir = L"C:\\Users\\admin6\\AppData\\Roaming\\adspower_global\\cwd_global\\chrome_152";
+// 数据目录的运行时默认值是 **SunLauncher.exe 同目录的 cache**（见 util.cpp DefaultDataDir，
+// LoadConfig 启动即创建该目录与 config.json）；此处常量仅作 Config 结构体的占位兜底，
+// 启动后一律被 LoadConfig / config.json 的实际值覆盖。
 static const wchar_t* kDefaultDataDir    = L"F:\\.ADSPOWER_GLOBAL\\cache";
 // 注：HTTP 离线接口（18900 + /api/*）已整体删除，不再开任何监听端口；
 // listen/port_base 配置键一并移除（旧文件里的残留键读取时忽略、不再写回）。

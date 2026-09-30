@@ -84,6 +84,38 @@ static std::wstring ReadFileW(const std::wstring& path) {
     return ss.str();
 }
 
+static std::wstring Esc(const std::wstring& s) {
+    std::wstring o;
+    for (auto ch : s) {
+        if (ch == L'\\') o += L"\\\\";
+        else if (ch == L'"') o += L"\\\"";
+        else o += ch;
+    }
+    return o;
+}
+
+// 默认数据目录 = SunLauncher.exe 同目录的 cache；首次运行自动创建目录。
+static std::wstring DefaultDataDir() { return ExeDir() + L"\\cache"; }
+
+// 启动时检查 exe 同目录有没有 config.json：没有就按初始参数创建，
+// 初始参数只有 cache 目录位置（顶层 data_dir）。已有文件保持不动（手改即生效）。
+static void EnsureConfigJson() {
+    const std::wstring path = ExeDir() + L"\\Config.json";
+    if (::GetFileAttributesW(path.c_str()) != INVALID_FILE_ATTRIBUTES) return;
+    const std::wstring dataDir = DefaultDataDir();
+    ::CreateDirectoryW(dataDir.c_str(), NULL);
+    try {
+        std::wstring j = L"{\r\n  \"data_dir\": \"" + Esc(dataDir) + L"\"\r\n}\r\n";
+        std::wofstream f(path);
+        if (!f) { LOG(L"Config.json 创建失败（目录不可写）path=" + path); return; }
+        f.imbue(std::locale(f.getloc(), new std::codecvt_utf8<wchar_t>));
+        f << j;
+        f.flush();
+        if (f) LOG(L"已创建 Config.json 初始参数 data_dir=" + dataDir);
+        else   LOG(L"Config.json 创建失败（写盘失败）path=" + path);
+    } catch (...) { LOG(L"Config.json 创建异常 path=" + path); }
+}
+
 // Config.json 按指纹存目录（手改即生效）：
 //   { "<env名>": { "data_dir": "F:\\.ADSPOWER_GLOBAL\\cache\\k1ds12lu_hyg6dd",
 //                  "sun_browser_dir": "C:\\...\\chrome_152", "webrtc_ip": "1.2.3.4" },
@@ -98,7 +130,11 @@ static void ApplyConfigJsonProfiles(Config& c) {
         while (!s.empty() && (s.back() == L'\\' || s.back() == L'/')) s.pop_back();
         return s;
     };
-    // 扁平对象扫描：一次顶层键 + 其值（对象/字符串），配置无嵌套，够用
+    // 扁平对象扫描：一次顶层键 + 其值（对象/字符串），配置无嵌套，够用。
+    // 顶层两个字符串键是**全局**参数（与 profile 对象里的同名键不同层级）：
+    //   顶层 data_dir = 数据父目录（默认 <exe目录>\cache），顶层 sun_browser_dir = 浏览器目录。
+    // 手改这两个值即生效（优先级高于 sunlauncher.json；单指纹 profile 对象优先级更高）。
+    std::wstring gData, gBrowser;
     size_t p = cfgTxt.find(L'{');
     if (p == std::wstring::npos) return;
     p++;
@@ -113,9 +149,32 @@ static void ApplyConfigJsonProfiles(Config& c) {
         if (colon == std::wstring::npos) break;
         size_t v = cfgTxt.find_first_not_of(L" \t\r\n", colon + 1);
         if (v >= cfgTxt.size()) break;
-        if (cfgTxt[v] == L'"') { // 旧写法：纯字符串（伪装 IP），无目录参数
-            size_t e = cfgTxt.find(L'"', v + 1);
-            p = (e == std::wstring::npos) ? cfgTxt.size() : e + 1;
+        if (cfgTxt[v] == L'"') {
+            // 字符串值：顶层 data_dir / sun_browser_dir 取为全局参数；
+            // 其余是旧写法 profile 的伪装 IP（无目录语义，跳过）。
+            size_t e = v + 1;
+            std::wstring val;
+            while (e < cfgTxt.size()) {
+                if (cfgTxt[e] == L'\\') {
+                    if (e + 1 >= cfgTxt.size()) break;
+                    if (cfgTxt[e + 1] == L'\\') val += L'\\';
+                    else { val += L'\\'; val += cfgTxt[e + 1]; } // 兼容旧手写单反斜杠
+                    e += 2; continue;
+                }
+                if (cfgTxt[e] == L'"') break;
+                val += cfgTxt[e++];
+            }
+            if (name == L"data_dir" && !val.empty()) gData = trimSep(val);
+            else if (name == L"sun_browser_dir" && !val.empty()) {
+                size_t i = val.find_last_of(L"\\/");
+                if (i != std::wstring::npos) {
+                    std::wstring tail = val.substr(i + 1);
+                    for (auto& ch : tail) ch = towlower(ch);
+                    if (tail == L"sunbrowser.exe") val = val.substr(0, i);
+                }
+                gBrowser = val;
+            }
+            p = (e < cfgTxt.size()) ? e + 1 : cfgTxt.size();
             continue;
         }
         if (cfgTxt[v] != L'{') break;
@@ -148,10 +207,18 @@ static void ApplyConfigJsonProfiles(Config& c) {
         }
         p = e + 1;
     }
+    // 顶层全局参数最后落（本函数在 sunlauncher.json 解析之后调用，故 Config.json 优先）
+    if (!gData.empty()) { c.dataDir = gData; LOG(L"Config.json 全局 dataDir=" + gData); }
+    if (!gBrowser.empty()) { c.sunBrowserDir = gBrowser; LOG(L"Config.json 全局 browserDir=" + gBrowser); }
 }
 
 Config LoadConfig() {
+    // 先补齐缺失的 config.json（初始参数=cache 目录），再读配置。
+    EnsureConfigJson();
     Config c;
+    // 默认数据目录：SunLauncher.exe 同目录的 cache（config.json/sunlauncher.json 有值则覆盖）
+    c.dataDir = DefaultDataDir();
+    ::CreateDirectoryW(c.dataDir.c_str(), NULL); // 默认 cache 目录随程序自动创建
     std::wstring txt = ReadFileW(ExeDir() + L"\\sunlauncher.json");
     if (txt.empty()) { ApplyConfigJsonProfiles(c); return c; }
     std::wstring v;
@@ -195,16 +262,6 @@ Config LoadConfig() {
     // Config.json 按指纹覆盖（放最后：同一指纹优先于 sunlauncher.json 的 profiles 段）
     ApplyConfigJsonProfiles(c);
     return c;
-}
-
-static std::wstring Esc(const std::wstring& s) {
-    std::wstring o;
-    for (auto ch : s) {
-        if (ch == L'\\') o += L"\\\\";
-        else if (ch == L'"') o += L"\\\"";
-        else o += ch;
-    }
-    return o;
 }
 
 bool SaveConfig(const Config& c) {
