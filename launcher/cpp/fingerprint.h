@@ -80,7 +80,7 @@ std::string FpResolveLangArg(const std::string& extraSunParamsJson, const std::s
 //   --user-data-dir="<profileDir>" --profile-directory=Default
 //   --remote-debugging-port=<port> --no-first-run --no-default-browser-check
 //   --extended-parameters=<FpEncode(JSON(sunBrowserParams))>
-//   --enable-logging=stderr --v=0 about:blank
+//   --enable-logging=stderr --v=0 <start_url|about:blank>   // 起始页=Config.json 顶层 start_url
 // sunBrowserParams 最小集：UserId + StaticConfig/DynamicConfig/CookiesFile 三个绝对路径
 // + 调用方附加的 extraJson（顶层合并，冲突时 extra 覆盖）。
 std::wstring FpBuildCmdline(const std::wstring& profileDir, int port,

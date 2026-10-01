@@ -308,6 +308,13 @@ jobs:
             if ($rtcFpCpp -notmatch [regex]::Escape($s)) { throw "fingerprint launch/diagnostic contract '$s' missing" }
           }
           Write-Host "webrtc persistence contract ok"
+          # 起始页：Config.json 顶层 start_url（第二个顶层参数，手改即生效）；
+          # 非法/缺键回落 about:blank，diag 必须回显当前实际起始页。
+          foreach ($s in @("FpStartUrl", "start_url", "start.url=",
+                           "cmd += L\" \" + FpStartUrl();")) {
+            if ($rtcFpCpp -notmatch [regex]::Escape($s)) { throw "start-url contract '$s' missing in fingerprint.cpp" }
+          }
+          Write-Host "starturl contract ok"
           # (b) 地理三态 ask/allow/block + 时区 Asia/Shanghai 默认 + 默认经纬度
           foreach ($v in @("ask - ", "allow - ", "block - ", "Asia/Shanghai", "31.2304", "121.4737")) {
             if ($fpc2 -notmatch [regex]::Escape($v)) { throw "geo/tz default '$v' missing in fp_ui.cpp" }

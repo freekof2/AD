@@ -547,6 +547,34 @@ static std::wstring FpWebGlProfilePath(const std::wstring& profileDir,
     return profileDir + L"\\" + W(FpMd5Hex(fbcc + "_webgl") + "_" + FpBrowserPlatformTag(platform));
 }
 
+// 起始页：读 exe 同目录 Config.json 顶层 start_url（第二个顶层参数，手改即生效、全局）。
+// 缺失/非 http(s)/含空白（空格会打断命令行 tokenization）一律回落 about:blank，
+// 因此旧 Config.json 不加该键也能照常启动。
+static std::wstring FpStartUrl() {
+    std::string txt;
+    if (!FpReadTextFile(AppDir() + L"\\Config.json", txt) || txt.empty()) return L"about:blank";
+    const std::string raw = FpJsonGet(txt, "start_url");
+    if (raw.size() < 2 || raw.front() != '"' || raw.back() != '"') return L"about:blank";
+    const std::string src = raw.substr(1, raw.size() - 2);
+    std::string u;
+    for (size_t i = 0; i < src.size(); i++) { // 反转义 \" \\（路径/查询串常见）
+        if (src[i] == '\\' && i + 1 < src.size()) { u += src[i + 1]; i++; }
+        else u += src[i];
+    }
+    size_t a = u.find_first_not_of(" \t\r\n");
+    if (a == std::string::npos) return L"about:blank";
+    u = u.substr(a, u.find_last_not_of(" \t\r\n") - a + 1);
+    for (char c : u)
+        if (c == ' ' || c == '\t' || c == '\r' || c == '\n') return L"about:blank"; // 内部空白会断行
+    std::string head = u.substr(0, 8);
+    for (auto& c : head) c = static_cast<char>(towlower(static_cast<unsigned char>(c)));
+    const bool ok = (head == "https://") ||
+        (head.size() >= 7 && head.substr(0, 7) == "http://");
+    if (!ok) return L"about:blank";
+    return W(u);
+}
+
+
 // ================= 启动命令行组装 =================
 // 冲突规则（以缓存为准，见 fingerprint.h）：
 //  - UserId / ProxyChain / DeviceName / MacAddress / MediaDevices 等：只从 static 文件读，
@@ -834,7 +862,8 @@ std::wstring FpBuildCmdline(const std::wstring& profileDir, int port,
     cmd += L" --extended-parameters=" + W(ext);
     if (wantConsole)
         cmd += L" --enable-logging=stderr --v=0";
-    cmd += L" about:blank";
+    // 起始页：Config.json 顶层 start_url；未配/非法回落 about:blank
+    cmd += L" " + FpStartUrl();
     (void)port; // 端口跟随官方：命令行只传 --remote-debugging-port=0，实际值由浏览器随机写 DevToolsActivePort
     return cmd;
 }
@@ -1021,6 +1050,7 @@ std::string FpDiagDumpLaunch(const std::wstring& exe, const std::wstring& workDi
       << "（官方=0随机；若此处非0即偏离官方buildLaunchOpt）\n";
     o << "[diag] arg.safeopen=" << (cmdN.find("--protected-disable-safe-open") == std::string::npos ? "MISSING(偏离官方)" : "present") << "\n";
     o << "[diag] arg.nosandbox=" << (cmdN.find("--no-sandbox") == std::string::npos ? "MISSING" : "present") << "\n";
+    o << "[diag] start.url=" << N(FpStartUrl()) << "\n";
     {
         std::string mode = FpJsonGet(staticJson, "webrtc");
         std::string staticDisable = FpJsonGet(staticJson, "DisableWebRTC");
