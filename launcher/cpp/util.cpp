@@ -116,6 +116,60 @@ static void EnsureConfigJson() {
     } catch (...) { LOG(L"Config.json 创建异常 path=" + path); }
 }
 
+// Config.json 写盘（wofstream + utf8，与 EnsureConfigJson 同法）
+static bool WriteConfigFile(const std::wstring& path, const std::wstring& text) {
+    try {
+        std::wofstream f(path);
+        if (!f) { LOG(L"Config.json 写入失败（目录不可写）path=" + path); return false; }
+        f.imbue(std::locale(f.getloc(), new std::codecvt_utf8<wchar_t>));
+        f << text;
+        f.flush();
+        if (!f) { LOG(L"Config.json 写入失败（写盘失败）path=" + path); return false; }
+        return true;
+    } catch (...) { LOG(L"Config.json 写入异常 path=" + path); return false; }
+}
+
+// debug.log 开关：Config.json 顶层 debug_log（手改即生效，主窗口底部复选框读写同一键）。
+// 关 = off/false/0/close（不区分大小写）；键缺失或其它值 = 开（默认记录）。
+bool ConfigDebugLogSwitch() {
+    const std::wstring v = JsonGet(ReadFileW(ExeDir() + L"\\Config.json"), L"debug_log");
+    if (v.empty()) return true;
+    std::wstring t;
+    for (wchar_t c : v) t += (wchar_t)towlower(c);
+    return !(t == L"off" || t == L"false" || t == L"0" || t == L"close");
+}
+
+// 写回顶层 debug_log：键已存在就改它的字符串值，不存在就插在第一个 { 之后；
+// 其余键（data_dir / start_url / 各指纹对象）原样保留。返回写盘是否成功。
+bool ConfigSetDebugLog(bool on) {
+    const std::wstring path = ExeDir() + L"\\Config.json";
+    std::wstring txt = ReadFileW(path);
+    if (txt.empty()) { EnsureConfigJson(); txt = ReadFileW(path); if (txt.empty()) return false; }
+    const std::wstring pat = L"\"debug_log\"";
+    const std::wstring nv = on ? L"\"on\"" : L"\"off\"";
+    std::wstring out;
+    const size_t k = txt.find(pat);
+    if (k != std::wstring::npos) {
+        size_t c = txt.find(L':', k + pat.size());
+        size_t v = (c == std::wstring::npos) ? std::wstring::npos
+                                             : txt.find_first_not_of(L" \t\r\n", c + 1);
+        if (v == std::wstring::npos || txt[v] != L'"') return false; // 值不是字符串：不动文件
+        size_t e = txt.find(L'"', v + 1);
+        if (e == std::wstring::npos) return false;
+        out = txt.substr(0, v) + nv + txt.substr(e + 1);
+    } else {
+        const size_t b = txt.find(L'{');
+        if (b == std::wstring::npos) return false;
+        size_t i = b + 1;
+        while (i < txt.size() && iswspace(txt[i])) i++;
+        const bool emptyObj = (i < txt.size() && txt[i] == L'}');
+        out = txt.substr(0, b + 1) + (emptyObj ? L"" : L"\r\n  ") + L"\"debug_log\": " + nv +
+              (emptyObj ? L"" : L",") + txt.substr(b + 1);
+    }
+    if (out == txt) return true;
+    return WriteConfigFile(path, out);
+}
+
 // Config.json 按指纹存目录（手改即生效）：
 //   { "<env名>": { "data_dir": "F:\\.ADSPOWER_GLOBAL\\cache\\k1ds12lu_hyg6dd",
 //                  "sun_browser_dir": "C:\\...\\chrome_152", "webrtc_ip": "1.2.3.4" },
@@ -216,6 +270,8 @@ Config LoadConfig() {
     // 先补齐缺失的 config.json（初始参数=cache 目录），再读配置。
     EnsureConfigJson();
     Config c;
+    // debug.log 开关与主窗口复选框同源（Config.json debug_log），启动即生效
+    c.debugLog = ConfigDebugLogSwitch();
     // 默认数据目录：SunLauncher.exe 同目录的 cache（config.json/sunlauncher.json 有值则覆盖）
     c.dataDir = DefaultDataDir();
     ::CreateDirectoryW(c.dataDir.c_str(), NULL); // 默认 cache 目录随程序自动创建

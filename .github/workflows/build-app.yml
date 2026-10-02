@@ -409,8 +409,8 @@ jobs:
             throw "profile name must be written to ListView subitem 1 after insert"
           }
           Write-Host "listview primary/subitem contract ok"
-          foreach ($s in @("12, 12, 582, 494", "606, 12, 100",
-                           "760, 660", "WC_LISTVIEWW", "LVS_REPORT", "LVS_EX_CHECKBOXES",
+          foreach ($s in @(                           "12, 12, 582, 494", "606, 12, 100",
+                           "760, 690", "WC_LISTVIEWW", "LVS_REPORT", "LVS_EX_CHECKBOXES",
                            "LVS_EX_FULLROWSELECT", "LVN_ITEMCHANGED", "NM_CUSTOMDRAW",
                            "kUiBg", "kUiPanel", "kUiSuccess", "kUiMuted",
                            "LVM_INSERTITEMW", "LVM_SETITEMTEXTW", "LVM_DELETEALLITEMS",
@@ -487,6 +487,24 @@ jobs:
           foreach ($s in @("LB_ADDSTRING", "LB_GETTEXT", "LB_RESETCONTENT", "LB_GETCURSEL", "LBS_NOTIFY")) {
             if ($mcpp -match [regex]::Escape($s)) { throw "legacy LISTBOX '$s' still in main.cpp" }
             Write-Host "nolb ok: $s"
+          }
+          # debug.log 记录开关（主窗口最下方一行复选框）：开=写，关=本次运行全程不写
+          #（DebugLog::Write 直接 return，含子进程输出与 diag）；值落 Config.json debug_log。
+          foreach ($s in @("IDC_DEBUGLOG", "记录 debug.log", "BM_SETCHECK", "BM_GETCHECK",
+                           "ConfigSetDebugLog(on)", "ConfigDebugLogSwitch()", "SetEnabled(on)",
+                           "12, 624, 360")) {
+            if ($mcpp -notmatch [regex]::Escape($s)) { throw "logswitch contract '$s' missing in main.cpp" }
+            Write-Host "logswitch ok: $s"
+          }
+          foreach ($s in @("ConfigDebugLogSwitch", "ConfigSetDebugLog", "debug_log",
+                           "c.debugLog = ConfigDebugLogSwitch()")) {
+            if ($utilCpp -notmatch [regex]::Escape($s)) { throw "logswitch contract '$s' missing in util.cpp" }
+            Write-Host "logswitch-config ok: $s"
+          }
+          foreach ($s in @("bool debugLog = true", "void SetEnabled(bool on)", "bool enabled_ = true",
+                           "if (!enabled_) return;", "mutable std::mutex mu_")) {
+            if ($hProf -notmatch [regex]::Escape($s)) { throw "logswitch contract '$s' missing in SunLauncher.h" }
+            Write-Host "logswitch-gate ok: $s"
           }
           # 2f. 指纹单页（860x640 滚动，无 Tab；数据层符号保留；新增页5 后内容高 1904）
           #     A 区只留浏览器下拉 + 数据目录 + 浏览器目录（指纹目录=数据目录+环境名，不单列；

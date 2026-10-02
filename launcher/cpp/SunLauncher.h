@@ -54,6 +54,7 @@ struct Config {
     std::wstring sunBrowserDir = kDefaultBrowserDir;
     std::wstring dataDir       = kDefaultDataDir;
     std::map<std::wstring, ProfileOverride> profiles; // profile 名 -> 独立目录覆盖
+    bool debugLog = true; // Config.json 顶层 debug_log：true=写 debug.log，false=不写（主窗口开关）
 };
 // 取 profile 实际生效目录：覆盖优先，全局兜底。
 inline std::wstring EffDataDir(const Config& c, const std::wstring& profile) {
@@ -89,16 +90,30 @@ public:
         static DebugLog inst;
         return inst;
     }
-    void Init(const std::wstring& dir) {
+    void Init(const std::wstring& dir, bool enabled) {
         std::lock_guard<std::mutex> lk(mu_);
         logPath_ = dir + L"\\debug.log";
+        enabled_ = enabled;
+        if (!enabled_) return; // 关：不动旧文件、不轮转、不写头部（本次运行全程静默）
         // 保留上一轮：改名为 debug.prev.log（只保留一轮，避免无限增长）
         ::DeleteFileW((dir + L"\\debug.prev.log").c_str());
         ::MoveFileW(logPath_.c_str(), (dir + L"\\debug.prev.log").c_str());
         WriteLocked(L"===== SunLauncher start =====");
     }
+    // 主窗口开关（Config.json debug_log）：关=留一条关闭标记后全程不再写；开=留一条开启标记。
+    void SetEnabled(bool on) {
+        std::lock_guard<std::mutex> lk(mu_);
+        if (enabled_ == on) return;
+        if (on) { enabled_ = true; WriteLocked(L"===== 日志已开启 ====="); }
+        else { WriteLocked(L"===== 日志已关闭（本次运行不再写入） ====="); enabled_ = false; }
+    }
+    bool Enabled() const {
+        std::lock_guard<std::mutex> lk(mu_);
+        return enabled_;
+    }
     void Write(const std::wstring& line) {
         std::lock_guard<std::mutex> lk(mu_);
+        if (!enabled_) return; // 开关=关：不写任何内容（含子进程输出、diag）
         WriteLocked(line);
     }
     std::wstring Path() const { return logPath_; }
@@ -129,8 +144,9 @@ private:
         std::string u8 = ToUtf8(timestamp() + L" " + line + L"\r\n");
         f.write(u8.data(), (std::streamsize)u8.size());
     }
-    std::mutex mu_;
+    mutable std::mutex mu_;   // enabled_ 由 Enabled() const 读取 -> mutable
     std::wstring logPath_;
+    bool enabled_ = true;     // 日志总开关（Config.json debug_log / 主窗口复选框）
 };
 
 #define LOG(msg) DebugLog::Instance().Write(msg)
@@ -141,6 +157,10 @@ std::wstring W(const std::string& s);
 std::string  N(const std::wstring& s);
 Config LoadConfig();
 bool SaveConfig(const Config& c);
+// debug.log 开关（Config.json 顶层 debug_log，手改即生效）：
+// ConfigDebugLogSwitch 读取（缺省=开；off/false/0/close=关），ConfigSetDebugLog 写回。
+bool ConfigDebugLogSwitch();
+bool ConfigSetDebugLog(bool on);
 // 读 profile 目录 DevToolsActivePort 首行 = 浏览器实际调试端口（官方 buildLaunchOpt 只传
 // --remote-debugging-port=0，端口由浏览器随机并写进该文件，puppeteer 同源读法）。
 // waitMs>0 时按 100ms 轮询等待文件生成（启动后立即查需要等待）；读不到返回 0。

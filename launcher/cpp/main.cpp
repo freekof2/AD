@@ -13,6 +13,7 @@ enum {
     IDC_LIST = 100, IDC_START, IDC_STOP, IDC_REFRESH, IDC_NEWNAME, IDC_CREATE,
     IDC_SEARCH, IDC_CHECKALL, IDC_BSTART, IDC_BSTOP, IDC_BDEL, IDC_FPCONFIG,
     IDC_GROUPLBL,
+    IDC_DEBUGLOG, // 主窗口底部：debug.log 记录开关（开=写，关=本次不写；落 Config.json）
     TIMER_POLL = 1,
 };
 
@@ -554,6 +555,13 @@ static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
         mkBtn(IDC_BSTOP, L"批量停止", 396, 564, 88);
         mkBtn(IDC_BDEL, L"批量删除", 500, 564, 88);
         g.hStatus = ::CreateWindowW(L"STATIC", L"就绪", WS_CHILD | WS_VISIBLE, 12, 598, 694, 22, h, NULL, hi, NULL);
+        // 底部一行：debug.log 记录开关（开=写 debug.log，关=本次运行不再写任何一行）。
+        // 初值来自 Config.json debug_log（ConfigDebugLogSwitch），勾选即写回同键。
+        ::CreateWindowW(L"BUTTON", L"记录 debug.log（关闭后本次不再写日志）",
+            WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 12, 624, 360, 22, h,
+            (HMENU)(INT_PTR)IDC_DEBUGLOG, hi, NULL);
+        ::SendMessageW(::GetDlgItem(h, IDC_DEBUGLOG), BM_SETCHECK,
+            g.cfg.debugLog ? BST_CHECKED : BST_UNCHECKED, 0);
         LOG(L"probe wmcreate ctrls-done");
         ::SetTimer(h, TIMER_POLL, 2000, NULL);
         LOG(L"probe wmcreate timer-ok");
@@ -569,6 +577,18 @@ static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
         if (id == IDC_START) { OnStart(); RefreshList(); }
         else if (id == IDC_STOP) { OnStop(); RefreshList(); }
         else if (id == IDC_REFRESH) { RefreshList(); SetStatus(L"已刷新"); }
+        else if (id == IDC_DEBUGLOG && code == BN_CLICKED) {
+            // debug.log 开关：开=写；关=留一条关闭标记后本次运行全程静默（含子进程输出/diag）。
+            // 勾选态立刻写回 Config.json debug_log，下次启动同值生效（手改该键同样有效）。
+            const bool on = ::SendMessageW(::GetDlgItem(h, IDC_DEBUGLOG), BM_GETCHECK, 0, 0) == BST_CHECKED;
+            const bool ok = ConfigSetDebugLog(on);
+            { std::lock_guard<std::mutex> lk(g.mu); g.cfg.debugLog = on; }
+            DebugLog::Instance().SetEnabled(on);
+            if (on) LOG(L"debug.log 开关=开 Config.json debug_log=" + (ok ? L"on" : L"写入失败"));
+            SetStatus(ok ? (on ? L"已开启 debug.log 记录"
+                               : L"已关闭 debug.log 记录（本次运行不再写入）")
+                         : L"Config.json debug_log 写入失败（下次启动仍按旧值）");
+        }
         else if (id == IDC_FPCONFIG) {
             std::wstring name = SelectedProfile();
             if (name.empty()) { SetStatus(L"请先选中一个环境再点指纹配置"); break; }
@@ -732,7 +752,8 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE, LPWSTR, int show) {
 #endif
     INITCOMMONCONTROLSEX icc{ sizeof(icc), ICC_LISTVIEW_CLASSES | ICC_STANDARD_CLASSES };
     BOOL iccOk = ::InitCommonControlsEx(&icc);
-    DebugLog::Instance().Init(AppDir());
+    // 日志开关先于 Init 决定（Config.json debug_log）：关=本次运行完全不碰 debug.log
+    DebugLog::Instance().Init(AppDir(), ConfigDebugLogSwitch());
     LOG(std::wstring(L"probe iccOk=") + (iccOk ? L"1" : L"0"));
     g.cfg = LoadConfig();
     // 旧版 ports.json 端口表已废弃（官方只传 --remote-debugging-port=0，端口由浏览器
@@ -759,7 +780,7 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE, LPWSTR, int show) {
 
     g.hMain = ::CreateWindowExW(0, cls, L"SunLauncher（SunBrowser 启动器）",
         WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_CLIPCHILDREN,
-        CW_USEDEFAULT, CW_USEDEFAULT, 760, 660,
+        CW_USEDEFAULT, CW_USEDEFAULT, 760, 690,
         NULL, NULL, hi, NULL);
     LOG(std::wstring(L"probe CreateWindow=") + (g.hMain ? L"ok" : (L"fail err=" + std::to_wstring(::GetLastError()))));
     if (!g.hMain) {
