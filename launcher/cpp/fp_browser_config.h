@@ -188,8 +188,8 @@ inline std::string FpBuildUserAgentMetadataJson(const std::string& platform,
         ",\"architecture\":" + FpBrowserConfigJsonQuote(architecture) +
         ",\"model\":" + FpBrowserConfigJsonQuote(model) +
         ",\"mobile\":" + std::string(mobile == "1" ? "true" : "false");
-    if (!bitness.empty()) json += ",\"bitness\":" + FpBrowserConfigJsonQuote(bitness);
-    if (!wow64.empty()) json += ",\"wow64\":" + (wow64 == "1" ? "true" : "false");
+    if (!bitness.empty()) json += std::string(",\"bitness\":") + FpBrowserConfigJsonQuote(bitness);
+    if (!wow64.empty()) json += std::string(",\"wow64\":") + (wow64 == "1" ? "true" : "false");
     json += "}";
     return json;
 }
