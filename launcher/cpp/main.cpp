@@ -555,10 +555,10 @@ static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
         mkBtn(IDC_BSTOP, L"批量停止", 396, 564, 88);
         mkBtn(IDC_BDEL, L"批量删除", 500, 564, 88);
         g.hStatus = ::CreateWindowW(L"STATIC", L"就绪", WS_CHILD | WS_VISIBLE, 12, 598, 694, 22, h, NULL, hi, NULL);
-        // 底部一行：debug.log 记录开关（开=写 debug.log，关=本次运行不再写任何一行）。
+        // 日志开关：紧跟“批量删除”按钮（同一行右侧），开=写 debug.log，关=本次运行不再写任何一行。
         // 初值来自 Config.json debug_log（ConfigDebugLogSwitch），勾选即写回同键。
-        ::CreateWindowW(L"BUTTON", L"记录 debug.log（关闭后本次不再写日志）",
-            WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 12, 624, 360, 22, h,
+        ::CreateWindowW(L"BUTTON", L"记录日志",
+            WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 606, 568, 130, 22, h,
             (HMENU)(INT_PTR)IDC_DEBUGLOG, hi, NULL);
         bool logOn = true;
         { std::lock_guard<std::mutex> lk(g.mu); logOn = g.cfg.debugLog; }
@@ -783,7 +783,7 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE, LPWSTR, int show) {
 
     g.hMain = ::CreateWindowExW(0, cls, L"SunLauncher（SunBrowser 启动器）",
         WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_CLIPCHILDREN,
-        CW_USEDEFAULT, CW_USEDEFAULT, 760, 690,
+        CW_USEDEFAULT, CW_USEDEFAULT, 760, 660,
         NULL, NULL, hi, NULL);
     LOG(std::wstring(L"probe CreateWindow=") + (g.hMain ? L"ok" : (L"fail err=" + std::to_wstring(::GetLastError()))));
     if (!g.hMain) {

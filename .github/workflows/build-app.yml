@@ -410,7 +410,7 @@ jobs:
           }
           Write-Host "listview primary/subitem contract ok"
           foreach ($s in @(                           "12, 12, 582, 494", "606, 12, 100",
-                           "760, 690", "WC_LISTVIEWW", "LVS_REPORT", "LVS_EX_CHECKBOXES",
+                           "760, 660", "WC_LISTVIEWW", "LVS_REPORT", "LVS_EX_CHECKBOXES",
                            "LVS_EX_FULLROWSELECT", "LVN_ITEMCHANGED", "NM_CUSTOMDRAW",
                            "kUiBg", "kUiPanel", "kUiSuccess", "kUiMuted",
                            "LVM_INSERTITEMW", "LVM_SETITEMTEXTW", "LVM_DELETEALLITEMS",
@@ -488,11 +488,12 @@ jobs:
             if ($mcpp -match [regex]::Escape($s)) { throw "legacy LISTBOX '$s' still in main.cpp" }
             Write-Host "nolb ok: $s"
           }
-          # debug.log 记录开关（主窗口最下方一行复选框）：开=写，关=本次运行全程不写
-          #（DebugLog::Write 直接 return，含子进程输出与 diag）；值落 Config.json debug_log。
-          foreach ($s in @("IDC_DEBUGLOG", "记录 debug.log", "BM_SETCHECK", "BM_GETCHECK",
+          # 日志记录开关（复选框“记录日志”，紧跟批量删除按钮同行右侧）：开=写，
+          # 关=本次运行全程不写（DebugLog::Write 直接 return，含子进程输出与 diag）；
+          # 值落 Config.json debug_log。
+          foreach ($s in @("IDC_DEBUGLOG", "记录日志", "BM_SETCHECK", "BM_GETCHECK",
                            "ConfigSetDebugLog(on)", "ConfigDebugLogSwitch()", "SetEnabled(on)",
-                           "12, 624, 360")) {
+                           "606, 568, 130")) {
             if ($mcpp -notmatch [regex]::Escape($s)) { throw "logswitch contract '$s' missing in main.cpp" }
             Write-Host "logswitch ok: $s"
           }
