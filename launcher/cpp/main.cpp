@@ -560,8 +560,10 @@ static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
         ::CreateWindowW(L"BUTTON", L"记录 debug.log（关闭后本次不再写日志）",
             WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 12, 624, 360, 22, h,
             (HMENU)(INT_PTR)IDC_DEBUGLOG, hi, NULL);
+        bool logOn = true;
+        { std::lock_guard<std::mutex> lk(g.mu); logOn = g.cfg.debugLog; }
         ::SendMessageW(::GetDlgItem(h, IDC_DEBUGLOG), BM_SETCHECK,
-            g.cfg.debugLog ? BST_CHECKED : BST_UNCHECKED, 0);
+            logOn ? BST_CHECKED : BST_UNCHECKED, 0);
         LOG(L"probe wmcreate ctrls-done");
         ::SetTimer(h, TIMER_POLL, 2000, NULL);
         LOG(L"probe wmcreate timer-ok");
@@ -584,7 +586,8 @@ static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
             const bool ok = ConfigSetDebugLog(on);
             { std::lock_guard<std::mutex> lk(g.mu); g.cfg.debugLog = on; }
             DebugLog::Instance().SetEnabled(on);
-            if (on) LOG(L"debug.log 开关=开 Config.json debug_log=" + (ok ? L"on" : L"写入失败"));
+            if (on) LOG(std::wstring(L"debug.log 开关=开 Config.json debug_log=") +
+                (ok ? L"on" : L"写入失败"));
             SetStatus(ok ? (on ? L"已开启 debug.log 记录"
                                : L"已关闭 debug.log 记录（本次运行不再写入）")
                          : L"Config.json debug_log 写入失败（下次启动仍按旧值）");

@@ -506,6 +506,18 @@ jobs:
             if ($hProf -notmatch [regex]::Escape($s)) { throw "logswitch contract '$s' missing in SunLauncher.h" }
             Write-Host "logswitch-gate ok: $s"
           }
+          # 表达式开头的 L"..." 直接 + 三元宽字面量 = MSVC C2110（main.cpp 两次踩坑）：
+          # 必须先包成 std::wstring(...) 再拼。此正则对当前代码必须零命中。
+          $c2110 = @()
+          $patC2110 = '(LOG\(\s*|SetStatus\(\s*|=\s*|,\s*)L"[^"]*"\s*\+\s*\([^()]*\?\s*L"[^"]*"\s*:\s*L"'
+          foreach ($src in @($mcpp, $utilCpp, $fpc, $cpp, $hProf)) {
+            foreach ($m in [regex]::Matches($src, $patC2110)) {
+              $s0 = [Math]::Max(0, $m.Index - 30)
+              $c2110 += ($src.Substring($s0, [Math]::Min(110, $src.Length - $s0)) -replace '\s+', ' ')
+            }
+          }
+          if ($c2110.Count) { throw "wide-literal concat (MSVC C2110): " + ($c2110 -join ' | ') }
+          Write-Host "noc2110 ok"
           # 2f. 指纹单页（860x640 滚动，无 Tab；数据层符号保留；新增页5 后内容高 1904）
           #     A 区只留浏览器下拉 + 数据目录 + 浏览器目录（指纹目录=数据目录+环境名，不单列；
           #     内核由浏览器目录尾段推导，不单独下拉）。
