@@ -322,9 +322,22 @@ jobs:
             if ($fpcProxy -notmatch [regex]::Escape($s)) { throw "system-ext contract '$s' missing in fp_ui.cpp" }
           }
           foreach ($s in @("FpResolveNoiseSwitch", "FpOsSupportsFlash", "FpBuildUserAgentMetadataJson",
-                           "FpBuildNoiseSunParams", "FpSeedFromFbcc", "FpNormalizeNetworkInformationType")) {
+                           "FpBuildNoiseSunParams", "FpSeedFromFbcc", "FpNormalizeNetworkInformationType",
+                           "FpOsToOfficialPlatform", "FpOsToChPlatform", "FpOsToChModel", "FpChMatchesOs")) {
             if ($fpImportHeader -notmatch [regex]::Escape($s)) { throw "system-ext helper '$s' missing" }
           }
+          foreach ($s in @("FpApplyChFromOs", "FpChMatchesOs(N(f.os)", "FpOsToChPlatform(os)")) {
+            if ($fpcProxy -notmatch [regex]::Escape($s)) { throw "ch-os contract '$s' missing in fp_ui.cpp" }
+          }
+          foreach ($s in @("FpOsToOfficialPlatform(osKey)", 'sp += ",\"Platform\":\""')) {
+            if ($rtcFpCpp -notmatch [regex]::Escape($s)) { throw "ext platform contract '$s' missing" }
+          }
+          # CH平台不能回落成 official platform 值（MacIntel/Linux armv8I 是 platform 不是 clientHints.platform）
+          if ($fpcProxy -match [regex]::Escape('f.chPlatform = L"MacIntel"') -or
+              $fpcProxy -match [regex]::Escape('f.chPlatform = L"Linux armv8I"')) {
+            throw "chPlatform must use official clientHints platform set (Windows/macOS/Linux/Android/iPhone)"
+          }
+          Write-Host "ch-os contract ok"
           foreach ($s in @("FpBuildNoiseSunParams", "EnableDoNotTrack", "--disable-gpu",
                            "--cipher-suite-blacklist=", "WebGPU,WebGPUService", "ext.settings canvas=",
                            "HardwareConcurrency", "ScreenSize", "FlashPluginSetting", "launchArgs")) {
@@ -336,7 +349,8 @@ jobs:
             throw "unconditional CanvasMark injection must not return in fingerprint.cpp"
           }
           Write-Host "negative-noise ok"
-          foreach ($s in @("FpOsSupportsFlash", "FpResolveNoiseSwitch(", "FpBuildNoiseSunParams(true")) {
+          foreach ($s in @("FpOsSupportsFlash", "FpResolveNoiseSwitch(", "FpBuildNoiseSunParams(true",
+                           'FpOsToChPlatform("mac")', 'FpOsToChModel("android")', 'FpChMatchesOs("win"')) {
             if ($fpModeTests -notmatch [regex]::Escape($s)) { throw "system-ext unit case '$s' missing" }
             Write-Host "system-ext test ok: $s"
           }

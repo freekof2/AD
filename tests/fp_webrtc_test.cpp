@@ -134,6 +134,34 @@ int main() {
     CHECK(FpSeedFromFbcc("abc", -10000, 9999) >= -10000);
     CHECK(FpSeedFromFbcc("abc", -10000, 9999) <= 9999);
 
+    // 系统 -> official 取值集：initBrowser.platform 与 clientHints.platform 是两张表
+    CHECK(FpOsToOfficialPlatform("win") == "Win32");
+    CHECK(FpOsToOfficialPlatform("mac") == "MacIntel");
+    CHECK(FpOsToOfficialPlatform("linux") == "Linux x86_64");
+    CHECK(FpOsToOfficialPlatform("android") == "Linux armv8I");
+    CHECK(FpOsToOfficialPlatform("ios") == "iPhone");
+    CHECK(FpOsToChPlatform("win") == "Windows");
+    CHECK(FpOsToChPlatform("mac") == "macOS");
+    CHECK(FpOsToChPlatform("linux") == "Linux");
+    CHECK(FpOsToChPlatform("android") == "Android");
+    CHECK(FpOsToChPlatform("ios") == "iPhone");
+    CHECK(FpOsToChArchitecture("win") == "x86");
+    CHECK(FpOsToChArchitecture("android") == "arm");
+    CHECK(FpOsToChArchitecture("ios") == "arm");
+    CHECK(FpOsToChPlatformVersion("win") == "10.0.0");
+    CHECK(FpOsToChPlatformVersion("mac") == "10.15.7");
+    CHECK(FpOsToChPlatformVersion("android") == "14.0.0");
+    CHECK(FpOsToChPlatformVersion("linux").empty());
+    CHECK(FpOsToChModel("android") == "Pixel 8");  // 与 UA 预设机型一致
+    CHECK(FpOsToChModel("win").empty());
+    CHECK(FpOsToChMobile("android") == "1");
+    CHECK(FpOsToChMobile("ios") == "1");
+    CHECK(FpOsToChMobile("mac") == "0");
+    CHECK(FpChMatchesOs("win", "Windows"));
+    CHECK(FpChMatchesOs("mac", "macOS"));
+    CHECK(!FpChMatchesOs("win", "Android"));
+    CHECK(!FpChMatchesOs("win", ""));
+
     ::WSACleanup();
     return 0;
 }

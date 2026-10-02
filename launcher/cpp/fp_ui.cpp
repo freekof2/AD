@@ -844,11 +844,8 @@ static std::string FpBuildDisabledFontsJson() {
 }
 // 平台下拉值（web-ui os 胶囊 win|mac|linux|android|ios）-> asar e.platform（setFakeFonts switch 用）
 static std::wstring FpOsToAsarPlatform(const std::wstring& os) {
-    if (os == L"mac") return L"MacIntel";
-    if (os == L"linux") return L"Linux x86_64";
-    if (os == L"android") return L"Linux armv8I";
-    if (os == L"ios") return L"iPhone";
-    return L"Win32";
+    // 与 official initBrowser.platform 同一张表（见 FpOsToOfficialPlatform）
+    return W(FpOsToOfficialPlatform(N(os)));
 }
 static const wchar_t* kTz[] = {
     L"Etc/GMT+12", L"Pacific/Midway", L"Pacific/Honolulu", L"America/Anchorage",
@@ -1255,7 +1252,7 @@ static void FpBuildPages(FpWnd* w, HWND p, HINSTANCE hi) {
     FpComboAdd(w->ctl[F_NETINFO - F_BASE], L"0 - 关闭");
     FpComboAdd(w->ctl[F_NETINFO - F_BASE], L"1 - wifi");
     FpComboAdd(w->ctl[F_NETINFO - F_BASE], L"2 - cellular");
-    // ---- 21. ClientHints -> static.UserAgentMetadata（y 1780..）----
+    // ---- 21. ClientHints -> static.UserAgentMetadata（y 1780..；值与“系统”同源）----
     FpMkLabel(p, w, F_CHPLAT, L"CH平台", 12, 1782, 70);
     FpMkEdit(p, w, F_CHPLAT, 88, 1780, 150);
     FpMkLabel(p, w, F_CHVER, L"CH版本", 246, 1782, 40);
@@ -1284,7 +1281,8 @@ static void FpBuildPages(FpWnd* w, HWND p, HINSTANCE hi) {
         ::CreateWindowW(L"STATIC", L"ClientHints -> UserAgentMetadata", WS_CHILD | WS_VISIBLE | SS_LEFT,
             512, 1826, 300, 20, p, NULL, hi2, NULL);
         ::CreateWindowW(L"STATIC",
-            L"系统门控：Flash 仅 win/mac；MaxTouch/陀螺仪/网络类型 仅 Android/iPhone（陀螺仪还需 chrome 内核）；启动参数对全部系统生效",
+            L"CH平台/CH版本/CH架构/CH机型 与“系统”同源（切换系统自动按官方取值集重算：Windows/macOS/Linux/Android/iPhone）；"
+            L"Flash 仅 win/mac；MaxTouch/陀螺仪/网络类型 仅 Android/iPhone（陀螺仪还需 chrome 内核）",
             WS_CHILD | WS_VISIBLE | SS_LEFT, 12, 1868, 800, 36, p, NULL, hi2, NULL);
     }
 }
@@ -1304,6 +1302,19 @@ static void FpUpdateOsGates(FpWnd* w, const std::wstring& osValue) {
     ::EnableWindow(C(F_MAXTOUCH), mobile);
     ::EnableWindow(C(F_GYRO), mobile && w->form.browser == L"sun");
     ::EnableWindow(C(F_NETINFO), mobile);
+}
+// ClientHints 四项（CH平台/CH版本/CH架构/CH机型）与“系统”表达的是同一份内容：
+// 按官方 clientHints 取值集从 F_OS 派生（系统切换、存档与系统不符时重算），再由保存链写
+// static.UserAgentMetadata（official setClientHints）。
+static void FpApplyChFromOs(FpFormData& f) {
+    const std::string os = N(f.os);
+    f.chPlatform = W(FpOsToChPlatform(os));
+    f.chPlatformVersion = W(FpOsToChPlatformVersion(os));
+    f.chArchitecture = W(FpOsToChArchitecture(os));
+    f.chModel = W(FpOsToChModel(os));
+    f.chMobile = W(FpOsToChMobile(os));
+    if (f.chBitness != L"32" && f.chBitness != L"64") f.chBitness = L"0";
+    if (f.chWow64 != L"1" && f.chWow64 != L"2") f.chWow64 = L"0";
 }
 static void FpFill(FpWnd* w) {
     FpFormData& f = w->form;
@@ -1450,17 +1461,8 @@ static void FpFill(FpWnd* w) {
     selByVal(F_FLASH, f.flashMode.empty() ? L"off" : f.flashMode);
     selByVal(F_GYRO, f.gyroscope.empty() ? L"0" : f.gyroscope);
     selByVal(F_NETINFO, f.netInfoType.empty() ? L"0" : f.netInfoType);
-    // ClientHints 缺省按系统给一组常见值（UA CH 实测形态），有值则原样显示
-    if (f.chPlatform.empty()) {
-        const std::string os = N(f.os);
-        if (os == "win") { f.chPlatform = L"Windows"; f.chPlatformVersion = L"10.0.0"; f.chArchitecture = L"x86"; }
-        else if (os == "mac") { f.chPlatform = L"MacIntel"; f.chArchitecture = L"x86"; }
-        else if (os == "linux") { f.chPlatform = L"Linux x86_64"; f.chArchitecture = L"x86"; }
-        else if (os == "android") { f.chPlatform = L"Linux armv8I"; f.chArchitecture = L"arm"; }
-        else { f.chPlatform = L"iPhone"; f.chArchitecture = L"arm"; }
-        if (f.chModel.empty()) f.chModel = L"";
-        if (f.chMobile.empty()) f.chMobile = (os == "android" || os == "ios") ? L"1" : L"0";
-    }
+    // ClientHints 跟随“系统”：存档为空或平台与系统不符时，按官方 clientHints 取值集重算
+    if (!FpChMatchesOs(N(f.os), N(f.chPlatform))) FpApplyChFromOs(f);
     if (f.chBitness.empty()) f.chBitness = L"0";
     if (f.chWow64.empty()) f.chWow64 = L"0";
     FpSet(C(F_CHPLAT), f.chPlatform);
@@ -2310,8 +2312,18 @@ static LRESULT CALLBACK FpWndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
         if (id == F_OS && (code == CBN_SELCHANGE || code == CBN_SELENDOK)) {
             FpCollect(w);
             FpUpdateOsGates(w, w->form.os);
-            ::SetWindowTextW(w->hStatus, L"系统已切换，系统扩展字段按平台重新启用/禁用");
-            LOG(L"指纹系统切换 os=" + w->form.os + L" " + w->profile);
+            // 系统与 ClientHints 四项是同一份内容：切换系统即按官方取值集重算并回显，
+            // UA 也按系统预设重建（否则会出现 UA=Windows、CH=Android 的自相矛盾）。
+            FpApplyChFromOs(w->form);
+            FpSet(C(F_CHPLAT), w->form.chPlatform);
+            FpSet(C(F_CHVER), w->form.chPlatformVersion);
+            FpSet(C(F_CHARCH), w->form.chArchitecture);
+            FpSet(C(F_CHMODEL), w->form.chModel);
+            ::SendMessageW(C(F_CHMOBILE), CB_SETCURSEL, w->form.chMobile == L"1" ? 1 : 0, 0);
+            FpSet(C(F_UA), FpBuildUA(w->form.os, w->form.uaPreset));
+            ::SetWindowTextW(w->hStatus, L"系统已切换：UA / ClientHints / 系统扩展字段已按新系统对齐");
+            LOG(L"指纹系统切换 os=" + w->form.os + L" ch=" + w->form.chPlatform +
+                L" " + w->profile);
             return 0;
         }
         if (id == F_BROWSER && (code == CBN_SELCHANGE || code == CBN_SELENDOK)) {

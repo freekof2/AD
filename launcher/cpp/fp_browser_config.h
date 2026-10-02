@@ -111,6 +111,51 @@ inline bool FpOsSupportsFlash(const std::string& os) { return os == "win" || os 
 // official setMaxTouchPoints / setGyroscope / setNetworkInformationType 都限定移动平台
 inline bool FpOsSupportsMobileExtras(const std::string& os) { return FpOsIsMobile(os); }
 
+// official setMaxTouchPoints -> sunBrowserParams.Platform = initBrowser.platform
+// 取值集（main.min.js setFakeFonts/setMediaDevices + asar 侧注释）：
+//   Win32 | MacIntel | Linux x86_64 | Linux armv7I/armv8I/armv81 | Linux i686 | iPhone | Windows Phone
+inline std::string FpOsToOfficialPlatform(const std::string& os) {
+    if (os == "mac") return "MacIntel";
+    if (os == "linux") return "Linux x86_64";
+    if (os == "android") return "Linux armv8I";
+    if (os == "ios") return "iPhone";
+    return "Win32";
+}
+// official clientHints.platform 判定集（main.min.js configureNavigatorEmulation 的 a=clientHints.platform）：
+//   Windows | macOS | Android | iPhone | Linux
+inline std::string FpOsToChPlatform(const std::string& os) {
+    if (os == "mac") return "macOS";
+    if (os == "linux") return "Linux";
+    if (os == "android") return "Android";
+    if (os == "ios") return "iPhone";
+    return "Windows";
+}
+// CH架构：Chrome UA-CH architecture 只有 x86 / arm（位数走 bitness）
+inline std::string FpOsToChArchitecture(const std::string& os) {
+    return (os == "android" || os == "ios") ? "arm" : "x86";
+}
+// CH版本（platformVersion）：与指纹页 UA 预设的系统版本同源（补到三段；Linux 官方留空）
+inline std::string FpOsToChPlatformVersion(const std::string& os) {
+    if (os == "mac") return "10.15.7";    // UA: Intel Mac OS X 10_15_7
+    if (os == "android") return "14.0.0"; // UA: Android 14
+    if (os == "ios") return "17.4.0";     // UA: iPhone OS 17_4
+    if (os == "linux") return "";         // official: platform_version 缺省即 ""
+    return "10.0.0";                      // UA: Windows NT 10.0
+}
+// CH机型：仅 Android 暴露，且必须与 UA 里的机型一致；桌面/iOS 官方 model 为空
+inline std::string FpOsToChModel(const std::string& os) {
+    if (os == "android") return "Pixel 8"; // UA: Android 14; Pixel 8
+    return "";
+}
+// official setClientHints 的 mobile 是布尔（"1"===t.mobile）
+inline std::string FpOsToChMobile(const std::string& os) {
+    return (os == "android" || os == "ios") ? "1" : "0";
+}
+// 存档里的 CH 平台是否与当前“系统”一致（不一致/为空 -> 按系统重算）
+inline bool FpChMatchesOs(const std::string& os, const std::string& chPlatform) {
+    return !chPlatform.empty() && chPlatform == FpOsToChPlatform(os);
+}
+
 // 四个噪声开关统一真值：ui 侧车 > static 低位键 > official 种子存在性。
 // official setCanvasAndWebGL/setAudio/setClientRects 只在开关=1 时写
 // CanvasMark/WebGLMark/AudioFp/ClientRectFp，因此“种子存在”即代表开启。

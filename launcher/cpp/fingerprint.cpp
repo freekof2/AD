@@ -810,9 +810,14 @@ std::wstring FpBuildCmdline(const std::wstring& profileDir, int port,
             for (auto& c : res) if (c == '_') c = ',';
             sp += ",\"ScreenSize\":\"" + JsonEscapeStr(res) + "\"";
         }
-        // 平台（official setMaxTouchPoints 一并写 ext Platform）
-        const std::string platform = unq(raw(staticJson, "Platform"));
-        if (!platform.empty()) sp += ",\"Platform\":" + JsonEscapeStr(platform);
+        // 平台：official setMaxTouchPoints -> sunBrowserParams.Platform = initBrowser.platform
+        // （取值集与指纹页“系统”同源：Win32/MacIntel/Linux x86_64/Linux armv8I/iPhone）
+        const std::string osKey = unq(raw(extraSunParamsJson, "os"));
+        const std::string platform = osKey.empty()
+            ? unq(raw(staticJson, "Platform"))
+            : FpOsToOfficialPlatform(osKey);
+        if (!platform.empty())
+            sp += ",\"Platform\":\"" + JsonEscapeStr(platform) + "\"";
         // Flash（official setFlash：桌面平台且非 off 才注入）
         const bool desktop = platform.empty() || platform == "Win32" || platform == "MacIntel";
         std::string flash = unq(raw(extraSunParamsJson, "flash"));
