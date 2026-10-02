@@ -78,6 +78,62 @@ int main() {
     CHECK(currentProfilePath.directProfilePath);
     CHECK(currentProfilePath.profilePath == L"F:\\cache\\1111_local");
 
+    // 噪声开关真值优先级：ui > static 低位键 > official 种子存在性
+    CHECK(FpResolveNoiseSwitch("\"0\"", "\"1\"", true) == "0");
+    CHECK(FpResolveNoiseSwitch("", "\"1\"", false) == "1");
+    CHECK(FpResolveNoiseSwitch("\"0\"", "", true) == "0");
+    CHECK(FpResolveNoiseSwitch("", "", true) == "1");
+    CHECK(FpResolveNoiseSwitch("", "", false) == "0");
+    CHECK(FpBuildNoiseSunParams(true, true, true, true, "fbcc", "21", "3063") ==
+        "{\"CanvasMark\":\"fbcc\",\"WebGLMark\":\"fbcc\",\"AudioFp\":21,\"ClientRectFp\":3063}");
+    CHECK(FpBuildNoiseSunParams(true, false, false, false, "fbcc", "21", "3063") ==
+        "{\"CanvasMark\":\"fbcc\"}");
+    CHECK(FpBuildNoiseSunParams(false, false, false, false, "fbcc", "21", "3063").empty());
+
+    // 系统门控（与指纹页 F_OS 一致）
+    CHECK(FpOsSupportsFlash("win"));
+    CHECK(FpOsSupportsFlash("mac"));
+    CHECK(!FpOsSupportsFlash("linux"));
+    CHECK(!FpOsSupportsFlash("ios"));
+    CHECK(FpOsSupportsMobileExtras("android"));
+    CHECK(FpOsSupportsMobileExtras("ios"));
+    CHECK(!FpOsSupportsMobileExtras("win"));
+    CHECK(FpOsIsAndroid("android") && FpOsIsIos("ios") && !FpOsIsIos("linux"));
+
+    // 网络类型（official normalize/get/apply）
+    CHECK(FpNormalizeNetworkInformationType("3") == "0");
+    CHECK(FpNormalizeNetworkInformationType(" 2 ") == "2");
+    CHECK(FpNetworkChromeType("1") == "wifi");
+    CHECK(FpNetworkChromeType("0").empty());
+    CHECK(FpBuildNetworkInformationStatic("1") == "{\"enabled\":true,\"type\":\"wifi\"}");
+    CHECK(FpBuildNetworkInformationStatic("0").empty());
+    CHECK(FpBuildAndroidBlinkFeatureValue() == "\"NetworkInformation,NetInfoDownlinkMax\"");
+
+    // 陀螺仪 / 设备方向 / DeviceMotion（official setGyroscope）
+    CHECK(FpBuildGyroscopeStaticJson().find("0.15") != std::string::npos);
+    CHECK(FpBuildDeviceOrientationStaticJson("fbcc").find("absolute\":false") != std::string::npos);
+    CHECK(FpBuildDeviceMotionStaticJson().find("9.78") != std::string::npos);
+
+    // ClientHints -> UserAgentMetadata（official setClientHints）
+    CHECK(FpBuildUserAgentMetadataJson("Windows", "10.0.0", "x86", "", "0", "", "") ==
+        "{\"platform\":\"Windows\",\"platformVersion\":\"10.0.0\",\"architecture\":\"x86\","
+        "\"model\":\"\",\"mobile\":false}");
+    CHECK(FpBuildUserAgentMetadataJson("Linux armv8I", "10", "arm", "Pixel", "1", "64", "1") ==
+        "{\"platform\":\"Linux armv8I\",\"platformVersion\":\"10\",\"architecture\":\"arm\","
+        "\"model\":\"Pixel\",\"mobile\":true,\"bitness\":\"64\",\"wow64\":true}");
+
+    // Flash / MaxTouchPoints / 种子
+    CHECK(FpBuildFlashSettingSunParam("block") == "\"FlashPluginSetting\":\"block\"");
+    CHECK(FpBuildFlashSettingSunParam("allow") == "\"FlashPluginSetting\":\"allow\"");
+    CHECK(FpBuildFlashSettingSunParam("off").empty());
+    CHECK(FpNormalizeMaxTouchPoints("12") == "12");
+    CHECK(FpNormalizeMaxTouchPoints("x") == "0");
+    CHECK(FpNormalizeMaxTouchPoints("0123") == "0");
+    CHECK(FpSeedFromFbcc("abc", 1, 9999) >= 1);
+    CHECK(FpSeedFromFbcc("abc", 1, 9999) <= 9999);
+    CHECK(FpSeedFromFbcc("abc", -10000, 9999) >= -10000);
+    CHECK(FpSeedFromFbcc("abc", -10000, 9999) <= 9999);
+
     ::WSACleanup();
     return 0;
 }

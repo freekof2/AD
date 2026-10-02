@@ -274,6 +274,18 @@ std::string FpFormToUiJson(const FpFormData& f) {
     o += ",\"whitePorts\":\"" + JEsc(f.whitePorts) + "\",\"hardwareAccel\":\"" + JEsc(f.hardwareAccel) + "\"";
     o += ",\"disableTls\":\"" + JEsc(f.disableTls) + "\",\"tls\":\"" + JEsc(f.tlsBlacklist) + "\"";
     o += ",\"launchArgs\":\"" + JEsc(f.launchArgs) + "\"";
+    // 系统扩展（official fingerprint_config 键名）
+    o += ",\"maxTouchPoints\":\"" + JEsc(f.maxTouchPoints) + "\"";
+    o += ",\"flash\":\"" + JEsc(f.flashMode) + "\"";
+    o += ",\"gyroscope\":\"" + JEsc(f.gyroscope) + "\"";
+    o += ",\"networkInformationType\":\"" + JEsc(f.netInfoType) + "\"";
+    o += ",\"clientHints\":{\"platform\":\"" + JEsc(f.chPlatform) +
+         "\",\"platform_version\":\"" + JEsc(f.chPlatformVersion) +
+         "\",\"architecture\":\"" + JEsc(f.chArchitecture) +
+         "\",\"model\":\"" + JEsc(f.chModel) +
+         "\",\"mobile\":\"" + JEsc(f.chMobile) +
+         "\",\"bitness\":\"" + JEsc(f.chBitness) +
+         "\",\"wow64\":\"" + JEsc(f.chWow64) + "\"}";
     o += "}";
     return o;
 }
@@ -395,6 +407,30 @@ bool FpFormFromUiJson(const std::string& json, FpFormData& f) {
     FJSet(&FpFormData::disableTls, json, "disableTls", f);
     FJSet(&FpFormData::tlsBlacklist, json, "tls", f);
     FJSet(&FpFormData::launchArgs, json, "launchArgs", f);
+    FJSet(&FpFormData::maxTouchPoints, json, "maxTouchPoints", f);
+    FJSet(&FpFormData::flashMode, json, "flash", f);
+    FJSet(&FpFormData::gyroscope, json, "gyroscope", f);
+    FJSet(&FpFormData::netInfoType, json, "networkInformationType", f);
+    // clientHints 对象 -> 子字段（official setClientHints 输入形态）
+    {
+        std::string ch = FpJsonGet(json, "clientHints");
+        if (ch.size() >= 2 && ch.front() == '{') {
+            auto s = [&](const char* k) { return WJ(FpJsonGet(ch, k)); };
+            const std::wstring plat = s("platform");
+            if (!plat.empty()) f.chPlatform = plat;
+            const std::wstring ver = s("platform_version");
+            if (!ver.empty()) f.chPlatformVersion = ver;
+            const std::wstring arch = s("architecture");
+            if (!arch.empty()) f.chArchitecture = arch;
+            if (!FpJsonGet(ch, "model").empty()) f.chModel = s("model");
+            const std::wstring mob = s("mobile");
+            if (mob == L"1" || mob == L"0") f.chMobile = mob;
+            const std::wstring bit = s("bitness");
+            if (bit == L"32" || bit == L"64") f.chBitness = bit;
+            const std::wstring wow = s("wow64");
+            if (wow == L"1" || wow == L"0") f.chWow64 = wow;
+        }
+    }
     std::string v;
     v = FpJsonGet(json, "canvas"); if (!v.empty()) f.swCanvas = (v == "\"1\"" || v == "1");
     v = FpJsonGet(json, "webglImage"); if (!v.empty()) f.swWebglImg = (v == "\"1\"" || v == "1");
@@ -472,6 +508,34 @@ static std::wstring FpOsToAsarPlatform(const std::wstring& os);
 // fontsMode: all -> 输出 DisabledFonts=getFonts-mobileFonts；custom -> 输出切分数组（调用方已在 fp_config 处理，此处返回 ""）
 // Fakefonts 输出 JSON 对象（键=伪装表全键，值=本机表轮转；asar n[e]=win32[t%len]，t 为键序号）
 // 云端表缺失回退：win32/darwin/linux 键表与值表均用 u[] 全集；mobile 键表用 mobileFonts 精确 12 条。
+
+// 表单字体 -> JSON 数组：逗号/中文逗号(U+FF0C)/换行切分，trim ASCII 空白（与 web-ui split 一致）。
+static std::string FpFontsToJsonArray(const std::wstring& fonts) {
+    std::string fs8 = N(fonts), fs, arr = "[";
+    for (size_t i = 0; i < fs8.size();) {
+        if (i + 2 < fs8.size() && (unsigned char)fs8[i] == 0xEF &&
+            (unsigned char)fs8[i + 1] == 0xBC && (unsigned char)fs8[i + 2] == 0x8C) {
+            fs += ','; i += 3;
+        } else { fs += fs8[i]; i++; }
+    }
+    size_t p = 0; bool first = true;
+    while (p <= fs.size()) {
+        size_t e = fs.find_first_of(",\n", p);
+        std::string tok = fs.substr(p, e == std::string::npos ? e : e - p);
+        size_t a = tok.find_first_not_of(" \t\r");
+        size_t b = tok.find_last_not_of(" \t\r");
+        if (a != std::string::npos) {
+            tok = tok.substr(a, b - a + 1);
+            if (!first) arr += ",";
+            first = false;
+            arr += "\"" + tok + "\"";
+        }
+        if (e == std::string::npos) break;
+        p = e + 1;
+    }
+    arr += "]";
+    return arr;
+}
 
 std::string FpFormToFpConfig(const FpFormData& f) {
     // AcceptLang 派生（main.min.js getAccept 全文移植）：首项无 q，后续项 q=0.9..0.1
@@ -617,34 +681,7 @@ std::string FpFormToFpConfig(const FpFormData& f) {
     // 字体：all->["all"]（语义标记；真正的 DisabledFonts 由 FpBuildDisabledFontsJson() 按 asar 生成，
     // 见 F_OK 保存分支）；custom->按逗号/中文逗号/换行切分数组（与 web-ui split(/[,，\n]+/) 一致）
     if (f.fontMode == L"all") o += ",\"fonts\":[\"all\"]";
-    else {
-        std::string fs8 = N(f.fonts), fs, arr = "[";
-        // UTF-8 中文逗号 U+FF0C = EF BC 8C，先替换为 ASCII 逗号再切分
-        for (size_t i = 0; i < fs8.size();) {
-            if (i + 2 < fs8.size() && (unsigned char)fs8[i] == 0xEF &&
-                (unsigned char)fs8[i + 1] == 0xBC && (unsigned char)fs8[i + 2] == 0x8C) {
-                fs += ','; i += 3;
-            } else { fs += fs8[i]; i++; }
-        }
-        size_t p = 0; bool first = true;
-        while (p <= fs.size()) {
-            size_t e = fs.find_first_of(",\n", p);
-            std::string tok = fs.substr(p, e == std::string::npos ? e : e - p);
-            // 去首尾空白（含中文逗号已在 UI 侧按逗号切，这里只 trim ASCII 空白）
-            size_t a = tok.find_first_not_of(" \t\r");
-            size_t b = tok.find_last_not_of(" \t\r");
-            if (a != std::string::npos) {
-                tok = tok.substr(a, b - a + 1);
-                if (!first) arr += ",";
-                first = false;
-                arr += "\"" + tok + "\"";
-            }
-            if (e == std::string::npos) break;
-            p = e + 1;
-        }
-        arr += "]";
-        o += ",\"fonts\":" + arr;
-    }
+    else o += ",\"fonts\":" + FpFontsToJsonArray(f.fonts);
     o += ",\"ua\":\"" + JEsc(f.ua) + "\"";
     // 代理链（官方 static.ProxyChain 数组，与 main.min.js setProxy 写入格式一致）：
     // [{scheme,host,port,account,password}]；proxyType 空/noProxy/缺 host-port 即 []（直连）。
@@ -687,6 +724,8 @@ enum FpCtl {
     F_DNT, F_PORTSCAN, F_WPORTS,
     F_HWACC, F_TLSM, F_TLS,
     F_ARGS,
+    F_MAXTOUCH, F_FLASH, F_GYRO, F_NETINFO,
+    F_CHPLAT, F_CHVER, F_CHARCH, F_CHMODEL, F_CHMOBILE, F_CHBITNESS, F_CHWOW64,
     F_OK, F_CANCEL, F_RANDOM, F_IMPORT,
     F_TAB, F_STATUS,
     F_END
@@ -873,7 +912,7 @@ static void FpFormDefaults(FpFormData& f, const std::wstring& profileName) {
 static const int kFpWinW = 860;
 static const int kFpWinH = 640;
 static const int kFpContentW = 828;   // 内容区宽（窗口 860 - 边距 2*16）
-static const int kFpContentH = 1744;  // 内容总高（去指纹目录单列行 -26：1770-26=1744）
+static const int kFpContentH = 1904;  // 内容总高（原 1744 + 页5 系统扩展 160：1744..1904）
 
 // 单页窗口状态（滚动位置 + 内容容器；Tab 相关已删除，见 git 历史）
 // hPage 子类化：STATIC 父容器默认把 BUTTON 的 WM_COMMAND 吃掉（BN_CLICKED 不向上传），
@@ -1199,11 +1238,72 @@ static void FpBuildPages(FpWnd* w, HWND p, HINSTANCE hi) {
     // ---- 19. 启动参数（y 1612..；整体下移 48）----
     FpMkLabel(p, w, F_ARGS, L"启动参数", 12, 1614, 90);
     FpMkEdit(p, w, F_ARGS, 110, 1612, 560, 110);
+    // ---- 20. 系统扩展（y 1736..；按 F_OS 门控，official set* 语义）----
+    FpMkLabel(p, w, F_MAXTOUCH, L"MaxTouch", 12, 1738, 70);
+    FpMkEdit(p, w, F_MAXTOUCH, 88, 1736, 60);
+    FpMkLabel(p, w, F_FLASH, L"Flash", 158, 1738, 40);
+    FpMkCombo(p, w, F_FLASH, 202, 1736, 110);
+    FpComboAdd(w->ctl[F_FLASH - F_BASE], L"off - 关闭");
+    FpComboAdd(w->ctl[F_FLASH - F_BASE], L"block - 屏蔽(2)");
+    FpComboAdd(w->ctl[F_FLASH - F_BASE], L"allow - 允许(1)");
+    FpMkLabel(p, w, F_GYRO, L"陀螺仪", 322, 1738, 60);
+    FpMkCombo(p, w, F_GYRO, 388, 1736, 110);
+    FpComboAdd(w->ctl[F_GYRO - F_BASE], L"0 - 关闭");
+    FpComboAdd(w->ctl[F_GYRO - F_BASE], L"1 - 开启");
+    FpMkLabel(p, w, F_NETINFO, L"网络类型", 508, 1738, 70);
+    FpMkCombo(p, w, F_NETINFO, 578, 1736, 150);
+    FpComboAdd(w->ctl[F_NETINFO - F_BASE], L"0 - 关闭");
+    FpComboAdd(w->ctl[F_NETINFO - F_BASE], L"1 - wifi");
+    FpComboAdd(w->ctl[F_NETINFO - F_BASE], L"2 - cellular");
+    // ---- 21. ClientHints -> static.UserAgentMetadata（y 1780..）----
+    FpMkLabel(p, w, F_CHPLAT, L"CH平台", 12, 1782, 70);
+    FpMkEdit(p, w, F_CHPLAT, 88, 1780, 150);
+    FpMkLabel(p, w, F_CHVER, L"CH版本", 246, 1782, 40);
+    FpMkEdit(p, w, F_CHVER, 292, 1780, 130);
+    FpMkLabel(p, w, F_CHARCH, L"CH架构", 430, 1782, 40);
+    FpMkEdit(p, w, F_CHARCH, 476, 1780, 140);
+    FpMkLabel(p, w, F_CHMODEL, L"CH机型", 624, 1782, 40);
+    FpMkEdit(p, w, F_CHMODEL, 670, 1780, 150);
+    // ---- 22. ClientHints 附属位（y 1824..）----
+    FpMkLabel(p, w, F_CHMOBILE, L"CH移动", 12, 1826, 70);
+    FpMkCombo(p, w, F_CHMOBILE, 88, 1824, 90);
+    FpComboAdd(w->ctl[F_CHMOBILE - F_BASE], L"0 - 否");
+    FpComboAdd(w->ctl[F_CHMOBILE - F_BASE], L"1 - 是");
+    FpMkLabel(p, w, F_CHBITNESS, L"CH位数", 186, 1826, 55);
+    FpMkCombo(p, w, F_CHBITNESS, 246, 1824, 90);
+    FpComboAdd(w->ctl[F_CHBITNESS - F_BASE], L"0 - 默认");
+    FpComboAdd(w->ctl[F_CHBITNESS - F_BASE], L"32");
+    FpComboAdd(w->ctl[F_CHBITNESS - F_BASE], L"64");
+    FpMkLabel(p, w, F_CHWOW64, L"wow64", 344, 1826, 60);
+    FpMkCombo(p, w, F_CHWOW64, 410, 1824, 90);
+    FpComboAdd(w->ctl[F_CHWOW64 - F_BASE], L"0 - 默认");
+    FpComboAdd(w->ctl[F_CHWOW64 - F_BASE], L"1 - 是");
+    FpComboAdd(w->ctl[F_CHWOW64 - F_BASE], L"2 - 否");
+    {
+        HINSTANCE hi2 = (HINSTANCE)::GetWindowLongPtrW(p, GWLP_HINSTANCE);
+        ::CreateWindowW(L"STATIC", L"ClientHints -> UserAgentMetadata", WS_CHILD | WS_VISIBLE | SS_LEFT,
+            512, 1826, 300, 20, p, NULL, hi2, NULL);
+        ::CreateWindowW(L"STATIC",
+            L"系统门控：Flash 仅 win/mac；MaxTouch/陀螺仪/网络类型 仅 Android/iPhone（陀螺仪还需 chrome 内核）；启动参数对全部系统生效",
+            WS_CHILD | WS_VISIBLE | SS_LEFT, 12, 1868, 800, 36, p, NULL, hi2, NULL);
+    }
 }
 // fp_ui.cpp — part 5/6：回填 + 收集
 static std::wstring FpFirstTok(const std::wstring& s) {
     size_t p = s.find(L" ");
     return (p == std::wstring::npos) ? s : s.substr(0, p);
+}
+// 系统扩展字段按指纹“系统”门控（official set* 只在对应平台生效）：
+// Flash 仅 win/mac；MaxTouch/陀螺仪/网络类型 仅 Android/iPhone，陀螺仪还需 chrome 内核。
+static void FpUpdateOsGates(FpWnd* w, const std::wstring& osValue) {
+    auto C = [&](int id) { return w->ctl[id - F_BASE]; };
+    const std::string os = N(osValue);
+    const bool flash = FpOsSupportsFlash(os);
+    const bool mobile = FpOsSupportsMobileExtras(os);
+    ::EnableWindow(C(F_FLASH), flash);
+    ::EnableWindow(C(F_MAXTOUCH), mobile);
+    ::EnableWindow(C(F_GYRO), mobile && w->form.browser == L"sun");
+    ::EnableWindow(C(F_NETINFO), mobile);
 }
 static void FpFill(FpWnd* w) {
     FpFormData& f = w->form;
@@ -1345,6 +1445,32 @@ static void FpFill(FpWnd* w) {
     selByVal(F_TLSM, f.disableTls.empty() ? L"close" : f.disableTls);
     FpSet(C(F_TLS), f.tlsBlacklist);
     FpSet(C(F_ARGS), f.launchArgs);
+    // ---- 20. 系统扩展（按 OS 派生默认，ui 存档优先）----
+    FpSet(C(F_MAXTOUCH), f.maxTouchPoints.empty() ? L"0" : f.maxTouchPoints);
+    selByVal(F_FLASH, f.flashMode.empty() ? L"off" : f.flashMode);
+    selByVal(F_GYRO, f.gyroscope.empty() ? L"0" : f.gyroscope);
+    selByVal(F_NETINFO, f.netInfoType.empty() ? L"0" : f.netInfoType);
+    // ClientHints 缺省按系统给一组常见值（UA CH 实测形态），有值则原样显示
+    if (f.chPlatform.empty()) {
+        const std::string os = N(f.os);
+        if (os == "win") { f.chPlatform = L"Windows"; f.chPlatformVersion = L"10.0.0"; f.chArchitecture = L"x86"; }
+        else if (os == "mac") { f.chPlatform = L"MacIntel"; f.chArchitecture = L"x86"; }
+        else if (os == "linux") { f.chPlatform = L"Linux x86_64"; f.chArchitecture = L"x86"; }
+        else if (os == "android") { f.chPlatform = L"Linux armv8I"; f.chArchitecture = L"arm"; }
+        else { f.chPlatform = L"iPhone"; f.chArchitecture = L"arm"; }
+        if (f.chModel.empty()) f.chModel = L"";
+        if (f.chMobile.empty()) f.chMobile = (os == "android" || os == "ios") ? L"1" : L"0";
+    }
+    if (f.chBitness.empty()) f.chBitness = L"0";
+    if (f.chWow64.empty()) f.chWow64 = L"0";
+    FpSet(C(F_CHPLAT), f.chPlatform);
+    FpSet(C(F_CHVER), f.chPlatformVersion);
+    FpSet(C(F_CHARCH), f.chArchitecture);
+    FpSet(C(F_CHMODEL), f.chModel);
+    selByVal(F_CHMOBILE, f.chMobile.empty() ? L"0" : f.chMobile);
+    selByVal(F_CHBITNESS, f.chBitness.empty() ? L"0" : f.chBitness);
+    selByVal(F_CHWOW64, f.chWow64.empty() ? L"0" : f.chWow64);
+    FpUpdateOsGates(w, f.os);
 }
 static std::wstring FpCleanDirectoryField(std::wstring path) {
     for (const wchar_t* tag : { L"（默认全局，可改）", L"（跟随全局）" }) {
@@ -1492,6 +1618,185 @@ static void FpCollect(FpWnd* w) {
     f.disableTls = FpFirstTok(FpComboGet(C(F_TLSM)));
     f.tlsBlacklist = FpGet(C(F_TLS));
     f.launchArgs = FpGet(C(F_ARGS));
+    // ---- 20. 系统扩展（按 OS 归一：非适用平台一律落“关”，避免写进无效配置）----
+    f.maxTouchPoints = W(FpNormalizeMaxTouchPoints(N(FpGet(C(F_MAXTOUCH)))));
+    f.flashMode = FpFirstTok(FpComboGet(C(F_FLASH)));
+    f.gyroscope = FpFirstTok(FpComboGet(C(F_GYRO)));
+    f.netInfoType = FpFirstTok(FpComboGet(C(F_NETINFO)));
+    f.chPlatform = FpGet(C(F_CHPLAT));
+    f.chPlatformVersion = FpGet(C(F_CHVER));
+    f.chArchitecture = FpGet(C(F_CHARCH));
+    f.chModel = FpGet(C(F_CHMODEL));
+    f.chMobile = FpFirstTok(FpComboGet(C(F_CHMOBILE)));
+    f.chBitness = FpFirstTok(FpComboGet(C(F_CHBITNESS)));
+    f.chWow64 = FpFirstTok(FpComboGet(C(F_CHWOW64)));
+    {
+        const std::string osN = N(f.os);
+        if (!FpOsSupportsFlash(osN)) f.flashMode = L"off";
+        if (!FpOsSupportsMobileExtras(osN)) {
+            f.maxTouchPoints = L"0";
+            f.gyroscope = L"0";
+            f.netInfoType = L"0";
+        } else if (f.browser != L"sun") {
+            f.gyroscope = L"0"; // official setGyroscope 限定 chrome 内核
+        }
+        f.maxTouchPoints = W(FpNormalizeMaxTouchPoints(N(f.maxTouchPoints)));
+        f.netInfoType = W(FpNormalizeNetworkInformationType(N(f.netInfoType)));
+        if (f.chMobile != L"1") f.chMobile = L"0";
+        if (f.chBitness != L"32" && f.chBitness != L"64") f.chBitness = L"0";
+        if (f.chWow64 != L"1" && f.chWow64 != L"2") f.chWow64 = L"0";
+    }
+}
+// ==== 保存：把表单翻译成 official staticConfig 键（main.min.js set* 语义） ====
+// 只在“适用且有效”时写入；不适用时删除我们写过的键，但不碰官方其它缓存值。
+// 说明：FpConfigRemoveKey 是通用的“顶层删键”工具（名字沿用 Config.json 侧的实现）。
+
+// official m.createmediaDevices(fbccId)：按 fbcc 累加和生成确定性的假设备列表
+static std::string FpCreateMediaDevicesJson(const std::string& fbcc) {
+    struct P { const char* in; const char* out; };
+    static const P kPairs[6] = {
+        {"Microphone Array (2- Realtek High Definition Audio)", "Speaker/Headphone (2- Realtek High Definition Audio)"},
+        {"Microphone Array (Realtek High Definition Audio)", "Speaker/Headphone (Realtek High Definition Audio)"},
+        {"Microphone Array (Realtek(R) Audio)", "Speaker (Realtek(R) Audio)"},
+        {"Microphone Array (Conexant SmartAudio HD)", "Speaker (Conexant SmartAudio HD)"},
+        {"Microphone Array (2- Conexant SmartAudio HD)", "Speaker (2- Conexant SmartAudio HD)"},
+        {"Microphone Array (Synaptics Audio)", "Speaker (Synaptics Audio)"},
+    };
+    static const char* kHex = "0123456789abcdef";
+    std::string hex;
+    unsigned a = 0;
+    for (unsigned char c : fbcc) { // official: r += (a += code).toString(16)，每步累加值的 hex
+        a += c;
+        char buf[16]; int bi = 0; unsigned v = a;
+        do { buf[bi++] = kHex[v & 0xF]; v >>= 4; } while (v);
+        while (bi > 0) hex += buf[--bi];
+    }
+    std::string head = hex.substr(0, 4);
+    std::string tail = hex.size() >= 4 ? hex.substr(hex.size() - 4) : hex;
+    while (head.size() < 4) { head += 'c'; tail += 'f'; } // official 补位（fbcc>=4 字符不触发）
+    const P& u = kPairs[a % 6];
+    const std::string cam = "Integrated Camera (" + head + ":" + tail + ")";
+    return "[{\"kind\":\"audioinput\",\"label\":" + FpBrowserConfigJsonQuote(u.in) +
+        "},{\"kind\":\"videoinput\",\"label\":" + FpBrowserConfigJsonQuote(cam) +
+        "},{\"kind\":\"audiooutput\",\"label\":" + FpBrowserConfigJsonQuote(u.out) + "}]";
+}
+
+// staticConfig.command_line 单键增删（保留已有其它键，如 do-not-de-elevate）
+static void FpSetCommandLineKey(std::string& sj, const char* key, const std::string& valueRaw) {
+    std::string cl = FpJsonGet(sj, "command_line");
+    if (cl.empty() || cl.front() != '{') cl = "{}";
+    std::string out = valueRaw.empty() ? FpConfigRemoveKey(cl, key) : FpJsonSet(cl, key, valueRaw);
+    if (out.empty()) return;
+    std::string m = FpJsonSet(sj, "command_line", out);
+    if (!m.empty()) sj = m;
+}
+
+static void FpApplyStaticSystemKeys(std::string& sj, const FpFormData& f,
+    const std::wstring& profileName) {
+    if (sj.empty() || sj.front() != '{') return;
+    auto set = [](std::string& s, const char* key, const std::string& raw) {
+        if (raw.empty()) return;
+        std::string m = FpJsonSet(s, key, raw);
+        if (!m.empty()) s = m;
+    };
+    auto del = [](std::string& s, const char* key) {
+        std::string m = FpConfigRemoveKey(s, key);
+        if (!m.empty() && m != s) s = m;
+    };
+    const std::string os = N(f.os);
+    const bool mobile = FpOsSupportsMobileExtras(os);
+    const std::string fbcc = FpFbccIdOf(profileName);
+
+    // 1) 字体：official setFonts -> DisabledFonts；setFakeFonts -> Fakefonts
+    if (f.fontMode == L"all") {
+        const std::string dis = FpBuildDisabledFontsJson();
+        if (!dis.empty()) set(sj, "DisabledFonts", dis);
+    } else if (!N(f.fonts).empty()) {
+        set(sj, "DisabledFonts", FpFontsToJsonArray(f.fonts));
+    }
+    if (FpOsToAsarPlatform(f.os) != L"Win32")
+        set(sj, "Fakefonts", FpBuildFakefontsJson(FpOsToAsarPlatform(f.os)));
+
+    // 2) 端口扫描：official setScanPort（close=禁扫描 open=白名单 default 不写）
+    if (f.portScan == L"close") {
+        set(sj, "AllowScanPorts", "\"0\"");
+        set(sj, "WebRTCAllowScanPorts", "\"0\"");
+    } else if (f.portScan == L"open") {
+        const std::string list = "\"" + JEsc(f.whitePorts) + "\"";
+        set(sj, "AllowScanPorts", list);
+        set(sj, "WebRTCAllowScanPorts", list);
+    }
+
+    // 3) 地理模式：official setGEO -> GeolocationSetting（静态留一份供读取回填）
+    if (f.geoMode == L"ask" || f.geoMode == L"allow" || f.geoMode == L"block")
+        set(sj, "GeolocationSetting", "\"" + N(f.geoMode) + "\"");
+
+    // 4) CPU/RAM：官方默认值不写（浏览器取真实值），自定义写数字
+    if (f.cpuMode == L"real") del(sj, "HardwareConcurrency");
+    else if (!N(f.cpu).empty() && N(f.cpu) != "default")
+        set(sj, "HardwareConcurrency", N(f.cpu));
+    if (f.ramMode == L"real") del(sj, "DeviceMemory");
+    else if (!N(f.ram).empty() && N(f.ram) != "default")
+        set(sj, "DeviceMemory", N(f.ram));
+
+    // 5) MAC / 设备名（official setMacAddress / setDeviceName）
+    if (f.macMode == L"custom" && !N(f.mac).empty())
+        set(sj, "MacAddress", "\"" + JEsc(f.mac) + "\"");
+    else if (f.macMode == L"off") del(sj, "MacAddress");
+    if (f.devNameMode != L"off" && !N(f.devName).empty())
+        set(sj, "DeviceName", "\"" + JEsc(f.devName) + "\"");
+    else if (f.devNameMode == L"off") del(sj, "DeviceName");
+
+    // 6) 媒体设备（official setMediaDevices：0=真实不写；1/2=按 fbcc 确定性生成）
+    if (f.mediaDevices == L"0") del(sj, "MediaDevices");
+    else set(sj, "MediaDevices", FpCreateMediaDevicesJson(fbcc));
+
+    // 7) 移动端 MaxTouchPoints（official setMaxTouchPoints 只对 Android/iPhone 置 0）
+    if (mobile) set(sj, "MaxTouchPoints", FpNormalizeMaxTouchPoints(N(f.maxTouchPoints)));
+    else del(sj, "MaxTouchPoints");
+
+    // 8) ClientHints -> static.UserAgentMetadata（official setClientHints）
+    if (!N(f.chPlatform).empty()) {
+        // 附属位：0=默认（官方不写该键），1=是，2=否
+        const std::string bit = (f.chBitness == L"32" || f.chBitness == L"64")
+            ? N(f.chBitness) : std::string();
+        const std::string wow = (f.chWow64 == L"1" || f.chWow64 == L"2")
+            ? N(f.chWow64) : std::string();
+        set(sj, "UserAgentMetadata", FpBuildUserAgentMetadataJson(
+            N(f.chPlatform), N(f.chPlatformVersion), N(f.chArchitecture),
+            N(f.chModel), N(f.chMobile), bit, wow));
+    } else del(sj, "UserAgentMetadata");
+
+    // 9) 陀螺仪（official setGyroscope：Android/iPhone + chrome 内核）
+    const bool gyroOn = mobile && f.browser == L"sun" && f.gyroscope == L"1";
+    if (gyroOn) {
+        set(sj, "gyroscope", FpBuildGyroscopeStaticJson());
+        set(sj, "deviceorientationdata", FpBuildDeviceOrientationStaticJson(fbcc));
+        set(sj, "DeviceMotion", FpBuildDeviceMotionStaticJson());
+    } else {
+        del(sj, "gyroscope");
+        del(sj, "deviceorientationdata");
+        del(sj, "DeviceMotion");
+    }
+
+    // 10) 网络类型（official setNetworkInformationType：Android -> NetworkInformation +
+    //     enable-blink-features；iOS -> disable-blink-features；其它/关闭 -> 清掉）
+    const std::string net = FpNormalizeNetworkInformationType(N(f.netInfoType));
+    if (mobile && net != "0") {
+        if (FpOsIsAndroid(os)) {
+            set(sj, "NetworkInformation", FpBuildNetworkInformationStatic(net));
+            FpSetCommandLineKey(sj, "enable-blink-features", FpBuildAndroidBlinkFeatureValue());
+            FpSetCommandLineKey(sj, "disable-blink-features", "");
+        } else {
+            del(sj, "NetworkInformation");
+            FpSetCommandLineKey(sj, "enable-blink-features", "");
+            FpSetCommandLineKey(sj, "disable-blink-features", FpBuildIosBlinkFeatureValue());
+        }
+    } else {
+        del(sj, "NetworkInformation");
+        FpSetCommandLineKey(sj, "enable-blink-features", "");
+        FpSetCommandLineKey(sj, "disable-blink-features", "");
+    }
 }
 // fp_ui.cpp — part 6/6：模态窗口过程 + 保存 + 导入
 static LRESULT CALLBACK FpWndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
@@ -1718,8 +2023,22 @@ static LRESULT CALLBACK FpWndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
                         v = FpJsonGet(sj, "ClientRectFp");
                         if (!v.empty()) w->form.swClientRects = (v != "0" && v != "\"0\"");
                     }
-                    // CanvasMark/WebGLMark 只是噪声种子（official static 恒存在），
-                    // 不能反推开关状态：ui 缺失时留默认值，不强制勾选。
+                    // 四个噪声开关真值：ui 存档 > static 低位键 > official 种子存在性
+                    //（official 只在开关=1 时写 CanvasMark/WebGLMark/AudioFp/ClientRectFp）。
+                    {
+                        auto hasMark = [&](const char* k) {
+                            std::string v = FpJsonGet(sj, k);
+                            return !v.empty() && v != "\"\"" && v != "\"0\"" && v != "0";
+                        };
+                        w->form.swCanvas = FpResolveNoiseSwitch(
+                            FpJsonGet(ui, "canvas"), FpJsonGet(sj, "canvas"), hasMark("CanvasMark")) == "1";
+                        w->form.swWebglImg = FpResolveNoiseSwitch(
+                            FpJsonGet(ui, "webglImage"), FpJsonGet(sj, "webgl_image"), hasMark("WebGLMark")) == "1";
+                        w->form.swAudio = FpResolveNoiseSwitch(
+                            FpJsonGet(ui, "audio"), FpJsonGet(sj, "AudioFp"), hasMark("AudioFp")) == "1";
+                        w->form.swClientRects = FpResolveNoiseSwitch(
+                            FpJsonGet(ui, "clientRects"), FpJsonGet(sj, "ClientRectFp"), hasMark("ClientRectFp")) == "1";
+                    }
                     // WebRTC 回填：ui 模式优先；缺 IP 时按 WebRTCAddress -> WebRTCLocalAddress
                     // 顺序从 static/dynamic 补（official static 只有后者）。
                     std::string uiWr = FpJsonGet(ui, "webrtc");
@@ -1987,8 +2306,17 @@ static LRESULT CALLBACK FpWndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
         // 浏览器类型联动浏览器目录：切 sun/flower 时按尾段目录名规则自动建议
         // （flower→flower_100、sun→chrome_152；chrome_121 的用户手工改目录即可），填入 A2 行。
         // 规则来源：getBrowserPath（win32）；内核版本号由目录尾段推导（Collect 处），不再单独下拉。
+        // 系统切换 -> 重采集并刷新系统扩展字段的可用性（Flash/MaxTouch/陀螺仪/网络类型）
+        if (id == F_OS && (code == CBN_SELCHANGE || code == CBN_SELENDOK)) {
+            FpCollect(w);
+            FpUpdateOsGates(w, w->form.os);
+            ::SetWindowTextW(w->hStatus, L"系统已切换，系统扩展字段按平台重新启用/禁用");
+            LOG(L"指纹系统切换 os=" + w->form.os + L" " + w->profile);
+            return 0;
+        }
         if (id == F_BROWSER && (code == CBN_SELCHANGE || code == CBN_SELENDOK)) {
             FpCollect(w);
+            FpUpdateOsGates(w, w->form.os); // 陀螺仪需 chrome 内核，随浏览器类型联动
             std::wstring tail = (w->form.browser == L"flower") ? L"flower_100" : L"chrome_152";
             // 取当前 A2 行或全局 browserDir 的父目录前缀，只换尾段
             std::wstring cur = w->form.profBrowserDir.empty()
@@ -2311,7 +2639,21 @@ static LRESULT CALLBACK FpWndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
                     if (uiAu.empty() || uiAu == "\"\"") { v = FpJsonGet(sj2, "AudioFp"); if (!v.empty()) w->form.swAudio = (v != "0" && v != "\"0\""); }
                     std::string uiCr = FpJsonGet(ui2, "clientRects");
                     if (uiCr.empty() || uiCr == "\"\"") { v = FpJsonGet(sj2, "ClientRectFp"); if (!v.empty()) w->form.swClientRects = (v != "0" && v != "\"0\""); }
-                    // CanvasMark/WebGLMark 只是噪声种子（恒存在），不能反推开关，留默认。
+                    // 四个噪声开关真值（与打开回填同表）：ui > static 低位键 > official 种子
+                    {
+                        auto hasMark = [&](const char* k) {
+                            std::string v = FpJsonGet(sj2, k);
+                            return !v.empty() && v != "\"\"" && v != "\"0\"" && v != "0";
+                        };
+                        w->form.swCanvas = FpResolveNoiseSwitch(
+                            FpJsonGet(ui2, "canvas"), FpJsonGet(sj2, "canvas"), hasMark("CanvasMark")) == "1";
+                        w->form.swWebglImg = FpResolveNoiseSwitch(
+                            FpJsonGet(ui2, "webglImage"), FpJsonGet(sj2, "webgl_image"), hasMark("WebGLMark")) == "1";
+                        w->form.swAudio = FpResolveNoiseSwitch(
+                            FpJsonGet(ui2, "audio"), FpJsonGet(sj2, "AudioFp"), hasMark("AudioFp")) == "1";
+                        w->form.swClientRects = FpResolveNoiseSwitch(
+                            FpJsonGet(ui2, "clientRects"), FpJsonGet(sj2, "ClientRectFp"), hasMark("ClientRectFp")) == "1";
+                    }
                     std::string uiWr = FpJsonGet(ui2, "webrtc");
                     std::string uiWrIp = FpJsonGet(ui2, "webrtcIp");
                     std::string wrAddress = FpJsonGet(sj2, "WebRTCAddress");
@@ -2799,6 +3141,9 @@ static LRESULT CALLBACK FpWndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
                         if (!m2.empty()) cfg = m2;
                     }
                     }
+                    // 系统扩展字段翻译成 official staticConfig 键（字体/端口扫描/地理/
+                    // CPU/RAM/MAC/设备名/媒体/MaxTouch/ClientHints/陀螺仪/网络类型）
+                    FpApplyStaticSystemKeys(cfg, w->form, w->profile);
                     bool oks = FpSaveStaticJson(dd, cfg);
                 LOG(L"指纹保存 static " + std::wstring(oks ? L"OK" : L"FAIL") +
                     L" len=" + std::to_wstring(cfg.size()) + L" " + w->profile);

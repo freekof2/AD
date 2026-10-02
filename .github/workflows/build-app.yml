@@ -150,10 +150,11 @@ jobs:
           # 2a5b2. 无 ui 存档后备（k1hf7t36 实测：official 环境只有三件套，打开即默认值）：
           #      地理模式读 GeolocationSetting；白名单读 AllowScanPorts；代理账号密码读
           #      account/password；伪装 IP 读 WebRTCLocalAddress；媒体三数量按 kind 数数组；
-          #      语音按非空 TTSEngines 数组开；Canvas/WebGL 种子恒存在≠开启，留默认。
+          #      语音按非空 TTSEngines 数组开；Canvas/WebGL/Audio/ClientRect 走三级真值：
+          #      ui 存档 > static 低位键 > official 种子存在性（FpResolveNoiseSwitch）。
           foreach ($s in @("GeolocationSetting", "AllowScanPorts", "WebRTCLocalAddress",
                            """account""", """password""", """audioinput""", "TTSEngines",
-                           "恒存在")) {
+                           "FpResolveNoiseSwitch(")) {
             if ($fpcProxy -notmatch [regex]::Escape($s)) { throw "missingui-less fallback symbol '$s' in fp_ui.cpp" }
             Write-Host "uiless ok: $s"
           }
@@ -315,6 +316,30 @@ jobs:
             if ($rtcFpCpp -notmatch [regex]::Escape($s)) { throw "start-url contract '$s' missing in fingerprint.cpp" }
           }
           Write-Host "starturl contract ok"
+          # 系统扩展三层同源（读/存/应用）：OS 门控 + 噪声开关条件注入 + 官方 static 键写回
+          foreach ($s in @("FpApplyStaticSystemKeys", "FpUpdateOsGates", "FpCreateMediaDevicesJson",
+                           "FpResolveNoiseSwitch", "F_MAXTOUCH", "F_CHPLAT", "F_NETINFO")) {
+            if ($fpcProxy -notmatch [regex]::Escape($s)) { throw "system-ext contract '$s' missing in fp_ui.cpp" }
+          }
+          foreach ($s in @("FpResolveNoiseSwitch", "FpOsSupportsFlash", "FpBuildUserAgentMetadataJson",
+                           "FpBuildNoiseSunParams", "FpSeedFromFbcc", "FpNormalizeNetworkInformationType")) {
+            if ($fpImportHeader -notmatch [regex]::Escape($s)) { throw "system-ext helper '$s' missing" }
+          }
+          foreach ($s in @("FpBuildNoiseSunParams", "EnableDoNotTrack", "--disable-gpu",
+                           "--cipher-suite-blacklist=", "WebGPU,WebGPUService", "ext.settings canvas=",
+                           "HardwareConcurrency", "ScreenSize", "FlashPluginSetting", "launchArgs")) {
+            if ($rtcFpCpp -notmatch [regex]::Escape($s)) { throw "system-ext launch '$s' missing in fingerprint.cpp" }
+          }
+          Write-Host "system-ext contract ok"
+          # 负向：四噪声必须条件注入，恢复旧的无条件 sp += CanvasMark 即为回退
+          if ($rtcFpCpp -match [regex]::Escape('sp += ",\"CanvasMark\"')) {
+            throw "unconditional CanvasMark injection must not return in fingerprint.cpp"
+          }
+          Write-Host "negative-noise ok"
+          foreach ($s in @("FpOsSupportsFlash", "FpResolveNoiseSwitch(", "FpBuildNoiseSunParams(true")) {
+            if ($fpModeTests -notmatch [regex]::Escape($s)) { throw "system-ext unit case '$s' missing" }
+            Write-Host "system-ext test ok: $s"
+          }
           # (b) 地理三态 ask/allow/block + 时区 Asia/Shanghai 默认 + 默认经纬度
           foreach ($v in @("ask - ", "allow - ", "block - ", "Asia/Shanghai", "31.2304", "121.4737")) {
             if ($fpc2 -notmatch [regex]::Escape($v)) { throw "geo/tz default '$v' missing in fp_ui.cpp" }
@@ -449,11 +474,11 @@ jobs:
             if ($mcpp -match [regex]::Escape($s)) { throw "legacy LISTBOX '$s' still in main.cpp" }
             Write-Host "nolb ok: $s"
           }
-          # 2f. 指纹单页（860x640 滚动，无 Tab；数据层符号保留；去重后内容高 1744）
+          # 2f. 指纹单页（860x640 滚动，无 Tab；数据层符号保留；新增页5 后内容高 1904）
           #     A 区只留浏览器下拉 + 数据目录 + 浏览器目录（指纹目录=数据目录+环境名，不单列；
           #     内核由浏览器目录尾段推导，不单独下拉）。
           #     数据目录显示完整指纹目录（与 Config.json data_dir 同形），收集时还原成父目录。
-          foreach ($s in @("kFpWinW = 860", "kFpWinH = 640", "kFpContentW = 828", "kFpContentH = 1744",
+          foreach ($s in @("kFpWinW = 860", "kFpWinH = 640", "kFpContentW = 828", "kFpContentH = 1904",
                            "F_PDATADIR", "F_PBROWSERDIR", "F_BROWSEDATA", "F_BROWSEBROWSER",
                            "SHBrowseForFolderW", "GetOpenFileNameW", "SunBrowser.exe",
                            "FpMkScroll", "FpScrollTo", "FpScrollInit", "WS_VSCROLL",
@@ -530,7 +555,7 @@ jobs:
                            "---- 1. WebRTC", "---- 6. 分辨率", "---- 8. 硬件噪音",
                            "---- 9. WebGL", "---- 10. WebGPU", "---- 11. CPU",
                            "---- 13. 设备名称", "---- 15. Do Not Track",
-                           "---- 17. 硬件加速", "---- 19. 启动参数")) {
+                           "---- 17. 硬件加速", "---- 19. 启动参数", "---- 20. 系统扩展")) {
             if ($fpc -notmatch [regex]::Escape($s)) { throw "section anchor '$s' missing in fp_ui.cpp" }
             Write-Host "section ok: $s"
           }

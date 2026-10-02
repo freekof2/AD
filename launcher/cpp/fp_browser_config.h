@@ -100,3 +100,139 @@ inline FpImportSourceResolution FpResolveImportSourcePath(const std::wstring& ra
     out.profilePath = path + L"\\" + currentProfile;
     return out;
 }
+
+// ==== 指纹“系统”字段 + 噪声开关（读 / 存 / 应用共用，纯字符串函数便于单测） ====
+// OS 取值与指纹页 F_OS 一致：win | mac | linux | android | ios。
+inline bool FpOsIsMobile(const std::string& os) { return os == "android" || os == "ios"; }
+inline bool FpOsIsAndroid(const std::string& os) { return os == "android"; }
+inline bool FpOsIsIos(const std::string& os) { return os == "ios"; }
+// official setFlash：t.flash && "linux" !== process.platform -> PepperFlash 只在桌面 Chromium 存在
+inline bool FpOsSupportsFlash(const std::string& os) { return os == "win" || os == "mac"; }
+// official setMaxTouchPoints / setGyroscope / setNetworkInformationType 都限定移动平台
+inline bool FpOsSupportsMobileExtras(const std::string& os) { return FpOsIsMobile(os); }
+
+// 四个噪声开关统一真值：ui 侧车 > static 低位键 > official 种子存在性。
+// official setCanvasAndWebGL/setAudio/setClientRects 只在开关=1 时写
+// CanvasMark/WebGLMark/AudioFp/ClientRectFp，因此“种子存在”即代表开启。
+// uiRaw/staticRaw 传入 FpJsonGet 的原始片段（含引号或裸值），此处统一去引号。
+inline std::string FpResolveNoiseSwitch(const std::string& uiRaw,
+    const std::string& staticRaw, bool markPresent) {
+    auto val = [](const std::string& raw) -> std::string {
+        if (raw.size() >= 2 && raw.front() == '"' && raw.back() == '"')
+            return raw.substr(1, raw.size() - 2);
+        return raw;
+    };
+    const std::string u = val(uiRaw), s = val(staticRaw);
+    if (u == "1" || u == "0") return u;
+    if (s == "1" || s == "0") return s;
+    return markPresent ? "1" : "0";
+}
+
+// ---- NetworkInformationType（official normalize/get/apply 全文移植） ----
+inline std::string FpNormalizeNetworkInformationType(const std::string& v) {
+    std::string s;
+    for (unsigned char c : v) if (!std::isspace(c)) s += static_cast<char>(c);
+    if (s == "1") return "1";
+    if (s == "2") return "2";
+    return "0";
+}
+inline std::string FpNetworkChromeType(const std::string& v) {
+    const std::string n = FpNormalizeNetworkInformationType(v);
+    if (n == "1") return "wifi";
+    if (n == "2") return "cellular";
+    return "";
+}
+inline std::string FpBuildNetworkInformationStatic(const std::string& v) {
+    const std::string type = FpNetworkChromeType(v);
+    if (type.empty()) return "";
+    return "{\"enabled\":true,\"type\":" + FpBrowserConfigJsonQuote(type) + "}";
+}
+// 返回 command_line 里单个键的 JSON 值（带引号），空串表示该键应被移除
+inline std::string FpBuildAndroidBlinkFeatureValue() {
+    return "\"NetworkInformation,NetInfoDownlinkMax\"";
+}
+inline std::string FpBuildIosBlinkFeatureValue() {
+    return "\"BatteryStatus,WebBluetooth,NetworkInformation,NetInfoDownlinkMax,"
+           "WebkitTemporaryStorage,WebkitPersistentStorage\"";
+}
+
+// ---- Gyroscope（official setGyroscope：仅 Android/iPhone + chrome 内核写 static） ----
+inline std::string FpBuildGyroscopeStaticJson() {
+    return "{\"x\":[-0.15,0.15],\"y\":[-0.15,0.15],\"z\":[-0.15,0.15]}";
+}
+inline std::string FpBuildDeviceMotionStaticJson() {
+    return "{\"acceleration\":{\"x\":[-0.05,0.05],\"y\":[-0.05,0.05],\"z\":[-0.05,0.05]},"
+           "\"accelerationIncludingGravity\":{\"x\":[-0.2,0.2],\"y\":[-0.2,0.2],"
+           "\"z\":[9.78,9.81]}}";
+}
+// official deviceorientationdata 每次启动随机 alpha/beta/gamma；离线用 fbcc 种子做确定性值，
+// 避免全 0 被检测为注入。
+inline std::string FpBuildDeviceOrientationStaticJson(const std::string& fbcc) {
+    unsigned h = 2166136261u;
+    for (unsigned char c : fbcc) { h ^= c; h *= 16777619u; }
+    const int alpha = (int)(h % 360u);
+    const int beta = (int)((h >> 8) % 21u) - 10;
+    const int gamma = (int)((h >> 16) % 11u) - 5;
+    return "{\"alpha\":" + std::to_string(alpha) +
+        ",\"beta\":" + std::to_string(beta) +
+        ",\"gamma\":" + std::to_string(gamma) + ",\"absolute\":false}";
+}
+
+// ---- ClientHints -> official staticConfig.UserAgentMetadata（setClientHints） ----
+inline std::string FpBuildUserAgentMetadataJson(const std::string& platform,
+    const std::string& platformVersion, const std::string& architecture,
+    const std::string& model, const std::string& mobile /* "0"/"1" */,
+    const std::string& bitness, const std::string& wow64) {
+    std::string json = "{\"platform\":" + FpBrowserConfigJsonQuote(platform) +
+        ",\"platformVersion\":" + FpBrowserConfigJsonQuote(platformVersion) +
+        ",\"architecture\":" + FpBrowserConfigJsonQuote(architecture) +
+        ",\"model\":" + FpBrowserConfigJsonQuote(model) +
+        ",\"mobile\":" + std::string(mobile == "1" ? "true" : "false");
+    if (!bitness.empty()) json += ",\"bitness\":" + FpBrowserConfigJsonQuote(bitness);
+    if (!wow64.empty()) json += ",\"wow64\":" + (wow64 == "1" ? "true" : "false");
+    json += "}";
+    return json;
+}
+
+// ---- Flash（official setFlash：ext FlashPluginSetting = "allow"|"block"） ----
+inline std::string FpBuildFlashSettingSunParam(const std::string& mode) {
+    if (mode == "allow") return "\"FlashPluginSetting\":\"allow\"";
+    if (mode == "block") return "\"FlashPluginSetting\":\"block\"";
+    return ""; // off：官方 t.flash 为空即不注入
+}
+
+// ---- MaxTouchPoints：official 对移动端 staticConfig.MaxTouchPoints = 0 ----
+inline std::string FpNormalizeMaxTouchPoints(const std::string& v) {
+    std::string d;
+    for (unsigned char c : v) if (std::isdigit(c)) d += static_cast<char>(c);
+    if (d.empty() || d.size() > 3) return "0";
+    return d;
+}
+
+// fbcc -> 确定性种子（官方 canvasId/clientRectsId/audioId 缺失时的离线回退）
+inline int FpSeedFromFbcc(const std::string& fbcc, int min, int max) {
+    unsigned h = 2166136261u;
+    for (unsigned char c : fbcc) { h ^= static_cast<unsigned>(c); h *= 16777619u; }
+    const unsigned span = static_cast<unsigned>(max - min + 1);
+    return min + static_cast<int>(h % span);
+}
+
+// ---- 噪声开关 -> ext（sunBrowserParams）片段：只在开关=1 时输出 ----
+inline std::string FpBuildNoiseSunParams(bool canvas, bool webglImage, bool audio,
+    bool clientRects, const std::string& fbcc, const std::string& audioSeed,
+    const std::string& clientRectSeed) {
+    std::string json = "{";
+    bool first = true;
+    auto add = [&](const std::string& frag) {
+        if (!first) json += ",";
+        first = false;
+        json += frag;
+    };
+    if (canvas) add("\"CanvasMark\":" + FpBrowserConfigJsonQuote(fbcc));
+    if (webglImage) add("\"WebGLMark\":" + FpBrowserConfigJsonQuote(fbcc));
+    if (audio && !audioSeed.empty()) add("\"AudioFp\":" + audioSeed);
+    if (clientRects && !clientRectSeed.empty()) add("\"ClientRectFp\":" + clientRectSeed);
+    if (first) return "";
+    json += "}";
+    return json;
+}

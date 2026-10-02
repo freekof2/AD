@@ -757,9 +757,69 @@ std::wstring FpBuildCmdline(const std::wstring& profileDir, int port,
     }
     if (attr != INVALID_FILE_ATTRIBUTES)
         sp += ",\"CookiesFile\":\"" + JsonEscapeStr(N(wCookies)) + "\"";
-    // 运行时噪声种子：官方 canvasId?canvasId:fbccId；离线无 canvasId，直接用 fbccId
-    sp += ",\"CanvasMark\":\"" + JsonEscapeStr(fbcc) +
-          "\",\"WebGLMark\":\"" + JsonEscapeStr(fbcc) + "\"";
+    // ==== official set* 语义：按开关条件注入（此前无条件注入导致噪声关不掉、
+    //      DNT/端口/地理/CPU/RAM/屏幕/平台/Flash 等从不进 ext） ====
+    {
+        auto raw = [&](const std::string& j, const char* k) { return FpJsonGet(j, k); };
+        auto hasMark = [&](const char* k) {
+            const std::string v = raw(staticJson, k);
+            return !v.empty() && v != "\"\"" && v != "\"0\"" && v != "0";
+        };
+        auto unq = [](const std::string& v) { return N(FpJsonUnquote(v)); };
+        const bool canvas = FpResolveNoiseSwitch(raw(extraSunParamsJson, "canvas"),
+            raw(staticJson, "canvas"), hasMark("CanvasMark")) == "1";
+        const bool webglImg = FpResolveNoiseSwitch(raw(extraSunParamsJson, "webglImage"),
+            raw(staticJson, "webgl_image"), hasMark("WebGLMark")) == "1";
+        const bool audio = FpResolveNoiseSwitch(raw(extraSunParamsJson, "audio"),
+            raw(staticJson, "AudioFp"), hasMark("AudioFp")) == "1";
+        const bool rect = FpResolveNoiseSwitch(raw(extraSunParamsJson, "clientRects"),
+            raw(staticJson, "ClientRectFp"), hasMark("ClientRectFp")) == "1";
+        // 种子优先沿用官方已有值；缺失才按 fbcc 派生（ClientRectFp 数值域与官方一致）
+        std::string audioSeed = unq(raw(staticJson, "AudioFp"));
+        if (audioSeed.empty() || audioSeed == "0" || audioSeed == "default")
+            audioSeed = std::to_string(FpSeedFromFbcc(fbcc, 1, 9999));
+        std::string rectSeed = unq(raw(staticJson, "ClientRectFp"));
+        if (rectSeed.empty() || rectSeed == "default")
+            rectSeed = std::to_string(FpSeedFromFbcc(fbcc, -10000, 9999));
+        const std::string noise = FpBuildNoiseSunParams(canvas, webglImg, audio, rect,
+            fbcc, audioSeed, rectSeed);
+        if (noise.size() >= 2) sp += "," + noise.substr(1, noise.size() - 2);
+        // DoNotTrack（official setDoNotTrack -> EnableDoNotTrack:true）
+        std::string dnt = unq(raw(extraSunParamsJson, "do_not_track"));
+        if (dnt.empty()) dnt = unq(raw(staticJson, "do_not_track"));
+        if (dnt == "true") sp += ",\"EnableDoNotTrack\":true";
+        // 端口扫描（official setScanPort：0=禁扫描；否则为白名单字符串）
+        std::string allow = unq(raw(staticJson, "AllowScanPorts"));
+        if (allow.empty()) allow = unq(raw(staticJson, "allow_scan_ports"));
+        if (allow == "0") sp += ",\"AllowScanPorts\":\"0\"";
+        else if (!allow.empty()) sp += ",\"AllowScanPorts\":\"" + JsonEscapeStr(allow) + "\"";
+        // 地理（official setGEO -> GeolocationSetting）
+        std::string geo = unq(raw(staticJson, "GeolocationSetting"));
+        if (geo.empty()) geo = unq(raw(extraSunParamsJson, "location"));
+        if (geo == "ask" || geo == "allow" || geo == "block")
+            sp += ",\"GeolocationSetting\":\"" + geo + "\"";
+        // CPU/RAM（official setDoNotTrack 内的两键，官方类型为数字；default=真实值不注入）
+        const std::string cpu = unq(raw(staticJson, "HardwareConcurrency"));
+        if (!cpu.empty() && cpu != "default") sp += ",\"HardwareConcurrency\":" + cpu;
+        const std::string ram = unq(raw(staticJson, "DeviceMemory"));
+        if (!ram.empty() && ram != "default") sp += ",\"DeviceMemory\":" + ram;
+        // 屏幕（official setScreenResolution -> ScreenSize，"1920_1080" -> "1920,1080"）
+        std::string res = unq(raw(extraSunParamsJson, "screenResolution"));
+        if (res.empty()) res = unq(raw(staticJson, "ScreenSize"));
+        if (!res.empty() && res != "none") {
+            for (auto& c : res) if (c == '_') c = ',';
+            sp += ",\"ScreenSize\":\"" + JsonEscapeStr(res) + "\"";
+        }
+        // 平台（official setMaxTouchPoints 一并写 ext Platform）
+        const std::string platform = unq(raw(staticJson, "Platform"));
+        if (!platform.empty()) sp += ",\"Platform\":" + JsonEscapeStr(platform);
+        // Flash（official setFlash：桌面平台且非 off 才注入）
+        const bool desktop = platform.empty() || platform == "Win32" || platform == "MacIntel";
+        std::string flash = unq(raw(extraSunParamsJson, "flash"));
+        if (flash.empty()) flash = unq(raw(staticJson, "FlashPluginSetting"));
+        if (desktop && (flash == "allow" || flash == "block"))
+            sp += ",\"FlashPluginSetting\":\"" + flash + "\"";
+    }
     // extra 白名单合并：只允许官方 static 之外的、且非保护键的顶层键进入。
     // 白名单（与官方 sunBrowserParams 顶层键对齐，非 ui 存档全量字段）：
     // 仅 mergedExtra 显式允许的键可进 ext；ui_fingerprint.json 的 cookie/ua/lang/
@@ -859,9 +919,43 @@ std::wstring FpBuildCmdline(const std::wstring& profileDir, int port,
         if (mode == "\"disable_udp\"" || mode == "disable_udp")
             cmd += L" --webrtc-ip-handling-policy=disable_non_proxied_udp";
     }
+    // 系统开关的命令行等价实现（official setGPU / setTls / setWebGPU）：
+    //  - setGPU: ("0"===gpu && 0==+gpuSwitch || "2"===gpu) -> --disable-gpu
+    //  - setTls : tlsSwitch=="1" 且有黑名单 -> --cipher-suite-blacklist=<list>
+    //  - setWebGPU: 关闭时追加 WebGPU,WebGPUService 到 --disable-features
+    {
+        auto uiStr = [&](const char* k) {
+            return N(FpJsonUnquote(FpJsonGet(extraSunParamsJson, k)));
+        };
+        const std::string gpu = uiStr("gpu");
+        const std::string gpuSwitch = uiStr("gpuSwitch");
+        if (gpu == "2" || (gpu == "0" && gpuSwitch == "0")) cmd += L" --disable-gpu";
+        const std::string tlsOn = uiStr("tlsSwitch");
+        const std::string tlsList = uiStr("tls");
+        if (tlsOn == "1" && !tlsList.empty())
+            cmd += L" --cipher-suite-blacklist=" + W(tlsList);
+        std::string webgl = N(FpJsonUnquote(FpJsonGet(staticJson, "webgl")));
+        if (webgl.empty()) webgl = uiStr("webgl");
+        std::string wgSwitch = (uiStr("webgpu") == "disabled") ? "0" : "1";
+        std::string wgVendor = uiStr("gpu_adapterinfo_vendor");
+        if (wgVendor.empty()) {
+            const std::string cfg = FpJsonGet(staticJson, "webgl_config");
+            wgVendor = N(FpJsonUnquote(FpJsonGet(FpJsonGet(cfg, "webgpu"),
+                "gpu_adapterinfo_vendor")));
+        }
+        const bool webgpuConfigPresent = (!uiStr("webgpu").empty());
+        if (webgpuConfigPresent && (webgl != "0" || wgSwitch == "1") &&
+            (wgSwitch == "0" || (wgSwitch == "1" && wgVendor.empty())))
+            cmd += L" --disable-features=WebGPU,WebGPUService";
+    }
     cmd += L" --extended-parameters=" + W(ext);
     if (wantConsole)
         cmd += L" --enable-logging=stderr --v=0";
+    // official mergeBrowserArgs(n.args, r.userArgs, true)：自定义启动参数追加在 URL 之前
+    {
+        const std::string userArgs = N(FpJsonUnquote(FpJsonGet(extraSunParamsJson, "launchArgs")));
+        if (!userArgs.empty()) cmd += L" " + W(userArgs);
+    }
     // 起始页：Config.json 顶层 start_url；未配/非法回落 about:blank
     cmd += L" " + FpStartUrl();
     (void)port; // 端口跟随官方：命令行只传 --remote-debugging-port=0，实际值由浏览器随机写 DevToolsActivePort
@@ -1037,6 +1131,27 @@ std::string FpDiagDumpLaunch(const std::wstring& exe, const std::wstring& workDi
             std::string webglFp = FpJsonGet(dec, "WebGLFP");
             o << "\n[diag] ext.settings.timezone=" << (tz.empty() || tz == "\"\"" ? "empty" : tz)
               << " webglFP=" << (!webglFp.empty() && webglFp != "\"\"" ? "set" : "empty");
+            // 系统/噪声开关的注入现场（开关对不对一眼可见；只回显状态不回显种子值）
+            auto hasKey = [&](const char* k) {
+                return dec.find(std::string("\"") + k + "\"") != std::string::npos;
+            };
+            o << "\n[diag] ext.settings canvas=" << (hasKey("CanvasMark") ? "on" : "off")
+              << " webglImage=" << (hasKey("WebGLMark") ? "on" : "off")
+              << " audio=" << (hasKey("AudioFp") ? "on" : "off")
+              << " clientRects=" << (hasKey("ClientRectFp") ? "on" : "off")
+              << " dnt=" << (hasKey("EnableDoNotTrack") ? "on" : "off")
+              << " scan=" << (hasKey("AllowScanPorts") ? "set" : "-")
+              << " geo=" << (hasKey("GeolocationSetting") ? "set" : "-")
+              << " cpu=" << (hasKey("HardwareConcurrency") ? "set" : "-")
+              << " ram=" << (hasKey("DeviceMemory") ? "set" : "-")
+              << " screen=" << (hasKey("ScreenSize") ? "set" : "-")
+              << " platform=" << (hasKey("Platform") ? "set" : "-")
+              << " flash=" << (hasKey("FlashPluginSetting") ? "set" : "-");
+            o << "\n[diag] cmdline gpu="
+              << (cmdN.find("--disable-gpu") == std::string::npos ? "off" : "on")
+              << " tls=" << (cmdN.find("--cipher-suite-blacklist=") == std::string::npos ? "off" : "on")
+              << " webgpuDisabled=" << (cmdN.find("WebGPU,WebGPUService") == std::string::npos ? "no" : "yes")
+              << " launchArgs=" << N(FpJsonUnquote(FpJsonGet(extraSunParamsJson, "launchArgs")));
         } else {
             o << "\n[diag] ext.decode=FAIL(!!换表/编码异常，浏览器会拒绝指纹)";
         }

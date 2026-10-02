@@ -85,8 +85,20 @@ struct FpFormData {
     // 18. TLS
     std::wstring disableTls;   // close | open
     std::wstring tlsBlacklist;
-    // 19. 启动参数
+    // 19. 启动参数（官方 userArgs，追加到浏览器命令行）
     std::wstring launchArgs;
+    // 20. 系统扩展（按 F_OS 门控；official set* 语义）
+    std::wstring maxTouchPoints;   // 移动端 staticConfig.MaxTouchPoints（数字，默认 0）
+    std::wstring flashMode;        // off | allow | block -> ext FlashPluginSetting
+    std::wstring chPlatform;       // ClientHints -> static.UserAgentMetadata
+    std::wstring chPlatformVersion;
+    std::wstring chArchitecture;
+    std::wstring chModel;
+    std::wstring chMobile;         // "0" | "1"
+    std::wstring chBitness;        // "" | "32" | "64"
+    std::wstring chWow64;          // "" | "0" | "1"
+    std::wstring gyroscope;        // "0" 关 | "1" 开（Android/iPhone+chrome）
+    std::wstring netInfoType;      // "0" 关 | "1" wifi | "2" cellular
 };
 
 // 打开指纹配置模态窗口。profileName 为目录名（如 k1h60tsv_hyg6dd）。
