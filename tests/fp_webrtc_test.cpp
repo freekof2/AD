@@ -1,5 +1,6 @@
 #include "fp_webrtc.h"
 #include "fp_browser_config.h"
+#include "fp_cookies.h"
 #include <iostream>
 
 static int Check(bool condition, int line) {
@@ -161,6 +162,112 @@ int main() {
     CHECK(FpChMatchesOs("mac", "macOS"));
     CHECK(!FpChMatchesOs("win", "Android"));
     CHECK(!FpChMatchesOs("win", ""));
+
+    // ---- Cookie：规范化 / 明文转换 / Chrome 时间 / sameSite（fp_cookies.h 纯函数）----
+    CHECK(FpNormalizeCookiesJson("not json").empty());
+    CHECK(FpNormalizeCookiesJson("[{}]") == "[]");           // 无效元素丢弃
+    CHECK(FpNormalizeCookiesJson("[]") == "[]");
+    {
+        int dropped = 0;
+        const std::string n = FpNormalizeCookiesJson(
+            "[{\"name\":\"a\",\"value\":\"b\"}]", &dropped);
+        CHECK(dropped == 0);
+        auto p = FpCookieArraySplit(n);
+        CHECK(p.size() == 1);
+        CHECK(FpCookieGetStr(p[0], "name") == "a");
+        CHECK(FpCookieGetStr(p[0], "path") == "/");
+        CHECK(FpCookieGetBool(p[0], "session", false) == true);
+        CHECK(FpCookieGetBool(p[0], "httpOnly", true) == false);
+        CHECK(FpCookieGetStr(p[0], "sameSite") == "unspecified");
+    }
+    {
+        const std::string n = FpNormalizeCookiesJson(
+            "[{\"name\":\"a\",\"value\":\"v\",\"domain\":\".x.com\",\"expires\":1700000000,"
+            "\"secure\":true,\"httpOnly\":true}]");
+        auto p = FpCookieArraySplit(n);
+        CHECK(p.size() == 1);
+        CHECK(FpCookieGetStr(p[0], "domain") == ".x.com");
+        CHECK(FpCookieGetBool(p[0], "hostOnly", true) == false); // .开头 = 域 cookie
+        CHECK(FpCookieGetInt(p[0], "expires", 0) == 1700000000);
+        CHECK(FpCookieGetBool(p[0], "session", true) == false);
+        CHECK(FpCookieGetBool(p[0], "secure", false) == true);
+    }
+    {
+        const std::string n = FpNormalizeCookiesJson(
+            "[{\"name\":\"a\",\"value\":\"v\",\"domain\":\"x.com\"}]");
+        CHECK(FpCookieGetBool(FpCookieArraySplit(n)[0], "hostOnly", false) == true);
+    }
+    // value 含 } / 引号时不得截断
+    {
+        const std::string n = FpNormalizeCookiesJson("[{\"name\":\"a\",\"value\":\"x}y\\\"z\"}]");
+        auto p = FpCookieArraySplit(n);
+        CHECK(p.size() == 1);
+        CHECK(FpCookieGetStr(p[0], "value") == "x}y\"z");
+    }
+    // 明文 -> JSON：逐行 Name=Value
+    {
+        int cnt = 0;
+        const std::string n = FpCookiesTextToJson("sid=abc123\nfoo=bar\n", &cnt);
+        CHECK(cnt == 2);
+        auto p = FpCookieArraySplit(n);
+        CHECK(p.size() == 2);
+        CHECK(FpCookieGetStr(p[0], "name") == "sid");
+        CHECK(FpCookieGetStr(p[0], "value") == "abc123");
+        CHECK(FpCookieGetStr(p[1], "name") == "foo");
+        CHECK(FpCookieGetStr(p[1], "value") == "bar");
+    }
+    // 明文 -> JSON：Cookie 头
+    {
+        int cnt = 0;
+        const std::string n = FpCookiesTextToJson("Cookie: a=1; b=2", &cnt);
+        CHECK(cnt == 2);
+        auto p = FpCookieArraySplit(n);
+        CHECK(FpCookieGetStr(p[0], "name") == "a");
+        CHECK(FpCookieGetStr(p[0], "value") == "1");
+        CHECK(FpCookieGetStr(p[1], "name") == "b");
+    }
+    // 明文 -> JSON：Netscape 七列（secure 在第 4 列，过期在第 5 列）
+    {
+        int cnt = 0;
+        const std::string n = FpCookiesTextToJson(
+            ".example.com\tTRUE\t/\tTRUE\t1893456000\tsid\txyz", &cnt);
+        CHECK(cnt == 1);
+        auto p = FpCookieArraySplit(n);
+        CHECK(FpCookieGetStr(p[0], "domain") == ".example.com");
+        CHECK(FpCookieGetStr(p[0], "name") == "sid");
+        CHECK(FpCookieGetBool(p[0], "secure", false) == true);
+        CHECK(FpCookieGetInt(p[0], "expires", 0) == 1893456000);
+    }
+    // 明文 -> JSON：#HttpOnly 行，'#' 注释行跳过
+    {
+        int cnt = 0;
+        const std::string n = FpCookiesTextToJson(
+            "# Netscape HTTP Cookie File\n#HttpOnly\t.ex.com\tFALSE\t/\tFALSE\t100\tk\tv", &cnt);
+        CHECK(cnt == 1);
+        auto p = FpCookieArraySplit(n);
+        CHECK(FpCookieGetStr(p[0], "domain") == ".ex.com");
+        CHECK(FpCookieGetBool(p[0], "httpOnly", false) == true);
+        CHECK(FpCookieGetInt(p[0], "expires", 0) == 100);
+    }
+    // 已是 JSON 数组则透传
+    CHECK(FpCookieArraySplit(FpCookiesTextToJson("[{\"name\":\"a\",\"value\":\"b\"}]")).size() == 1);
+    CHECK(FpCookiesTextToJson("") == "[]");
+
+    // Chrome 时间（µs since 1601）与 unix 秒互转
+    CHECK(FpCookiesChromeFromUnixSec(11644473600LL) == 0);
+    CHECK(FpCookiesUnixFromChromeUs(0) == 0);
+    CHECK(FpCookiesChromeFromUnixSec(1700000000LL) > 0);
+    CHECK(FpCookiesUnixFromChromeUs(FpCookiesChromeFromUnixSec(1700000000LL)) == 1700000000LL);
+    // sameSite 双向（main.min.js h={"-1":"unspecified",0:"no_restriction",1:"lax",2:"strict"}）
+    CHECK(FpCookiesSameSiteToStr(0) == "no_restriction");
+    CHECK(FpCookiesSameSiteToStr(1) == "lax");
+    CHECK(FpCookiesSameSiteToStr(2) == "strict");
+    CHECK(FpCookiesSameSiteToStr(-1) == "unspecified");
+    CHECK(FpCookiesSameSiteToInt("lax") == 1);
+    CHECK(FpCookiesSameSiteToInt("Strict") == 2);
+    CHECK(FpCookiesSameSiteToInt("none") == 0);
+    CHECK(FpCookiesSameSiteToInt("Unspecified") == -1);
+    CHECK(FpCookiesSameSiteToInt("") == -1);
 
     ::WSACleanup();
     return 0;

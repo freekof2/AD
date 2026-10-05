@@ -338,6 +338,38 @@ jobs:
             throw "chPlatform must use official clientHints platform set (Windows/macOS/Linux/Android/iPhone)"
           }
           Write-Host "ch-os contract ok"
+          # Cookie 链路：编辑框明文规范化 -> 三件套 -> 直写 Chromium 库（读库一键导入）
+          $fpCookiesH = Get-Content launcher\cpp\fp_cookies.h -Raw
+          $fpCookiesCpp = Get-Content launcher\cpp\fp_cookies.cpp -Raw
+          $vcxCookie = Get-Content launcher\cpp\SunLauncher.vcxproj -Raw
+          foreach ($s in @("FpNormalizeCookiesJson", "FpCookiesTextToJson", "FpCookieArraySplit",
+                           "FpCookiesChromeFromUnixSec", "FpCookiesSameSiteToInt")) {
+            if ($fpCookiesH -notmatch [regex]::Escape($s)) { throw "cookie helper '$s' missing in fp_cookies.h" }
+          }
+          foreach ($s in @("FpCookiesImportFromBrowser", "FpCookiesWriteToBrowser",
+                           "FpCookiesBrowserRunning", "CryptUnprotectData", "BCRYPT_CHAIN_MODE_GCM",
+                           "third_party/sqlite/sqlite3.h", "BEGIN IMMEDIATE")) {
+            if ($fpCookiesCpp -notmatch [regex]::Escape($s)) { throw "cookie db '$s' missing in fp_cookies.cpp" }
+          }
+          foreach ($s in @("fp_cookies.cpp", "third_party\sqlite\sqlite3.c", "crypt32.lib", "bcrypt.lib")) {
+            if ($vcxCookie -notmatch [regex]::Escape($s)) { throw "cookie build '$s' missing in SunLauncher.vcxproj" }
+          }
+          foreach ($s in @("F_COOKIEIMPORT", "从浏览器导入", "FpCookiesWriteToBrowser",
+                           "FpCookiesImportFromBrowser", "cookieClearConfirmed")) {
+            if ($fpcProxy -notmatch [regex]::Escape($s)) { throw "cookie ui '$s' missing in fp_ui.cpp" }
+          }
+          foreach ($s in @("FpNormalizeCookiesJson(", "FpCookiesTextToJson(", "FpCookieArraySplit(")) {
+            if ($fpModeTests -notmatch [regex]::Escape($s)) { throw "cookie unit case '$s' missing" }
+          }
+          # 负向1：旧的“非 JSON 数组就拒存并回滚”不得回退（保存必须自动转换明文）
+          if ($fpcProxy -match [regex]::Escape('Cookie 不是 JSON 数组，本次未写入')) {
+            throw "cookie save must auto-convert plaintext instead of refusing"
+          }
+          # 负向2：读取必须规范化成明文 JSON（不能把原始/编码内容直接塞进编辑框）
+          if ($rtcFpCpp -notmatch [regex]::Escape('FpNormalizeCookiesJson(src)')) {
+            throw "cookie read path must normalize into plaintext JSON"
+          }
+          Write-Host "cookie contract ok"
           foreach ($s in @("FpBuildNoiseSunParams", "EnableDoNotTrack", "--disable-gpu",
                            "--cipher-suite-blacklist=", "WebGPU,WebGPUService", "ext.settings canvas=",
                            "HardwareConcurrency", "ScreenSize", "FlashPluginSetting", "launchArgs")) {
