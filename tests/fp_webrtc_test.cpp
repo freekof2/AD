@@ -210,6 +210,8 @@ int main() {
         const std::string n = FpCookiesTextToJson("sid=abc123\nfoo=bar\n", &cnt);
         CHECK(cnt == 2);
         auto p = FpCookieArraySplit(n);
+        if (p.size() != 2)
+            std::cerr << "cookie debug parts=" << p.size() << " n=[" << n << "]\n";
         CHECK(p.size() == 2);
         CHECK(FpCookieGetStr(p[0], "name") == "sid");
         CHECK(FpCookieGetStr(p[0], "value") == "abc123");
