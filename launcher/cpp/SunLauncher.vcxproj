@@ -42,7 +42,6 @@
     <ClCompile Include="fp_ui.cpp" />
     <ClCompile Include="fp_cookies.cpp" />
     <ClCompile Include="third_party\sqlite\sqlite3.c">
-      <WarningLevel>Level0</WarningLevel>
       <PreprocessorDefinitions>_CRT_SECURE_NO_WARNINGS;SQLITE_OMIT_LOAD_EXTENSION;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <CompileAs>CompileAsC</CompileAs>
     </ClCompile>
