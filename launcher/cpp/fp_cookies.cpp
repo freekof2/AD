@@ -132,6 +132,21 @@ static void AesGcmClose(BCRYPT_ALG_HANDLE alg, BCRYPT_KEY_HANDLE hKey) {
     if (hKey) ::BCryptDestroyKey(hKey);
     if (alg) ::BCryptCloseAlgorithmProvider(alg, 0);
 }
+// AES-GCM 参数块：SDK 的 BCRYPT_INIT_AUTHENTICATED_CIPHER_MODE_INFO 宏在部分头版本里
+// 被 NTDDI 守卫裁掉（实测 MSVC C3861），这里手工填等价字段（dwInfoVersion 必须置 1）。
+#ifndef BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO_VERSION
+#define BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO_VERSION 1
+#endif
+static void InitGcmInfo(BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO& info,
+    UCHAR* nonce, ULONG nonceLen, UCHAR* tag, ULONG tagLen) {
+    memset(&info, 0, sizeof(info));
+    info.cbSize = sizeof(info);
+    info.dwInfoVersion = BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO_VERSION;
+    info.pbNonce = nonce;
+    info.cbNonce = nonceLen;
+    info.pbTag = tag;
+    info.cbTag = tagLen;
+}
 // blob = "v10"/"v11" + nonce(12) + ciphertext + tag(16)
 static bool AesGcmDecryptBlob(const std::vector<unsigned char>& key,
     const unsigned char* blob, size_t blobLen, std::string& plainOut) {
@@ -152,7 +167,7 @@ static bool AesGcmDecryptBlob(const std::vector<unsigned char>& key,
     UCHAR tagBuf[16];
     memcpy(tagBuf, tag, 16);
     BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO info;
-    BCRYPT_INIT_AUTHENTICATED_CIPHER_MODE_INFO(info, iv, sizeof(iv), tagBuf, sizeof(tagBuf));
+    InitGcmInfo(info, iv, sizeof(iv), tagBuf, sizeof(tagBuf));
 
     std::vector<UCHAR> out(ctLen ? ctLen : 1);
     ULONG outLen = 0;
@@ -182,7 +197,7 @@ static bool AesGcmEncryptBlob(const std::vector<unsigned char>& key, const std::
 
     UCHAR tag[16] = {};
     BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO info;
-    BCRYPT_INIT_AUTHENTICATED_CIPHER_MODE_INFO(info, iv, sizeof(iv), tag, sizeof(tag));
+    InitGcmInfo(info, iv, sizeof(iv), tag, sizeof(tag));
 
     std::vector<UCHAR> ct(plain.size() ? plain.size() : 1);
     ULONG ctLen = 0;
