@@ -255,11 +255,13 @@ int main() {
     CHECK(FpCookieArraySplit(FpCookiesTextToJson("[{\"name\":\"a\",\"value\":\"b\"}]")).size() == 1);
     CHECK(FpCookiesTextToJson("") == "[]");
 
-    // Chrome 时间（µs since 1601）与 unix 秒互转
-    CHECK(FpCookiesChromeFromUnixSec(11644473600LL) == 0);
+    // Chrome 时间（µs since 1601-01-01）与 unix 秒互转：1970 = 1601 + 11644473600s
+    CHECK(FpCookiesChromeFromUnixSec(0) == 0);
     CHECK(FpCookiesUnixFromChromeUs(0) == 0);
+    CHECK(FpCookiesChromeFromUnixSec(1700000000LL) == 13344473600LL * 1000000LL);
     CHECK(FpCookiesChromeFromUnixSec(1700000000LL) > 0);
     CHECK(FpCookiesUnixFromChromeUs(FpCookiesChromeFromUnixSec(1700000000LL)) == 1700000000LL);
+    CHECK(FpCookiesUnixFromChromeUs(1000) == 0); // 1601 年附近的值归 0
     // sameSite 双向（main.min.js h={"-1":"unspecified",0:"no_restriction",1:"lax",2:"strict"}）
     CHECK(FpCookiesSameSiteToStr(0) == "no_restriction");
     CHECK(FpCookiesSameSiteToStr(1) == "lax");

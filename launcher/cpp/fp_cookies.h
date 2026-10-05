@@ -269,16 +269,18 @@ inline long long FpCookieGetInt(const std::string& obj, const char* key, long lo
 inline long long FpCookiesNowUnix() {
     return static_cast<long long>(std::time(nullptr));
 }
-// unix 秒 -> Chrome 微秒（自 1601-01-01 UTC）；越界返回 0
+// unix 秒 -> Chrome 微秒。Chrome epoch = 1601-01-01 UTC，1970-01-01 = 1601 + 11644473600 秒，
+// 所以是相加（写反会把 expires_utc 算到 1601 年之前，浏览器视为已过期）；越界返回 0。
 inline long long FpCookiesChromeFromUnixSec(long long unixSec) {
     const long long kEpochDiff = 11644473600LL;
     if (unixSec <= 0) return 0;
-    return (unixSec - kEpochDiff) * 1000000LL;
+    return (unixSec + kEpochDiff) * 1000000LL;
 }
 inline long long FpCookiesUnixFromChromeUs(long long chromeUs) {
     const long long kEpochDiff = 11644473600LL;
     if (chromeUs <= 0) return 0;
-    return chromeUs / 1000000LL + kEpochDiff;
+    long long v = chromeUs / 1000000LL - kEpochDiff;
+    return v > 0 ? v : 0; // 1601~1970 之间的时间没有意义，归 0
 }
 inline std::string FpCookiesSameSiteToStr(int v) {
     if (v == 0) return "no_restriction";
