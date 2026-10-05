@@ -399,6 +399,7 @@ inline std::string FpCookiesTextToJson(const std::string& raw, int* parsedOut = 
         arr += std::string(",\"httpOnly\":") + (httpOnly ? "true" : "false");
         arr += std::string(",\"secure\":") + (secure ? "true" : "false");
         if (expires > 0) arr += ",\"expires\":" + std::to_string(expires);
+        arr += "}"; // 对象必须闭合，否则 FpCookieArraySplit 扫不到配对的 }，规范化会全丢
         n++;
     };
     auto toLL = [](const std::string& s) -> long long {
