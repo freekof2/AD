@@ -4,6 +4,7 @@
 #include "fingerprint.h"
 #include "fp_webrtc.h"
 #include "fp_browser_config.h"
+#include "fp_cookies.h"
 #include <tlhelp32.h>
 
 const wchar_t* FP_C1 = L"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -203,22 +204,29 @@ bool FpLoadDynamicJson(const std::wstring& profileDir, std::string& jsonOut) {
 bool FpLoadCookiesJson(const std::wstring& profileDir, std::string& jsonOut) {
     // 官方 main.min.js setCookie 写 cookies 文件是 writeFile 明文（x(n,JSON.stringify(t))）；
     // 实测 k1c6pr18 的 cookies 文件即明文 JSON 数组。读侧兼容双格式：
-    // 换表编码能解出 JSON 则返回解码结果，否则原文是 JSON 即按明文返回。
+    // 换表编码能解出“像 JSON”的结果才按解码用（防把乱码解成垃圾），否则原文是 JSON 即明文返回。
+    // 读出后统一规范化（丢 [{}] 这类无 name 元素、补官方默认字段），保证编辑框里是明文可改的 JSON。
     std::wstring name = profileDir.substr(profileDir.find_last_of(L"\\/") + 1);
     std::wstring path = profileDir + L"\\" + W(FpCookiesName(FpFbccIdOf(name)));
     std::string raw;
     if (!FpReadTextFile(path, raw) || raw.empty()) { jsonOut.clear(); return false; }
+    auto looksJson = [](const std::string& s) {
+        size_t p = s.find_first_not_of(" \t\r\n\xEF\xBB\xBF");
+        return p != std::string::npos && (s[p] == '[' || s[p] == '{');
+    };
+    std::string src;
     std::string dec = FpDecode(raw);
-    if (!dec.empty()) { jsonOut = dec; return true; }
-    size_t nz = raw.find_first_not_of(" \t\r\n\xEF\xBB\xBF");
-    if (nz != std::string::npos && (raw[nz] == '[' || raw[nz] == '{')) {
-        jsonOut = raw.substr(nz);
-        size_t tail = jsonOut.find_last_not_of(" \t\r\n");
-        if (tail != std::string::npos) jsonOut.resize(tail + 1);
-        return !jsonOut.empty();
+    if (!dec.empty() && looksJson(dec)) src = dec;
+    else if (looksJson(raw)) {
+        size_t nz = raw.find_first_not_of(" \t\r\n\xEF\xBB\xBF");
+        src = raw.substr(nz);
+        size_t tail = src.find_last_not_of(" \t\r\n");
+        if (tail != std::string::npos) src.resize(tail + 1);
     }
-    jsonOut.clear();
-    return false;
+    if (src.empty()) { jsonOut.clear(); return false; }
+    std::string norm = FpNormalizeCookiesJson(src);
+    jsonOut = norm.empty() ? src : norm; // 对象等异常结构先原样返回，由调用方决定
+    return !jsonOut.empty();
 }
 // 写前比对 md5(文件原文) vs md5(新编码)，一致跳过（官方 FinalizeTask 逻辑）
 static bool SaveEncoded(const std::wstring& profileDir, const std::string& fileName, const std::string& jsonText) {
@@ -241,15 +249,18 @@ bool FpSaveDynamicJson(const std::wstring& profileDir, const std::string& jsonTe
 }
 bool FpSaveCookiesJson(const std::wstring& profileDir, const std::string& jsonText) {
     // 官方 main.min.js setCookie：x(n,JSON.stringify(t)) 即 writeFile 明文，无 encodeBase64。
+    // 写前规范化（丢无效元素/补官方默认字段），不是 JSON 数组则拒绝落盘（编辑框守卫已在保存链转换）。
     // 写前比对 md5(原文)，一致跳过。读侧 FpLoadCookiesJson 兼容双格式。
+    std::string norm = FpNormalizeCookiesJson(jsonText);
+    if (norm.empty()) return false;
     std::wstring name = profileDir.substr(profileDir.find_last_of(L"\\/") + 1);
     std::string fileName = FpCookiesName(FpFbccIdOf(name));
     std::wstring path = profileDir + L"\\" + W(fileName);
     std::string old;
     if (FpReadTextFile(path, old) && !old.empty()) {
-        if (FpMd5Hex(old) == FpMd5Hex(jsonText)) return true;  // 内容一致，跳过写盘
+        if (FpMd5Hex(old) == FpMd5Hex(norm)) return true;  // 内容一致，跳过写盘
     }
-    return FpWriteTextFile(path, jsonText);
+    return FpWriteTextFile(path, norm);
 }
 // ui_fingerprint.json：明文存放，不做换表编码，方便 UI 直接读写
 bool FpLoadUiExtra(const std::wstring& profileDir, std::string& jsonOut) {
@@ -1085,6 +1096,15 @@ std::string FpDiagDumpLaunch(const std::wstring& exe, const std::wstring& workDi
       << " expect=md5(fbcc+\"_webrtc\")\n";
     o << "[diag] " << DiagFileLine(profileDir, FpCookiesName(fbcc), "cf", rcC)
       << " expect=md5(fbcc+\"_cookies\")\n";
+    // cookies 内容现场：编辑框与写库用的就是这份规范化结果（条数一目了然）
+    {
+        std::string cj;
+        if (FpLoadCookiesJson(profileDir, cj) && !cj.empty())
+            o << "[diag] cf.json=ok items=" << FpCookieArraySplit(cj).size()
+              << " len=" << cj.size() << "\n";
+        else
+            o << "[diag] cf.json=empty\n";
+    }
     // sunBrowserParams 明文重建（与 FpBuildCmdline 同逻辑，只为展示，不替代 ext 真值）
     std::string staticJson, dynamicJson;
     FpLoadStaticJson(profileDir, staticJson);
@@ -1287,29 +1307,36 @@ static bool ProcCmdlineHasDir(DWORD pid, const std::wstring& dirLow) {
     ::CloseHandle(h);
     return hit;
 }
-std::vector<DWORD> FpKillProfileTree(const std::wstring& profileDir) {
-    std::vector<DWORD> killed;
+std::vector<DWORD> FpProfileBrowserProcesses(const std::wstring& profileDir) {
+    std::vector<DWORD> found;
     HANDLE snap = ::CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-    if (snap == INVALID_HANDLE_VALUE) return killed;
+    if (snap == INVALID_HANDLE_VALUE) return found;
     std::wstring dirLow = profileDir;
     for (auto& c : dirLow) c = towlower(c);
 
     PROCESSENTRY32W pe{};
     pe.dwSize = sizeof(pe);
-    if (!::Process32FirstW(snap, &pe)) { ::CloseHandle(snap); return killed; }
+    if (!::Process32FirstW(snap, &pe)) { ::CloseHandle(snap); return found; }
     do {
         std::wstring exe = pe.szExeFile;
         for (auto& c : exe) c = towlower(c);
         if (exe != L"sunbrowser.exe" && exe != L"chrome.exe") continue;
         if (pe.th32ProcessID <= 4) continue;
-        // 精确匹配该 profile 命令行才杀；读不到命令行则跳过（不全杀，避免误伤其它 profile）
-        if (!ProcCmdlineHasDir(pe.th32ProcessID, dirLow)) continue;
-        HANDLE h = ::OpenProcess(PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION,
-            FALSE, pe.th32ProcessID);
-        if (!h) continue;
-        if (::TerminateProcess(h, 0)) killed.push_back(pe.th32ProcessID);
-        ::CloseHandle(h);
+        if (ProcCmdlineHasDir(pe.th32ProcessID, dirLow)) found.push_back(pe.th32ProcessID);
     } while (::Process32NextW(snap, &pe));
     ::CloseHandle(snap);
+    return found;
+}
+std::vector<DWORD> FpKillProfileTree(const std::wstring& profileDir) {
+    std::vector<DWORD> killed;
+    std::vector<DWORD> pids = FpProfileBrowserProcesses(profileDir);
+    for (DWORD pid : pids) {
+        // 读不到命令行的进程不会进列表（不全杀，避免误伤其它 profile）
+        HANDLE h = ::OpenProcess(PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION,
+            FALSE, pid);
+        if (!h) continue;
+        if (::TerminateProcess(h, 0)) killed.push_back(pid);
+        ::CloseHandle(h);
+    }
     return killed;
 }

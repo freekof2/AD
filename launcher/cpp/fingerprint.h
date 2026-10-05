@@ -110,3 +110,5 @@ bool FpDiagEnvAuth(std::string& detailOut);
 // 先找 --user-data-dir 指向该 profile 的 SunBrowser 进程（Toolhelp 快照比对命令行），
 // 找不到再退回结束 launcher 自己拉起的句柄。返回实际结束的 pid 列表。
 std::vector<DWORD> FpKillProfileTree(const std::wstring& profileDir);
+// 同一匹配条件，只列不杀：写 Chromium cookie 库前判断“浏览器是否开着”。
+std::vector<DWORD> FpProfileBrowserProcesses(const std::wstring& profileDir);

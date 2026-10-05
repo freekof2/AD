@@ -31,7 +31,8 @@
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
-      <AdditionalDependencies>comctl32.lib;ws2_32.lib;shell32.lib;ole32.lib;comdlg32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <!-- crypt32 = CryptUnprotectData/CryptStringToBinaryA（读 os_crypt 密钥）；bcrypt = AES-GCM -->
+      <AdditionalDependencies>comctl32.lib;ws2_32.lib;shell32.lib;ole32.lib;comdlg32.lib;crypt32.lib;bcrypt.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
@@ -39,11 +40,19 @@
     <ClCompile Include="util.cpp" />
     <ClCompile Include="fingerprint.cpp" />
     <ClCompile Include="fp_ui.cpp" />
+    <ClCompile Include="fp_cookies.cpp" />
+    <ClCompile Include="third_party\sqlite\sqlite3.c">
+      <WarningLevel>Level0</WarningLevel>
+      <PreprocessorDefinitions>_CRT_SECURE_NO_WARNINGS;SQLITE_OMIT_LOAD_EXTENSION;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <CompileAs>CompileAsC</CompileAs>
+    </ClCompile>
     <ClInclude Include="SunLauncher.h" />
     <ClInclude Include="fingerprint.h" />
     <ClInclude Include="fp_ui.h" />
     <ClInclude Include="fp_webrtc.h" />
     <ClInclude Include="fp_browser_config.h" />
+    <ClInclude Include="fp_cookies.h" />
+    <ClInclude Include="third_party\sqlite\sqlite3.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
 </Project>
