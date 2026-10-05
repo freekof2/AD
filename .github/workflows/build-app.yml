@@ -30,6 +30,7 @@ on:
   push:
     paths:
       - "launcher/**"
+      - "tests/**"
       - "ports.json"
       - ".github/workflows/build-app.yml"
 permissions:
