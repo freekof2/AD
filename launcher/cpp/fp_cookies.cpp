@@ -69,40 +69,50 @@ static bool UnprotectDpapi(const std::vector<unsigned char>& in, std::vector<uns
     ::LocalFree(o.pbData);
     return true;
 }
-// Local State -> os_crypt.encrypted_key（base64）-> 去 "DPAPI" 头 -> DPAPI 解出 AES 密钥
-static bool LoadOsCryptKey(const std::wstring& localStatePath, std::vector<unsigned char>& keyOut) {
+// Local State -> os_crypt.encrypted_key（base64）-> 去 "DPAPI" 头 -> DPAPI 解出 AES 密钥。
+// errOut 写具体失败环节，方便从 debug.log 直接定位（不要笼统地报“读不到密钥”）。
+static bool LoadOsCryptKey(const std::wstring& localStatePath,
+    std::vector<unsigned char>& keyOut, std::string& errOut) {
     bool ok = false;
     std::string txt = FileBytes(localStatePath, ok);
-    if (!ok || txt.empty()) return false;
+    if (!ok || txt.empty()) { errOut = "Local State 读不到或为空"; return false; }
     const std::string marker = "\"encrypted_key\"";
     size_t p = txt.find(marker);
-    if (p == std::string::npos) return false;
-    p = txt.find('"', p + marker.size());
-    if (p == std::string::npos) return false;
-    p = txt.find(':', p);
-    if (p == std::string::npos) return false;
-    size_t q1 = txt.find('"', p);
-    if (q1 == std::string::npos) return false;
+    if (p == std::string::npos) { errOut = "Local State 里没有 os_crypt.encrypted_key"; return false; }
+    // 顺序必须是“键名 -> 冒号 -> 值的开引号”。原来先找引号再找冒号，会跳到后面的键上，
+    // 实测取到 is_biometric_available 之类字段，DPAPI 必失败（导入报“无法读取 cookie”）。
+    size_t colon = txt.find(':', p + marker.size());
+    if (colon == std::string::npos) { errOut = "encrypted_key 后找不到冒号"; return false; }
+    size_t q1 = txt.find('"', colon);
+    if (q1 == std::string::npos) { errOut = "encrypted_key 值缺少开引号"; return false; }
     size_t q2 = txt.find('"', q1 + 1);
-    if (q2 == std::string::npos) return false;
+    if (q2 == std::string::npos) { errOut = "encrypted_key 值缺少闭引号"; return false; }
     std::string b64 = txt.substr(q1 + 1, q2 - q1 - 1);
-    if (b64.empty()) return false;
+    if (b64.empty()) { errOut = "encrypted_key 值为空"; return false; }
 
     DWORD len = 0;
     if (!::CryptStringToBinaryA(b64.c_str(), (DWORD)b64.size(), CRYPT_STRING_BASE64,
-            NULL, &len, NULL, NULL) || len < 6)
+            NULL, &len, NULL, NULL) || len < 6) {
+        errOut = "encrypted_key base64 解码失败";
         return false;
+    }
     std::vector<unsigned char> blob(len);
     DWORD used = 0;
     if (!::CryptStringToBinaryA(b64.c_str(), (DWORD)b64.size(), CRYPT_STRING_BASE64,
-            blob.data(), &len, &used, NULL))
+            blob.data(), &len, &used, NULL)) {
+        errOut = "encrypted_key base64 解码失败";
         return false;
+    }
     blob.resize(len);
     // 头 5 字节 = "DPAPI"
     if (blob.size() > 5 && blob[0] == 'D' && blob[1] == 'P' && blob[2] == 'A' &&
         blob[3] == 'P' && blob[4] == 'I')
         blob.erase(blob.begin(), blob.begin() + 5);
-    return UnprotectDpapi(blob, keyOut);
+    if (!UnprotectDpapi(blob, keyOut)) {
+        errOut = "DPAPI 解密 os_crypt 密钥失败（换机器/换账户后需要重新登录一次）";
+        return false;
+    }
+    return true;
 }
 
 static bool AesGcmOpen(const std::vector<unsigned char>& key, BCRYPT_ALG_HANDLE* algOut,
@@ -271,8 +281,8 @@ bool FpCookiesImportFromBrowser(const std::wstring& profileDir, std::string& jso
         return false;
     }
     std::vector<unsigned char> key;
-    if (!LoadOsCryptKey(LocalStatePath(profileDir), key)) {
-        errOut = "读不到 Local State 的 os_crypt 密钥，无法解密 cookie";
+    if (!LoadOsCryptKey(LocalStatePath(profileDir), key, errOut)) {
+        if (errOut.empty()) errOut = "读不到 Local State 的 os_crypt 密钥，无法解密 cookie";
         return false;
     }
 
@@ -391,8 +401,8 @@ bool FpCookiesWriteToBrowser(const std::wstring& profileDir, const std::string& 
         return false;
     }
     std::vector<unsigned char> key;
-    if (!LoadOsCryptKey(LocalStatePath(profileDir), key)) {
-        errOut = "读不到 Local State 的 os_crypt 密钥，无法加密 cookie";
+    if (!LoadOsCryptKey(LocalStatePath(profileDir), key, errOut)) {
+        if (errOut.empty()) errOut = "读不到 Local State 的 os_crypt 密钥，无法加密 cookie";
         return false;
     }
     int dropped = 0;
