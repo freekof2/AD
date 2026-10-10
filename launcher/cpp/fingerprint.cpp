@@ -714,6 +714,18 @@ std::wstring FpBuildCmdline(const std::wstring& profileDir, int port,
         const std::string rtcParams = FpBuildWebRtcSunParams(rtc);
         if (rtcParams.size() >= 2)
             sp += "," + rtcParams.substr(1, rtcParams.size() - 2);
+        // official IS_DISABLE_SAVE_PWD -> sunBrowserParams.WebRTCLocalAddress：
+        // 伪造 host 候选里的本机内网地址（chrome.dll 该键与 WebRTCAddress 同一张键表）。
+        // 只在 proxy/forward 写（官方就是写在这个 if 里面），地址做可见 ASCII 校验。
+        if (mode == "proxy" || mode == "forward") {
+            const std::string local = unquote(FpJsonGet(staticJson, "WebRTCLocalAddress"));
+            bool ok = !local.empty();
+            for (size_t i = 0; ok && i < local.size(); i++) {
+                unsigned char c = (unsigned char)local[i];
+                if (c < 0x21 || c > 0x7e || c == '"' || c == '\\') ok = false;
+            }
+            if (ok) sp += ",\"WebRTCLocalAddress\":\"" + JsonEscapeStr(local) + "\"";
+        }
     }
     // official setTimezone 写 sunBrowserParams.TimeZone；static 中的 timezone 小写键
     // 单独存在不会让浏览器 timezone override 生效。
@@ -916,12 +928,11 @@ std::wstring FpBuildCmdline(const std::wstring& profileDir, int port,
         L" --protected-disable-safe-open";
     if (!proxyArg.empty())
         cmd += L" " + W(proxyArg); // 代理开关（官方 setProxy 非 CANVAS 分支；密码不记 diag）
-    // 官方 setProxy 同步追加（main.min.js 实测原文）：代理直连云端域名不过代理，
-    // C=["https://download.adspower.net","start.adspower.net","sys.adspower.net"]
-    // (+ignoreAgentConfig/+*.fbcdn.net)。离线固定三项即可；缺了它会导致 localhost/
-    // DevTools 走代理回环失败（127.0.0.1:1200 类本地代理最敏感）。
-    if (!proxyArg.empty())
-        cmd += L" --proxy-bypass-list=https://download.adspower.net;start.adspower.net;sys.adspower.net";
+    // 彻底禁止访问 adspower 网站：官方 setProxy 会追加 --proxy-bypass-list=<三个云端域名>
+    // 那等于把它们排除出代理、放行直连；这里既不放行直连，也用 host-resolver-rules 让域名
+    // 解析直接失败（直连与“本地解析后再连代理”的场景都会失败）。域名只出现在这条封禁规则里，
+    // 由 CI 契约按作用域校验（规则行以外出现即判定回退）。
+    cmd += L" --host-resolver-rules=\"MAP adspower.net ~NOTFOUND, MAP *.adspower.net ~NOTFOUND\"";
     // 语言：官方 LanguageTask.setUILanguage win32 分支必推 --lang=<单tag>。
     // 缺了它浏览器 UI 跟随系统（中文系统即显示中文），与指纹语言列表脱节。
     // 推导见 FpResolveLangArg：switch==1 用 getUILanguage(language)，==0 用 pageLanguage单tag。
@@ -1207,6 +1218,8 @@ std::string FpDiagDumpLaunch(const std::wstring& exe, const std::wstring& workDi
           << " dynamic.disabled=" << (dynamicDisable.empty() ? "(absent)" : dynamicDisable)
           << " static.address=" << (!staticAddress.empty() && staticAddress != "\"\"" ? "set" : "empty")
           << " dynamic.address=" << (!dynamicAddress.empty() && dynamicAddress != "\"\"" ? "set" : "empty")
+          << " local=" << (FpJsonGet(staticJson, "WebRTCLocalAddress") != "\"\"" &&
+                           FpJsonGet(staticJson, "WebRTCLocalAddress").size() >= 2 ? "set" : "empty")
           << " udpPolicy=" << (cmdN.find("--webrtc-ip-handling-policy=disable_non_proxied_udp") == std::string::npos ? "absent" : "set")
           << " udpSocks5=" << (FpJsonGet(staticJson, "WebRTCSocks5UdpProxy").size() >= 2 ? "set" : "absent")
           << "\n";
@@ -1229,7 +1242,9 @@ std::string FpDiagDumpLaunch(const std::wstring& exe, const std::wstring& workDi
         }
         o << "[diag] proxy.static=" << pcHead << "\n";
         o << "[diag] proxy.arg=" << pa << "\n";
-        // bypass 现场：缺了它，localhost/DevTools 会被迫走代理（127 类本地代理最敏感）
+        // adspower 封锁现场：host-resolver-rules 必须存在（域名解析成不存在）；
+        // proxy.bypass 必须为空 —— 官方那条 bypass 是“放行直连”，已按要求移除。
+        o << "[diag] resolver=" << DiagArgOf(cmdN, "--host-resolver-rules=") << "\n";
         o << "[diag] proxy.bypass=" << DiagArgOf(cmdN, "--proxy-bypass-list=") << "\n";
         // 语言现场：三键 + --lang 推导（浏览器中文/英文显示即它决定）
         {

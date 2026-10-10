@@ -252,7 +252,8 @@ std::string FpFormToUiJson(const FpFormData& f) {
     o += ",\"proxyPort\":\"" + JEsc(f.proxyPort) + "\",\"proxyUser\":\"" + JEsc(f.proxyUser) + "\"";
     o += ",\"proxyPass\":\"" + JEsc(f.proxyPass) + "\"";
     o += ",\"cookie\":\"" + JEsc(f.cookie) + "\",\"remark\":\"" + JEsc(f.remark) + "\"";
-    o += ",\"webrtc\":\"" + JEsc(f.webrtc) + "\",\"webrtcIp\":\"" + JEsc(f.webrtcIp) + "\"";
+    o += ",\"webrtc\":\"" + JEsc(f.webrtc) + "\",\"webrtcIp\":\"" + JEsc(f.webrtcIp) +
+         "\",\"webRtcLocalAddress\":\"" + JEsc(f.webRtcLocal) + "\"";
     o += ",\"timezoneMode\":\"" + JEsc(f.timezoneMode) + "\"";
     o += ",\"timezone\":\"" + JEsc(f.timezone) + "\",\"geoMode\":\"" + JEsc(f.geoMode) + "\"";
     o += ",\"geoIp\":\"" + JEsc(f.geoIp) + "\",\"lat\":\"" + JEsc(f.lat) + "\",\"lng\":\"" + JEsc(f.lng) + "\"";
@@ -314,6 +315,7 @@ bool FpFormFromUiJson(const std::string& json, FpFormData& f) {
     FJSet(&FpFormData::remark, json, "remark", f);
     FJSet(&FpFormData::webrtc, json, "webrtc", f);
     FJSet(&FpFormData::webrtcIp, json, "webrtcIp", f);
+    FJSet(&FpFormData::webRtcLocal, json, "webRtcLocalAddress", f);
     FJSet(&FpFormData::timezoneMode, json, "timezoneMode", f);
     FJSet(&FpFormData::timezone, json, "timezone", f);
     FJSet(&FpFormData::geoMode, json, "geoMode", f);
@@ -577,7 +579,8 @@ std::string FpFormToFpConfig(const FpFormData& f) {
         std::string(rtc.disableWebRtc ? "true" : "false") + ",\"WebRTCAddress\":\"" +
         JEsc(rtc.address) + "\",\"automatic_timezone\":\"" + tz + "\"";
     if (f.webrtc == L"forward")
-        o += ",\"WebRTCStun\":\"stun:stun.l.google.com:19302\",\"WebRTCTurn\":\"stun:stun.l.google.com:19302\"";
+        o += ",\"WebRTCStun\":\"" + std::string(FpWebRtcStunServer()) +
+             "\",\"WebRTCTurn\":\"" + std::string(FpWebRtcStunServer()) + "\"";
     o += ",\"tzAuto\":\"" + tz + "\"";
     if (tz == "0") {
         std::string tzn = FpNormalizeTimezone(N(f.timezone));
@@ -711,7 +714,7 @@ enum FpCtl {
     F_PDATADIR, F_PBROWSERDIR, F_BROWSEDATA, F_BROWSEBROWSER, // A2 目录+浏览（数据目录单行，内核由浏览器目录推导）
     F_PTYPE, F_PHOST, F_PPORT, F_PUSER, F_PPASS, F_PTEST, F_PSAVE, F_PSTATUS,
     F_COOKIE, F_MERGECOOKIE, F_COOKIEIMPORT, F_REMARK,
-    F_WEBRTC, F_WEBRTCIP, F_TZM, F_TZ, F_GEOM, F_GEOIP, F_LAT, F_LNG, F_ACC,
+    F_WEBRTC, F_WEBRTCIP, F_WEBRTCLOCAL, F_TZM, F_TZ, F_GEOM, F_GEOIP, F_LAT, F_LNG, F_ACC,
     F_LANGM, F_LANGLIST, F_UILANG, F_PAGELANG,
     F_RESM, F_RES, F_RESW, F_RESH,
     F_FONTM, F_FONTS, F_SHUFFLEFONTS,
@@ -1093,6 +1096,9 @@ static void FpBuildPages(FpWnd* w, HWND p, HINSTANCE hi) {
     FpComboAdd(w->ctl[F_WEBRTC - F_BASE], L"disable_udp - 禁用UDP");
     FpMkLabel(p, w, F_WEBRTCIP, L"伪装IP", 350, 482, 65);
     FpMkEdit(p, w, F_WEBRTCIP, 420, 480, 250);
+    // official WebRTCLocalAddress：伪造 host 候选的本机内网地址（proxy/forward 才写 ext）
+    FpMkLabel(p, w, F_WEBRTCLOCAL, L"本机IP", 670, 482, 58);
+    FpMkEdit(p, w, F_WEBRTCLOCAL, 732, 480, 96);
     ::SendMessageW(w->ctl[F_WEBRTCIP - F_BASE], EM_SETCUEBANNER, TRUE,
         (LPARAM)L"proxy 模式填写 IPv4 / IPv6 地址");
     FpMkLabel(p, w, F_TZM, L"时区模式", 12, 524, 80);
@@ -1296,6 +1302,11 @@ static std::wstring FpFirstTok(const std::wstring& s) {
 }
 // 系统扩展字段按指纹“系统”门控（official set* 只在对应平台生效）：
 // Flash 仅 win/mac；MaxTouch/陀螺仪/网络类型 仅 Android/iPhone，陀螺仪还需 chrome 内核。
+// official setWebRTC：伪装IP 与 WebRTCLocalAddress 都只在 proxy/forward 分支写 ext，
+// 其它模式（disabled/disable_udp）这两个框给值也没用，直接禁用避免误导。
+static bool FpWebRtcUsesIp(const std::wstring& mode) {
+    return mode.empty() || mode == L"proxy" || mode == L"forward";
+}
 static void FpUpdateOsGates(FpWnd* w, const std::wstring& osValue) {
     auto C = [&](int id) { return w->ctl[id - F_BASE]; };
     const std::string os = N(osValue);
@@ -1382,8 +1393,10 @@ static void FpFill(FpWnd* w) {
     FpSet(C(F_REMARK), f.remark);
     selByVal(F_WEBRTC, f.webrtc.empty() ? L"proxy" : f.webrtc);
     FpSet(C(F_WEBRTCIP), f.webrtcIp);
-    // 官方 setWebRTC：proxy/forward 都会用 t.ip 写 ext WebRTCAddress，所以转发也要能填
-    ::EnableWindow(C(F_WEBRTCIP), f.webrtc.empty() || f.webrtc == L"proxy" || f.webrtc == L"forward");
+    FpSet(C(F_WEBRTCLOCAL), f.webRtcLocal);
+    // official setWebRTC：proxy/forward 都会用 t.ip 写 ext WebRTCAddress，所以转发也要能填
+    ::EnableWindow(C(F_WEBRTCIP), FpWebRtcUsesIp(f.webrtc));
+    ::EnableWindow(C(F_WEBRTCLOCAL), FpWebRtcUsesIp(f.webrtc));
     selByVal(F_TZM, f.timezoneMode.empty() ? L"custom" : f.timezoneMode);
     // 时区下拉是精确匹配：先归一为空格→下划线，兼容旧存档里的空格格式
     //（如 "America/New York"），否则会回退到首项 Etc/GMT+12。
@@ -1572,6 +1585,7 @@ static void FpCollect(FpWnd* w) {
     f.remark = FpGet(C(F_REMARK));
     f.webrtc = FpFirstTok(FpComboGet(C(F_WEBRTC)));
     f.webrtcIp = FpGet(C(F_WEBRTCIP));
+    f.webRtcLocal = FpGet(C(F_WEBRTCLOCAL));
     f.timezoneMode = FpFirstTok(FpComboGet(C(F_TZM)));
     f.timezone = FpComboGet(C(F_TZ));
     f.geoMode = FpFirstTok(FpComboGet(C(F_GEOM)));
@@ -1850,6 +1864,35 @@ static void FpApplyStaticSystemKeys(std::string& sj, const FpFormData& f,
             L" buildDate=" + std::to_wstring(buildDate) +
             L" mode=" + f.webrtc + L" " + profileName);
     }
+
+    // 13) WebRTCStun/WebRTCTurn 只属于 forward（official setWebRTC 只在 forward 分支写）。
+    //     保存链是“cfg 有键才覆盖、cfg 没有的键保留”，所以切到非 forward 时必须显式删，
+    //     否则会把上一次 forward 留下的 Google STUN 残留在 static 里（实测踩到）。
+    if (f.webrtc == L"forward") {
+        const std::string stun = FpBrowserConfigJsonQuote(FpWebRtcStunServer());
+        set(sj, "WebRTCStun", stun);
+        set(sj, "WebRTCTurn", stun);
+    } else {
+        del(sj, "WebRTCStun");
+        del(sj, "WebRTCTurn");
+    }
+    LOG(L"WebRTC stun=" +
+        (f.webrtc == L"forward" ? std::wstring(L"forward保留") : std::wstring(L"非forward已删")) +
+        L" mode=" + f.webrtc + L" " + profileName);
+
+    // 14) WebRTCLocalAddress（伪造 host 候选里的本机内网地址）：
+    //     official 只在 proxy/forward 分支写 sunBrowserParams，且地址必须合法；
+    //     其它模式或留空一律清掉，避免上一次的值残留（保存链是合并，不删就会留着）。
+    {
+        const std::wstring local = FpTrimWebRtcIp(f.webRtcLocal);
+        const bool modeOk = (f.webrtc == L"proxy" || f.webrtc == L"forward");
+        if (modeOk && !local.empty() && FpIsValidWebRtcIp(local))
+            set(sj, "WebRTCLocalAddress", FpBrowserConfigJsonQuote(N(local)));
+        else
+            del(sj, "WebRTCLocalAddress");
+        LOG(L"WebRTC local=" + (local.empty() ? std::wstring(L"(空)") : local) +
+            L" mode=" + f.webrtc + L" " + profileName);
+    }
 }
 // fp_ui.cpp — part 6/6：模态窗口过程 + 保存 + 导入
 static LRESULT CALLBACK FpWndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
@@ -2092,19 +2135,23 @@ static LRESULT CALLBACK FpWndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
                         w->form.swClientRects = FpResolveNoiseSwitch(
                             FpJsonGet(ui, "clientRects"), FpJsonGet(sj, "ClientRectFp"), hasMark("ClientRectFp")) == "1";
                     }
-                    // WebRTC 回填：ui 模式优先；缺 IP 时按 WebRTCAddress -> WebRTCLocalAddress
-                    // 顺序从 static/dynamic 补（official static 只有后者）。
+                    // WebRTC 回填：ui 模式优先；缺 IP 时按 WebRTCAddress 从 static/dynamic 补
+                    //（official static 只有后者）。WebRTCLocalAddress 走独立的「本机IP」字段，
+                    // 不再当伪装IP 后备 —— 否则清空伪装IP 时会把内网地址冒充成代理 IP 落到 Config.json。
                     std::string uiWr = FpJsonGet(ui, "webrtc");
                     std::string uiWrIp = FpJsonGet(ui, "webrtcIp");
                     std::string wrAddress = FpJsonGet(sj, "WebRTCAddress");
                     if (wrAddress.empty() || wrAddress == "\"\"") wrAddress = FpJsonGet(dj, "WebRTCAddress");
-                    if ((wrAddress.empty() || wrAddress == "\"\"")) {
-                        std::string wrLocal = FpJsonGet(sj, "WebRTCLocalAddress");
-                        if (wrLocal.size() >= 2 && wrLocal.front() == '"' && wrLocal != "\"\"")
-                            wrAddress = wrLocal;
-                    }
                     if ((uiWrIp.empty() || uiWrIp == "\"\"") && wrAddress.size() >= 2 && wrAddress.front() == '"')
                         w->form.webrtcIp = WJ(wrAddress);
+                    // 本机IP：ui 有值就用，否则回读 static 的 WebRTCLocalAddress
+                    {
+                        const std::string uiLocal = FpJsonGet(ui, "webRtcLocalAddress");
+                        const std::string local = (uiLocal.size() >= 2 && uiLocal.front() == '"')
+                            ? uiLocal : FpJsonGet(sj, "WebRTCLocalAddress");
+                        if (local.size() >= 2 && local.front() == '"' && local != "\"\"")
+                            w->form.webRtcLocal = WJ(local);
+                    }
                     // Config.json 最高优先：exe 同目录按环境名对应的伪装 IP（有效才覆盖）
                     {
                         std::string cfgIp = FpConfigSpoofIpRaw(w->profile);
@@ -2354,8 +2401,8 @@ static LRESULT CALLBACK FpWndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
         if (id == F_WEBRTC && (code == CBN_SELCHANGE || code == CBN_SELENDOK)) {
             FpCollect(w);
             // forward 同样需要伪装IP（official ["proxy","forward"] 共用 t.ip）
-            ::EnableWindow(C(F_WEBRTCIP),
-                w->form.webrtc.empty() || w->form.webrtc == L"proxy" || w->form.webrtc == L"forward");
+            ::EnableWindow(C(F_WEBRTCIP), FpWebRtcUsesIp(w->form.webrtc));
+            ::EnableWindow(C(F_WEBRTCLOCAL), FpWebRtcUsesIp(w->form.webrtc));
             return 0;
         }
         // 浏览器类型联动浏览器目录：切 sun/flower 时按尾段目录名规则自动建议
@@ -2750,13 +2797,16 @@ static LRESULT CALLBACK FpWndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
                     std::string uiWrIp = FpJsonGet(ui2, "webrtcIp");
                     std::string wrAddress = FpJsonGet(sj2, "WebRTCAddress");
                     if (wrAddress.empty() || wrAddress == "\"\"") wrAddress = FpJsonGet(dj2, "WebRTCAddress");
-                    if ((wrAddress.empty() || wrAddress == "\"\"")) {
-                        std::string wrLocal = FpJsonGet(sj2, "WebRTCLocalAddress");
-                        if (wrLocal.size() >= 2 && wrLocal.front() == '"' && wrLocal != "\"\"")
-                            wrAddress = wrLocal;
-                    }
                     if ((uiWrIp.empty() || uiWrIp == "\"\"") && wrAddress.size() >= 2 && wrAddress.front() == '"')
                         w->form.webrtcIp = WJ(wrAddress);
+                    // 本机IP：与打开回填同表（WebRTCLocalAddress 不再冒充伪装IP）
+                    {
+                        const std::string uiLocal = FpJsonGet(ui2, "webRtcLocalAddress");
+                        const std::string local = (uiLocal.size() >= 2 && uiLocal.front() == '"')
+                            ? uiLocal : FpJsonGet(sj2, "WebRTCLocalAddress");
+                        if (local.size() >= 2 && local.front() == '"' && local != "\"\"")
+                            w->form.webRtcLocal = WJ(local);
+                    }
                     // Config.json 最高优先（与打开回填同表，键为当前环境名）
                     {
                         std::string cfgIp = FpConfigSpoofIpRaw(w->profile);

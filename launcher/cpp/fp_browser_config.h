@@ -262,6 +262,10 @@ inline int FpSeedFromFbcc(const std::string& fbcc, int min, int max) {
     return min + static_cast<int>(h % span);
 }
 
+// ---- WebRTC：official setWebRTC 只在 forward 写的 STUN/TURN（main.min.js 133639 常量）----
+// 两个键同值且都是 stun:（不是 turn:），所以「转发」不是中继，只是显式挂公网 STUN。
+inline const char* FpWebRtcStunServer() { return "stun:stun.l.google.com:19302"; }
+
 // ---- WebRTC：disable_udp 的官方二选一（main.min.js setWebRTC 59832）----
 // 官方条件：chrome 内核 && kernel>=145 && browserVersion>=20260422 && proxyType==socks5
 //   命中 -> staticConfig.WebRTCSocks5UdpProxy{host,port,account,password}（UDP 走 SOCKS5，不禁用）

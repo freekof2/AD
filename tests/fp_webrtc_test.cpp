@@ -28,6 +28,9 @@ int main() {
     // 转发填了非法 IP：忽略该值但不关 WebRTC
     const FpWebRtcResolution forwardBad = FpResolveWebRtc(L"forward", L"192.0.2.999");
     CHECK(!forwardBad.disableWebRtc && forwardBad.address.empty() && forwardBad.proxyIpIgnored);
+    // forward 独有的 STUN/TURN 常量（official main.min.js 133639；两个都是 stun: 不是 turn:）
+    CHECK(std::string(FpWebRtcStunServer()) == "stun:stun.l.google.com:19302");
+
     // disable_udp 官方二选一的判定（main.min.js setWebRTC 的三个条件）
     CHECK(FpBrowserKernelFromDirLeaf("chrome_152") == 152);
     CHECK(FpBrowserKernelFromDirLeaf("flower_100") == 100);

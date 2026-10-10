@@ -77,9 +77,9 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          # 1. C++ 不得引用云端域名 / token / 云端路由（web-ui 已删除，查 C++ 三文件）
-          #    例外：代理 bypass 名单三域名（download/start/sys.adspower.net）是官方要求直连项，
-          #    只许出现在 proxy-bypass-list 上下文，单独校验作用域。
+          # 1. C++ 不得引用云端域名 / token / 云端路由（web-ui 已删除，查 C++ 源文件）
+          #    禁止访问任何 adspower 网站：域名字符串只允许出现在 host-resolver-rules
+          #    这一条封禁规则里（把域名解析成 ~NOTFOUND），别处一律视为回退。
           $banned = @("adspower.com", "adspowerapp.com", "loginkits.com", "xmp.one",
                       "acczing.com", "login-token", "apiKey", "api-key", "get-token",
                       "/api/v1/", "/api/v2/", "/api/tabAssistant", "ENV-",
@@ -91,9 +91,12 @@ jobs:
             }
             Write-Host "clean: $f"
           }
-          $fpBypassScope = (Get-Content launcher\cpp\fingerprint.cpp -Raw) -replace 'download\.adspower\.net|start\.adspower\.net|sys\.adspower\.net', ''
-          if ($fpBypassScope -match [regex]::Escape("adspower.net")) { throw "banned string 'adspower.net' outside proxy-bypass list" }
-          Write-Host "bypass-domain scope ok (only proxy-bypass-list)"
+          # adspower 封锁：域名只准在封锁规则那一行出现；官方那条 bypass 放行必须已移除
+          $fpNoBlock = ((Get-Content launcher\cpp\fingerprint.cpp -Raw) -split "`n" |
+                        Where-Object { $_ -notmatch 'host-resolver-rules' }) -join "`n"
+          if ($fpNoBlock -match 'adspower\.net') { throw "adspower domain outside host-resolver-rules" }
+          if ($fpNoBlock -match [regex]::Escape('--proxy-bypass-list=https')) { throw "adspower bypass allowlist must stay removed" }
+          Write-Host "adspower domain scope ok (block-list only)"
           # 2. C++ 指纹模块必备符号（换表/三件套/注入/树杀/侧车）
           $cpp = Get-Content launcher\cpp\fingerprint.cpp -Raw
           foreach ($s in @("FpEncode", "FpDecode", "FpMd5Hex", "FpBuildCmdline", "FpKillProfileTree",
@@ -127,11 +130,22 @@ jobs:
           # 2a4. 代理链路：表单代理必须落地（static.ProxyChain + 命令行 --proxy-server + diag 现场）
           #     （根因：proxy 只进 ui 存档，static 无 ProxyChain、命令行无开关，改了不生效）
           $fpCpp = Get-Content launcher\cpp\fingerprint.cpp -Raw
-          foreach ($s in @("--proxy-server=", "proxy.static=", "proxy.arg=", "--proxy-bypass-list=", "proxy.bypass=")) {
+          foreach ($s in @("--proxy-server=", "proxy.static=", "proxy.arg=", "proxy.bypass=",
+                           "--host-resolver-rules=", "~NOTFOUND", "[diag] resolver=")) {
             if ($fpCpp -notmatch [regex]::Escape($s)) { throw "missing proxy-link symbol '$s' in fingerprint.cpp" }
             Write-Host "proxy ok: $s"
           }
           $fpcProxy = Get-Content launcher\cpp\fp_ui.cpp -Raw
+          # 2a4b. 本机IP（official WebRTCLocalAddress）：表单 -> static -> ext 三处同源，
+          #       只在 proxy/forward 生效（official setWebRTC 就写在这个分支里）
+          foreach ($s in @("F_WEBRTCLOCAL", "webRtcLocalAddress", "FpWebRtcUsesIp",
+                           "WebRTCLocalAddress")) {
+            if ($fpcProxy -notmatch [regex]::Escape($s)) { throw "local-ip field '$s' missing in fp_ui.cpp" }
+          }
+          foreach ($s in @('sp += ",\"WebRTCLocalAddress\"', '" local="')) {
+            if ($fpCpp -notmatch [regex]::Escape($s)) { throw "local-ip ext '$s' missing in fingerprint.cpp" }
+          }
+          Write-Host "localip contract ok"
           foreach ($s in @('"ProxyChain"', "指纹保存 static ")) {
             if ($fpcProxy -notmatch [regex]::Escape($s)) { throw "missing proxy-save symbol '$s' in fp_ui.cpp" }
             Write-Host "proxysave ok: $s"
@@ -303,6 +317,15 @@ jobs:
           $fwdEnable = ([regex]::Matches($fpc2, [regex]::Escape('f.webrtc == L"forward"'))).Count
           if ($fwdEnable -lt 1) { throw "forward must enable the spoof-IP box" }
           Write-Host "webrtc udp/forward contract ok"
+          # WebRTCStun/WebRTCTurn 只属 forward：保存链是“cfg 没有就保留”，非 forward 必须显式删
+          foreach ($s in @("del(sj, ""WebRTCStun"")", "del(sj, ""WebRTCTurn"")",
+                           "FpWebRtcStunServer()", "WebRTC stun=")) {
+            if ($fpc2 -notmatch [regex]::Escape($s)) { throw "webrtc stun residue guard '$s' missing in fp_ui.cpp" }
+          }
+          if ($fpImportHeader -notmatch [regex]::Escape('stun:stun.l.google.com:19302')) {
+            throw "official STUN constant missing in fp_browser_config.h"
+          }
+          Write-Host "webrtc stun guard ok"
           foreach ($s in @("FpBackfillWebGl", "webgl_config", "UNMASKED_VENDOR_WEBGL", "GPUAdapterInfo")) {
             if ($fpc2 -notmatch [regex]::Escape($s)) { throw "WebGL metadata contract '$s' missing in fp_ui.cpp" }
           }
