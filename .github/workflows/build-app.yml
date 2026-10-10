@@ -288,9 +288,21 @@ jobs:
           foreach ($s in @("FpResolveWebRtc", "InetPtonW", "proxyIpMissing", "proxyIpIgnored", "disableWebRtc")) {
             if ($rtcHeader -notmatch [regex]::Escape($s)) { throw "WebRTC resolver contract '$s' missing" }
           }
-          foreach ($s in @("webrtcIp", "F_WEBRTCIP", "FpSaveDynamicJson", "WebRTCAddress", "DisableWebRTC", "代理模式缺少有效 IP", "当前选择 forward", "切换到 proxy 模式后保存")) {
+          foreach ($s in @("webrtcIp", "F_WEBRTCIP", "FpSaveDynamicJson", "WebRTCAddress", "DisableWebRTC", "代理模式缺少有效 IP", "forward 与 proxy 都已支持写入伪装 IP", "WebRTC 伪装 IP 无效")) {
             if ($fpc2 -notmatch [regex]::Escape($s)) { throw "WebRTC persistence contract '$s' missing in fp_ui.cpp" }
           }
+          # disable_udp 官方二选一：socks5 UDP 新路径 + 命令行 policy，两把钥匙互斥
+          foreach ($s in @("WebRTCSocks5UdpProxy", 'FpSetCommandLineKey(sj, "webrtc-ip-handling-policy"',
+                           "update_version_key", "FpUdpSocks5PathApplies", "FpBrowserKernelFromDirLeaf")) {
+            if ($fpc2 -notmatch [regex]::Escape($s)) { throw "webrtc udp path contract '$s' missing in fp_ui.cpp" }
+          }
+          foreach ($s in @("FpBrowserKernelFromDirLeaf", "FpUdpSocks5PathApplies", "20260422")) {
+            if ($fpImportHeader -notmatch [regex]::Escape($s)) { throw "webrtc udp helper '$s' missing in fp_browser_config.h" }
+          }
+          # 转发必须能填伪装IP（两处 EnableWindow）
+          $fwdEnable = ([regex]::Matches($fpc2, [regex]::Escape('f.webrtc == L"forward"'))).Count
+          if ($fwdEnable -lt 1) { throw "forward must enable the spoof-IP box" }
+          Write-Host "webrtc udp/forward contract ok"
           foreach ($s in @("FpBackfillWebGl", "webgl_config", "UNMASKED_VENDOR_WEBGL", "GPUAdapterInfo")) {
             if ($fpc2 -notmatch [regex]::Escape($s)) { throw "WebGL metadata contract '$s' missing in fp_ui.cpp" }
           }
@@ -310,6 +322,16 @@ jobs:
             if ($rtcFpCpp -notmatch [regex]::Escape($s)) { throw "fingerprint launch/diagnostic contract '$s' missing" }
           }
           Write-Host "webrtc persistence contract ok"
+          # disable_udp：命令行 policy 与 static 的 WebRTCSocks5UdpProxy 必须二选一（official setWebRTC）
+          foreach ($s in @("WebRTCSocks5UdpProxy", "socks5Path", "if (!socks5Path)", "udpSocks5=")) {
+            if ($rtcFpCpp -notmatch [regex]::Escape($s)) { throw "webrtc udp launch contract '$s' missing in fingerprint.cpp" }
+          }
+          Write-Host "webrtc udp launch contract ok"
+          foreach ($s in @("FpUdpSocks5PathApplies(", "FpBrowserKernelFromDirLeaf(",
+                           'FpResolveWebRtc(L"forward", L"104.28.152.166")')) {
+            if ($fpModeTests -notmatch [regex]::Escape($s)) { throw "webrtc unit case '$s' missing" }
+          }
+          Write-Host "webrtc unit contract ok"
           # 起始页：Config.json 顶层 start_url（第二个顶层参数，手改即生效）；
           # 非法/缺键回落 about:blank，diag 必须回显当前实际起始页。
           foreach ($s in @("FpStartUrl", "start_url", "start.url=",

@@ -33,8 +33,16 @@ inline FpWebRtcResolution FpResolveWebRtc(const std::wstring& mode,
     const std::wstring& proxyIp) {
     FpWebRtcResolution result;
     if (mode == L"forward") {
+        // official setWebRTC：["proxy","forward"] 共用同一把钥匙 —— t.ip 存在就写
+        // sunBrowserParams.WebRTCAddress（转发同样覆盖候选地址），所以 IP 必须保留。
+        // 与官方的唯一有意差异：无 IP 时官方会让 dynamicConfig.DisableWebRTC=true（等于禁用），
+        // 这里保持“不禁用”，否则「转发」在没填 IP 时会退化成「禁用」，名不副实。
+        result.address = FpTrimWebRtcIp(proxyIp);
+        if (!result.address.empty() && !FpIsValidWebRtcIp(result.address)) {
+            result.address.clear();
+            result.proxyIpIgnored = true;   // 填了但不是合法 IP，没采用
+        }
         result.disableWebRtc = false;
-        result.proxyIpIgnored = !FpTrimWebRtcIp(proxyIp).empty();
         return result;
     }
     if (mode == L"disable_udp") {

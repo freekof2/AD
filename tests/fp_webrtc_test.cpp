@@ -16,9 +16,27 @@ int main() {
     if (::WSAStartup(MAKEWORD(2, 2), &wsa) != 0) return 1;
 
     const FpWebRtcResolution forward = FpResolveWebRtc(L"forward", L"104.28.152.166");
-    CHECK(!forward.disableWebRtc && !forward.disableUdp && forward.address.empty());
-    CHECK(!forward.proxyIpMissing && forward.proxyIpIgnored);
-    CHECK(FpBuildWebRtcSunParams(forward) == "{\"DisableWebRTC\":false}");
+    // official setWebRTC：["proxy","forward"] 共用 t.ip -> ext WebRTCAddress（转发也覆盖候选地址）
+    CHECK(!forward.disableWebRtc && !forward.disableUdp && forward.address == L"104.28.152.166");
+    CHECK(!forward.proxyIpMissing && !forward.proxyIpIgnored);
+    CHECK(FpBuildWebRtcSunParams(forward) ==
+        "{\"DisableWebRTC\":false,\"WebRTCAddress\":\"104.28.152.166\"}");
+    // 转发不填 IP：保持不禁用（见 fp_webrtc.h 注释里的有意差异）
+    const FpWebRtcResolution forwardEmpty = FpResolveWebRtc(L"forward", L"");
+    CHECK(!forwardEmpty.disableWebRtc && forwardEmpty.address.empty());
+    CHECK(FpBuildWebRtcSunParams(forwardEmpty) == "{\"DisableWebRTC\":false}");
+    // 转发填了非法 IP：忽略该值但不关 WebRTC
+    const FpWebRtcResolution forwardBad = FpResolveWebRtc(L"forward", L"192.0.2.999");
+    CHECK(!forwardBad.disableWebRtc && forwardBad.address.empty() && forwardBad.proxyIpIgnored);
+    // disable_udp 官方二选一的判定（main.min.js setWebRTC 的三个条件）
+    CHECK(FpBrowserKernelFromDirLeaf("chrome_152") == 152);
+    CHECK(FpBrowserKernelFromDirLeaf("flower_100") == 100);
+    CHECK(FpBrowserKernelFromDirLeaf("chrome") == 0);
+    CHECK(FpBrowserKernelFromDirLeaf("152.0.7977.54") == 0);
+    CHECK(FpUdpSocks5PathApplies(true, 152, 20260831));  // 实测环境：chrome_152 + 20260831
+    CHECK(!FpUdpSocks5PathApplies(false, 152, 20260831)); // 非 chrome（flower/firefox）
+    CHECK(!FpUdpSocks5PathApplies(true, 144, 20260831));  // 内核 < 145
+    CHECK(!FpUdpSocks5PathApplies(true, 152, 20260401));  // browserVersion < 20260422
 
     const FpWebRtcResolution disabled = FpResolveWebRtc(L"disabled", L"");
     CHECK(disabled.disableWebRtc && disabled.address.empty());

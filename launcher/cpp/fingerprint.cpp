@@ -932,8 +932,13 @@ std::wstring FpBuildCmdline(const std::wstring& profileDir, int port,
     }
     {
         std::string mode = FpJsonGet(staticJson, "webrtc");
-        if (mode == "\"disable_udp\"" || mode == "disable_udp")
-            cmd += L" --webrtc-ip-handling-policy=disable_non_proxied_udp";
+        if (mode == "\"disable_udp\"" || mode == "disable_udp") {
+            // official setWebRTC：socks5 UDP 新路径命中时只写 staticConfig.WebRTCSocks5UdpProxy，
+            // 不加命令行 policy；未命中则两者都加。这里按「有没有 socks5 钥匙」决定，保持二选一。
+            const bool socks5Path = FpJsonGet(staticJson, "WebRTCSocks5UdpProxy").size() >= 2;
+            if (!socks5Path)
+                cmd += L" --webrtc-ip-handling-policy=disable_non_proxied_udp";
+        }
     }
     // 系统开关的命令行等价实现（official setGPU / setTls / setWebGPU）：
     //  - setGPU: ("0"===gpu && 0==+gpuSwitch || "2"===gpu) -> --disable-gpu
@@ -1203,6 +1208,7 @@ std::string FpDiagDumpLaunch(const std::wstring& exe, const std::wstring& workDi
           << " static.address=" << (!staticAddress.empty() && staticAddress != "\"\"" ? "set" : "empty")
           << " dynamic.address=" << (!dynamicAddress.empty() && dynamicAddress != "\"\"" ? "set" : "empty")
           << " udpPolicy=" << (cmdN.find("--webrtc-ip-handling-policy=disable_non_proxied_udp") == std::string::npos ? "absent" : "set")
+          << " udpSocks5=" << (FpJsonGet(staticJson, "WebRTCSocks5UdpProxy").size() >= 2 ? "set" : "absent")
           << "\n";
     }
     // 代理现场：static.ProxyChain 第一项 + 命令行 --proxy-server 是否生效（密码打码）。

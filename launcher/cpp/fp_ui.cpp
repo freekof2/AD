@@ -1382,7 +1382,8 @@ static void FpFill(FpWnd* w) {
     FpSet(C(F_REMARK), f.remark);
     selByVal(F_WEBRTC, f.webrtc.empty() ? L"proxy" : f.webrtc);
     FpSet(C(F_WEBRTCIP), f.webrtcIp);
-    ::EnableWindow(C(F_WEBRTCIP), f.webrtc.empty() || f.webrtc == L"proxy");
+    // 官方 setWebRTC：proxy/forward 都会用 t.ip 写 ext WebRTCAddress，所以转发也要能填
+    ::EnableWindow(C(F_WEBRTCIP), f.webrtc.empty() || f.webrtc == L"proxy" || f.webrtc == L"forward");
     selByVal(F_TZM, f.timezoneMode.empty() ? L"custom" : f.timezoneMode);
     // 时区下拉是精确匹配：先归一为空格→下划线，兼容旧存档里的空格格式
     //（如 "America/New York"），否则会回退到首项 Etc/GMT+12。
@@ -1802,6 +1803,52 @@ static void FpApplyStaticSystemKeys(std::string& sj, const FpFormData& f,
         del(sj, "NetworkInformation");
         FpSetCommandLineKey(sj, "enable-blink-features", "");
         FpSetCommandLineKey(sj, "disable-blink-features", "");
+    }
+
+    // 12) disable_udp 的官方二选一（main.min.js setWebRTC 59832）：
+    //     chrome + kernel>=145 + browserVersion(发布日期)>=20260422 + socks5 有 host/port
+    //       -> staticConfig.WebRTCSocks5UdpProxy{host,port,account,password}（UDP 走 SOCKS5，不禁用）
+    //     否则 -> staticConfig.command_line["webrtc-ip-handling-policy"]=disable_non_proxied_udp
+    //     两把钥匙互斥：切换模式/代理时必须清掉另一把，否则残留旧配置会让 UDP 行为错乱。
+    //     browserVersion 读 <browserDir>\update_version_key（chrome_152 = 20260831）。
+    {
+        const bool wantUdp = (f.webrtc == L"disable_udp");
+        // 目录尾段取内核号：chrome_152 -> 152；若选到版本子目录（152.0.7977.54）就取上一层
+        std::wstring leafW = FpDirectoryLeaf(f.profBrowserDir);
+        if (!leafW.empty() && leafW[0] >= L'0' && leafW[0] <= L'9')
+            leafW = FpDirectoryLeaf(FpDirectoryParent(f.profBrowserDir));
+        const int kernel = FpBrowserKernelFromDirLeaf(N(leafW));
+        int buildDate = 0;
+        if (!f.profBrowserDir.empty()) {
+            std::string keyRaw;
+            if (FpReadTextFile(f.profBrowserDir + L"\\update_version_key", keyRaw)) {
+                for (char c : keyRaw)
+                    if (c >= '0' && c <= '9') buildDate = buildDate * 10 + (c - '0');
+            }
+            // 官方 browserVersion 是 8 位发布日期（20260831），格式不对就当没读到
+            if (buildDate < 10000000 || buildDate > 99999999) buildDate = 0;
+        }
+        const bool socks5Path = wantUdp &&
+            FpUdpSocks5PathApplies(f.browser == L"sun", kernel, buildDate) &&
+            f.proxyType == L"socks5" && !N(f.proxyHost).empty() && !N(f.proxyPort).empty();
+        if (socks5Path) {
+            const std::string obj =
+                "{\"host\":" + FpBrowserConfigJsonQuote(N(f.proxyHost)) +
+                ",\"port\":" + FpBrowserConfigJsonQuote(N(f.proxyPort)) +
+                ",\"account\":" + FpBrowserConfigJsonQuote(N(f.proxyUser)) +
+                ",\"password\":" + FpBrowserConfigJsonQuote(N(f.proxyPass)) + "}";
+            set(sj, "WebRTCSocks5UdpProxy", obj);
+            FpSetCommandLineKey(sj, "webrtc-ip-handling-policy", "");   // 官方二选一
+        } else {
+            del(sj, "WebRTCSocks5UdpProxy");
+            FpSetCommandLineKey(sj, "webrtc-ip-handling-policy",
+                wantUdp ? "\"disable_non_proxied_udp\"" : "");
+        }
+        LOG(L"WebRTC udp path=" +
+            (socks5Path ? std::wstring(L"socks5") : (wantUdp ? std::wstring(L"policy") : std::wstring(L"-"))) +
+            L" kernel=" + std::to_wstring(kernel) +
+            L" buildDate=" + std::to_wstring(buildDate) +
+            L" mode=" + f.webrtc + L" " + profileName);
     }
 }
 // fp_ui.cpp — part 6/6：模态窗口过程 + 保存 + 导入
@@ -2306,7 +2353,9 @@ static LRESULT CALLBACK FpWndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
         }
         if (id == F_WEBRTC && (code == CBN_SELCHANGE || code == CBN_SELENDOK)) {
             FpCollect(w);
-            ::EnableWindow(C(F_WEBRTCIP), w->form.webrtc == L"proxy");
+            // forward 同样需要伪装IP（official ["proxy","forward"] 共用 t.ip）
+            ::EnableWindow(C(F_WEBRTCIP),
+                w->form.webrtc.empty() || w->form.webrtc == L"proxy" || w->form.webrtc == L"forward");
             return 0;
         }
         // 浏览器类型联动浏览器目录：切 sun/flower 时按尾段目录名规则自动建议
@@ -2866,10 +2915,13 @@ static LRESULT CALLBACK FpWndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
                 LOG(L"WebRTC 代理模式缺少有效 IP，已按禁用保存 " + w->profile);
             }
             if (rtc.proxyIpIgnored) {
+                // forward 与 proxy 现在都会写 ext WebRTCAddress（对齐 official setWebRTC），
+                // 这里只提示“地址本身不合法所以没采用”。
                 ::MessageBoxW(h,
-                    L"当前选择 forward：将按普通 WebRTC 工作，不会应用已填写的伪装 IP。\r\n要让 WebRTC 测试显示指定 IP，请切换到 proxy 模式后保存。",
-                    L"WebRTC 伪装 IP 未启用", MB_OK | MB_ICONINFORMATION);
-                LOG(L"WebRTC forward 模式忽略已填写的伪装 IP " + w->profile);
+                    L"填写的伪装 IP 不是合法 IPv4/IPv6，本次未写入 WebRTC。\r\n"
+                    L"forward 与 proxy 都已支持写入伪装 IP，请修正地址后再保存。",
+                    L"WebRTC 伪装 IP 无效", MB_OK | MB_ICONINFORMATION);
+                LOG(L"WebRTC 伪装 IP 非法已忽略（forward/proxy 通用） " + w->profile);
             }
             // 伪装 IP 双向同步：框内有效 IP 回写 exe 目录 Config.json（按环境名）；
             // 清空/无效则删键（防旧值下次覆盖复活）。启动链路不变（表单→static/dynamic→ext）。

@@ -262,6 +262,30 @@ inline int FpSeedFromFbcc(const std::string& fbcc, int min, int max) {
     return min + static_cast<int>(h % span);
 }
 
+// ---- WebRTC：disable_udp 的官方二选一（main.min.js setWebRTC 59832）----
+// 官方条件：chrome 内核 && kernel>=145 && browserVersion>=20260422 && proxyType==socks5
+//   命中 -> staticConfig.WebRTCSocks5UdpProxy{host,port,account,password}（UDP 走 SOCKS5，不禁用）
+//   未命中 -> args += --webrtc-ip-handling-policy=disable_non_proxied_udp
+//            且 staticConfig.command_line["webrtc-ip-handling-policy"]=同值
+// browserVersion 是 AdsPower 的发布日期：chrome_152/update_version_key = 20260831。
+inline int FpBrowserKernelFromDirLeaf(const std::string& leaf) {
+    // "chrome_152" -> 152；"flower_100" -> 100；其它返回 0
+    size_t p = leaf.rfind('_');
+    if (p == std::string::npos || p + 1 >= leaf.size()) return 0;
+    int v = 0;
+    bool any = false;
+    for (size_t i = p + 1; i < leaf.size(); i++) {
+        if (leaf[i] < '0' || leaf[i] > '9') return 0;
+        v = v * 10 + (leaf[i] - '0');
+        any = true;
+        if (v > 9999) return 0;
+    }
+    return any ? v : 0;
+}
+inline bool FpUdpSocks5PathApplies(bool isChrome, int kernelVersion, int browserBuildDate) {
+    return isChrome && kernelVersion >= 145 && browserBuildDate >= 20260422;
+}
+
 // ---- 噪声开关 -> ext（sunBrowserParams）片段：只在开关=1 时输出 ----
 inline std::string FpBuildNoiseSunParams(bool canvas, bool webglImage, bool audio,
     bool clientRects, const std::string& fbcc, const std::string& audioSeed,
