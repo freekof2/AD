@@ -1089,18 +1089,18 @@ static void FpBuildPages(FpWnd* w, HWND p, HINSTANCE hi) {
     FpMkLabel(p, w, F_PSTATUS, L"未检测", 12, 448, 400);
     // ---- 1. WebRTC（forward 直通；proxy 必须有伪装 IP）----
     FpMkLabel(p, w, F_WEBRTC, L"WebRTC", 12, 482, 70);
-    FpMkCombo(p, w, F_WEBRTC, 88, 480, 250);
+    FpMkCombo(p, w, F_WEBRTC, 88, 480, 170);   // 最长项 "disable_udp - 禁用UDP" 约 115px
     FpComboAdd(w->ctl[F_WEBRTC - F_BASE], L"forward - 转发");
     FpComboAdd(w->ctl[F_WEBRTC - F_BASE], L"proxy - 替换");
     FpComboAdd(w->ctl[F_WEBRTC - F_BASE], L"disabled - 禁用");
     FpComboAdd(w->ctl[F_WEBRTC - F_BASE], L"disable_udp - 禁用UDP");
-    FpMkLabel(p, w, F_WEBRTCIP, L"伪装IP", 350, 482, 65);
-    FpMkEdit(p, w, F_WEBRTCIP, 420, 480, 250);
+    FpMkLabel(p, w, F_WEBRTCIP, L"伪装IP", 265, 482, 65);
+    FpMkEdit(p, w, F_WEBRTCIP, 335, 480, 200);
     // official WebRTCLocalAddress：伪造 host 候选的本机内网地址（proxy/forward 才写 ext）
-    FpMkLabel(p, w, F_WEBRTCLOCAL, L"本机IP", 670, 482, 58);
-    FpMkEdit(p, w, F_WEBRTCLOCAL, 732, 480, 96);
+    FpMkLabel(p, w, F_WEBRTCLOCAL, L"本机IP", 542, 482, 58);
+    FpMkEdit(p, w, F_WEBRTCLOCAL, 605, 480, 170);  // 内网 IPv4 最长 15 字符，右边留 53px 余量
     ::SendMessageW(w->ctl[F_WEBRTCIP - F_BASE], EM_SETCUEBANNER, TRUE,
-        (LPARAM)L"proxy 模式填写 IPv4 / IPv6 地址");
+        (LPARAM)L"proxy/forward 填 IPv4 / IPv6 地址");
     FpMkLabel(p, w, F_TZM, L"时区模式", 12, 524, 80);
     FpMkCombo(p, w, F_TZM, 100, 522, 150);
     FpComboAdd(w->ctl[F_TZM - F_BASE], L"ip - 基于IP");

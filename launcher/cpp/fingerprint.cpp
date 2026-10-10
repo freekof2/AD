@@ -624,8 +624,14 @@ std::wstring FpBuildCmdline(const std::wstring& profileDir, int port,
     //   CANVAS 模式 -> ProxyUser/ProxyPassword 进 ext（本函数 kExtraAllow 已放行）。
     //   static.ProxyChain 数组由保存链路写（FpFormToFpConfig 组装），此处不重复组装。
     std::string proxyArg;
+    // 代理四要素提到函数作用域：下面的 PAC 分支要用（PAC 与 --proxy-server 互斥）
+    std::string pxScheme, pxHost, pxPort, pxUser, pxPass;
     {
-        std::string scheme, host, portStr, user, pass;
+        std::string& scheme = pxScheme;
+        std::string& host = pxHost;
+        std::string& portStr = pxPort;
+        std::string& user = pxUser;
+        std::string& pass = pxPass;
         if (!extraSunParamsJson.empty()) {
             std::string v;
             v = FpJsonGet(extraSunParamsJson, "proxyType");
@@ -688,6 +694,28 @@ std::wstring FpBuildCmdline(const std::wstring& profileDir, int port,
                 proxyArg = "--proxy-server=" + scheme + "://" + host + ":" + portStr;
             }
         }
+    }
+    // 封锁 adspower 的第二层：host-resolver-rules 只拦“本地解析”，socks5 是把域名交给
+    // 代理去解析（remote DNS），本地规则根本不会被查到 —— 实测官方启动域仍打得开。
+    // 换成 PAC 就绕过 DNS：脚本在浏览器本地按主机名判定，直接黑洞，
+    // 直连与代理两种路径都失败。
+    // PAC 与 --proxy-server 互斥，且 PAC 语法不支持账号密码，所以只有“无认证代理”走 PAC；
+    // 带认证时仍用 --proxy-server + resolver 规则，diag 里 pac=off 会标出来。
+    std::wstring pacArg;
+    if (!proxyArg.empty() && pxUser.empty() && pxPass.empty()) {
+        std::string pac =
+            "function FindProxyForURL(url, host) {"
+            " host = host.toLowerCase();"
+            " if (host === 'adspower.net' || dnsDomainIs(host, '.adspower.net'))"
+            "   return 'PROXY 127.0.0.1:1';"
+            // 走 PAC 后 Chromium 不再套用“loopback 默认直连”规则，必须自己放行，
+            // 否则 DevTools / 127.0.0.1 本地代理会被一起挡掉。
+            " if (host === 'localhost' || host === '127.0.0.1' ||"
+            "     host === '::1' || host === '[::1]') return 'DIRECT';";
+        if (pxScheme == "socks5") pac += " return 'SOCKS5 " + pxHost + ":" + pxPort + "';";
+        else pac += " return 'PROXY " + pxHost + ":" + pxPort + "';";
+        pac += " }";
+        pacArg = W(pac);
     }
     std::string sp = "{\"UserId\":" + userId +
         ",\"StaticConfig\":\"" + JsonEscapeStr(N(wStatic)) +
@@ -926,7 +954,9 @@ std::wstring FpBuildCmdline(const std::wstring& profileDir, int port,
         L"\" --profile-directory=Default --remote-debugging-port=0"
         L" --no-first-run --no-default-browser-check --no-sandbox --disable-setuid-sandbox"
         L" --protected-disable-safe-open";
-    if (!proxyArg.empty())
+    if (!pacArg.empty())
+        cmd += L" --proxy-pac-script=\"" + pacArg + L"\"";  // PAC 与 --proxy-server 互斥
+    else if (!proxyArg.empty())
         cmd += L" " + W(proxyArg); // 代理开关（官方 setProxy 非 CANVAS 分支；密码不记 diag）
     // 彻底禁止访问 adspower 网站：官方 setProxy 会追加 --proxy-bypass-list=<三个云端域名>
     // 那等于把它们排除出代理、放行直连；这里既不放行直连，也用 host-resolver-rules 让域名
@@ -1242,6 +1272,9 @@ std::string FpDiagDumpLaunch(const std::wstring& exe, const std::wstring& workDi
         }
         o << "[diag] proxy.static=" << pcHead << "\n";
         o << "[diag] proxy.arg=" << pa << "\n";
+        // PAC 现场：pac=on 时必须没有 --proxy-server（两者互斥），封锁改由 PAC 在本地按主机名黑洞
+        o << "[diag] pac=" << (cmdN.find("--proxy-pac-script=") == std::string::npos ? "off" : "on")
+          << " proxyServer=" << (cmdN.find("--proxy-server=") == std::string::npos ? "absent" : "present") << "\n";
         // adspower 封锁现场：host-resolver-rules 必须存在（域名解析成不存在）；
         // proxy.bypass 必须为空 —— 官方那条 bypass 是“放行直连”，已按要求移除。
         o << "[diag] resolver=" << DiagArgOf(cmdN, "--host-resolver-rules=") << "\n";

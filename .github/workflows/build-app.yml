@@ -91,12 +91,21 @@ jobs:
             }
             Write-Host "clean: $f"
           }
-          # adspower 封锁：域名只准在封锁规则那一行出现；官方那条 bypass 放行必须已移除
+          # adspower 封锁：域名只准出现在两条封禁规则里（host-resolver-rules 行、PAC 的
+          # dnsDomainIs 判定行），别处一律视为回退
           $fpNoBlock = ((Get-Content launcher\cpp\fingerprint.cpp -Raw) -split "`n" |
-                        Where-Object { $_ -notmatch 'host-resolver-rules' }) -join "`n"
+                        Where-Object { $_ -notmatch 'host-resolver-rules|dnsDomainIs' }) -join "`n"
           if ($fpNoBlock -match 'adspower\.net') { throw "adspower domain outside host-resolver-rules" }
           if ($fpNoBlock -match [regex]::Escape('--proxy-bypass-list=https')) { throw "adspower bypass allowlist must stay removed" }
           Write-Host "adspower domain scope ok (block-list only)"
+          # PAC 第二层：socks5 会把域名交给代理解析（remote DNS），host-resolver-rules 拦不到，
+          # 所以无认证代理时改用 PAC 在本地按主机名黑洞（实测官方启动域走 resolver 规则仍能打开）
+          $fpPac = Get-Content launcher\cpp\fingerprint.cpp -Raw
+          foreach ($s in @("--proxy-pac-script=", "[diag] pac=", "FindProxyForURL",
+                           "dnsDomainIs(host, '.adspower.net')", "return 'SOCKS5 ", "return 'PROXY ")) {
+            if ($fpPac -notmatch [regex]::Escape($s)) { throw "adspower pac '$s' missing in fingerprint.cpp" }
+          }
+          Write-Host "adspower pac ok"
           # 2. C++ 指纹模块必备符号（换表/三件套/注入/树杀/侧车）
           $cpp = Get-Content launcher\cpp\fingerprint.cpp -Raw
           foreach ($s in @("FpEncode", "FpDecode", "FpMd5Hex", "FpBuildCmdline", "FpKillProfileTree",
