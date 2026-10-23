@@ -23,7 +23,7 @@ struct FpFormData {
     std::wstring uaPreset;     // UA 大版本号，如 152
     std::wstring ua;
     // C. 代理
-    std::wstring proxyType;    // socks5 | http | https
+    std::wstring proxyType;    // socks5 | http | https | sing-box
     std::wstring proxyHost;
     std::wstring proxyPort;
     std::wstring proxyUser;

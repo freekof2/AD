@@ -28,10 +28,14 @@
 #include <codecvt>
 #include <locale>
 #include <thread>
+#include <atomic>
+#include <memory>
 #include <chrono>
 #include <ctime>
 #include <iomanip>
 #include <algorithm>
+
+#include "singbox.h"
 
 // ---------- 默认值 ----------
 static const wchar_t* kDefaultBrowserDir = L"C:\\Users\\admin6\\AppData\\Roaming\\adspower_global\\cwd_global\\chrome_152";
@@ -184,8 +188,10 @@ static const COLORREF kUiText    = RGB(26, 32, 44);    // --text-main #1a202c
 struct AppState {
     Config cfg;
     std::map<std::wstring, ProcHandle> procs; // profile -> 进程
+    std::map<std::wstring, std::unique_ptr<SingBoxInstance>> singBoxInstances; // 仅 sing-box 模式
     std::mutex mu;
     HWND hMain = NULL, hList = NULL, hStatus = NULL;
+    HWND hSbUpload = NULL, hSbDownload = NULL;
     HWND hSearch = NULL;   // 环境搜索框（对齐 web-ui globalSearch）
     std::wstring searchFilter; // 搜索关键字（刷新列表时过滤）
     std::map<std::wstring, bool> checked; // 多选勾选态（LISTVIEW 复选框镜像，批量操作用）

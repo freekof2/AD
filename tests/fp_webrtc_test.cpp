@@ -1,6 +1,7 @@
 #include "fp_webrtc.h"
 #include "fp_browser_config.h"
 #include "fp_cookies.h"
+#include "singbox_config.h"
 #include <iostream>
 
 static int Check(bool condition, int line) {
@@ -293,6 +294,52 @@ int main() {
     CHECK(FpCookiesSameSiteToInt("none") == 0);
     CHECK(FpCookiesSameSiteToInt("Unspecified") == -1);
     CHECK(FpCookiesSameSiteToInt("") == -1);
+
+    // sing-box: each profile gets an isolated runtime copy while its source config remains unchanged.
+    const std::string mixedConfig = R"json({
+      "inbounds": [{"type":"mixed","tag":"socks","listen":"0.0.0.0","listen_port":1208}],
+      "outbounds": [{"type":"direct","tag":"proxy"}],
+      "experimental": {
+        "cache_file": {"enabled":true,"path":"shared-cache.db","store_fakeip":false},
+        "clash_api": {"external_controller":"127.0.0.1:1210"}
+      }
+    })json";
+    SingBoxConfigInfo sbInfo{};
+    std::string sbError;
+    CHECK(SbParseConfig(mixedConfig, sbInfo, sbError));
+    CHECK(sbInfo.inboundType == "mixed" && sbInfo.inboundListen == "0.0.0.0");
+    CHECK(sbInfo.listenPort == 1208 && sbInfo.controller == "127.0.0.1:1210");
+    CHECK(sbInfo.cachePath == "shared-cache.db");
+    std::string sbRuntime;
+    CHECK(SbBuildRuntimeConfig(mixedConfig, 1308, 1310,
+        "F:\\AD\\cache\\profile\\sing-box-cache.db", "test-secret",
+        sbRuntime, sbError));
+    SingBoxConfigInfo sbRuntimeInfo{};
+    CHECK(SbParseConfig(sbRuntime, sbRuntimeInfo, sbError));
+    CHECK(sbRuntimeInfo.inboundType == "mixed");
+    CHECK(sbRuntimeInfo.inboundListen == "127.0.0.1" && sbRuntimeInfo.listenPort == 1308);
+    CHECK(sbRuntimeInfo.controller == "127.0.0.1:1310");
+    CHECK(sbRuntimeInfo.apiSecret == "test-secret");
+    CHECK(sbRuntimeInfo.cachePath == "F:\\AD\\cache\\profile\\sing-box-cache.db");
+    CHECK(sbRuntime.find("\"tag\":\"proxy\"") != std::string::npos);
+    CHECK(sbInfo.listenPort == 1208 && sbInfo.controller == "127.0.0.1:1210");
+
+    const std::string socksConfig = R"json({
+      "inbounds":[{"type":"socks","listen":"127.0.0.1","listen_port":1080}],
+      "outbounds":[{"type":"direct"}]
+    })json";
+    CHECK(SbParseConfig(socksConfig, sbInfo, sbError));
+    CHECK(sbInfo.inboundType == "socks" && sbInfo.listenPort == 1080);
+    CHECK(SbBuildRuntimeConfig(socksConfig, 1081, 1311,
+        "F:\\AD\\cache\\profile2\\sing-box-cache.db", "second-secret",
+        sbRuntime, sbError));
+    CHECK(SbParseConfig(sbRuntime, sbRuntimeInfo, sbError));
+    CHECK(sbRuntimeInfo.listenPort == 1081 && sbRuntimeInfo.controller == "127.0.0.1:1311");
+    CHECK(sbRuntimeInfo.apiSecret == "second-secret");
+
+    CHECK(!SbParseConfig("not-json", sbInfo, sbError));
+    CHECK(!SbParseConfig(R"json({"inbounds":[],"outbounds":[{"type":"direct"}]})json", sbInfo, sbError));
+    CHECK(!SbParseConfig(R"json({"inbounds":[{"type":"mixed","listen_port":1080},{"type":"socks","listen_port":1081}]})json", sbInfo, sbError));
 
     ::WSACleanup();
     return 0;

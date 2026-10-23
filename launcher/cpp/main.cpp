@@ -1,11 +1,12 @@
 // main.cpp — Win32 原生窗口：profile 列表 + 启动/关闭/新建（无 DEBUG 日志框，日志只写 debug.log）
 // 离线版：启动时经 fingerprint 模块注入 --extended-parameters（static/dynamic/cookies
-// 三文件指针 + UserId + fbcc 确定性噪声种子），只读写本地缓存目录，不做任何网络 IO。
+// 三文件指针 + UserId + fbcc 确定性噪声种子），不连接 AdsPower 云端；sing-box 统计仅访问 loopback。
 // 指纹配置原生窗口见 fp_ui.h/cpp（web-ui/index.html 单页版 1:1 纯原生重写，Tab 5 页）。
 #include "SunLauncher.h"
 #include "fingerprint.h"
 #include "fp_ui.h"
 #include <tlhelp32.h> // diag-04 失败现场取证：CreateToolhelp32Snapshot 枚举残留进程
+#include <climits>
 
 static AppState g;
 
@@ -14,6 +15,7 @@ enum {
     IDC_SEARCH, IDC_CHECKALL, IDC_BSTART, IDC_BSTOP, IDC_BDEL, IDC_FPCONFIG,
     IDC_GROUPLBL,
     IDC_DEBUGLOG, // 主窗口底部：debug.log 记录开关（开=写，关=本次不写；落 Config.json）
+    IDC_SB_UPLOAD, IDC_SB_DOWNLOAD,
     TIMER_POLL = 1,
 };
 
@@ -27,7 +29,64 @@ static void SetStatus(const std::wstring& s) {
     if (g.hStatus) ::SetWindowTextW(g.hStatus, s.c_str());
 }
 
-// DEBUG 日志只写 debug.log 文件（主窗口无日志框；定时器只刷环境列表）
+static std::wstring FormatByteRate(unsigned long long bytes) {
+    wchar_t text[64]{};
+    if (bytes < 1024) {
+        swprintf_s(text, L"%llu B/s", bytes);
+    } else if (bytes < 1024ULL * 1024) {
+        swprintf_s(text, L"%.1f KB/s", (double)bytes / 1024.0);
+    } else if (bytes < 1024ULL * 1024 * 1024) {
+        swprintf_s(text, L"%.1f MB/s", (double)bytes / (1024.0 * 1024.0));
+    } else {
+        swprintf_s(text, L"%.1f GB/s", (double)bytes / (1024.0 * 1024.0 * 1024.0));
+    }
+    return text;
+}
+
+static void RefreshSingBoxRates() {
+    unsigned long long up = 0, down = 0;
+    {
+        std::lock_guard<std::mutex> lk(g.mu);
+        for (const auto& item : g.singBoxInstances) {
+            if (!item.second) continue;
+            const unsigned long long instanceUp = item.second->uploadBytesPerSecond.load(std::memory_order_relaxed);
+            const unsigned long long instanceDown = item.second->downloadBytesPerSecond.load(std::memory_order_relaxed);
+            up = ULLONG_MAX - up < instanceUp ? ULLONG_MAX : up + instanceUp;
+            down = ULLONG_MAX - down < instanceDown ? ULLONG_MAX : down + instanceDown;
+        }
+    }
+    if (g.hSbUpload) {
+        const std::wstring text = L"sing-box ↑ " + FormatByteRate(up);
+        ::SetWindowTextW(g.hSbUpload, text.c_str());
+    }
+    if (g.hSbDownload) {
+        const std::wstring text = L"sing-box ↓ " + FormatByteRate(down);
+        ::SetWindowTextW(g.hSbDownload, text.c_str());
+    }
+}
+
+static void CleanupStoppedSingBoxes() {
+    std::lock_guard<std::mutex> lk(g.mu);
+    for (auto it = g.singBoxInstances.begin(); it != g.singBoxInstances.end();) {
+        auto proc = g.procs.find(it->first);
+        DWORD code = 0;
+        const bool browserAlive = proc != g.procs.end() && proc->second.hProcess &&
+            ::GetExitCodeProcess(proc->second.hProcess, &code) && code == STILL_ACTIVE;
+        DWORD proxyCode = 0;
+        const bool proxyAlive = it->second && it->second->process &&
+            ::GetExitCodeProcess(it->second->process, &proxyCode) && proxyCode == STILL_ACTIVE;
+        if (browserAlive && proxyAlive) { ++it; continue; }
+        if (browserAlive && !proxyAlive) {
+            const std::wstring message = L"sing-box 意外退出：" + it->first;
+            LOG(message + L"，浏览器仍运行但代理已断开");
+            SetStatus(message + L"（浏览器仍运行，代理不可用）");
+        }
+        SbStopInstance(it->second);
+        it = g.singBoxInstances.erase(it);
+    }
+}
+
+// DEBUG 日志只写 debug.log 文件（主窗口无日志框；定时器刷新环境列表与 sing-box 生命周期）
 
 static void RefreshList() {
     HWND hList = g.hList;
@@ -293,6 +352,16 @@ static bool StartOneLocked(const std::wstring& name) {
             return true; // 已在运行
         ::CloseHandle(it->second.hProcess);
         g.procs.erase(it);
+        auto oldProxy = g.singBoxInstances.find(name);
+        if (oldProxy != g.singBoxInstances.end()) {
+            SbStopInstance(oldProxy->second);
+            g.singBoxInstances.erase(oldProxy);
+        }
+    }
+    auto staleProxy = g.singBoxInstances.find(name);
+    if (staleProxy != g.singBoxInstances.end()) {
+        SbStopInstance(staleProxy->second);
+        g.singBoxInstances.erase(staleProxy);
     }
     // 生效目录：该指纹独立覆盖优先（sunlauncher.json profiles 段，指纹窗口 A2 行设置），
     // 否则全局。dataDir 实际是“父目录”，profile 子目录拼在后面。
@@ -364,6 +433,39 @@ static bool StartOneLocked(const std::wstring& name) {
     LOG(L"diag port=官方随机(--remote-debugging-port=0)，实际值启动后读 DevToolsActivePort");
     std::string uiExtra;
     FpLoadUiExtra(dataDir, uiExtra);
+    std::unique_ptr<SingBoxInstance> singBoxInstance;
+    const std::string proxyMode = N(FpJsonUnquote(FpJsonGet(uiExtra, "proxyType")));
+    if (proxyMode == "sing-box") {
+        std::wstring singBoxError;
+        if (!SbStartInstance(AppDir(), dataDir, g.hMain, singBoxInstance, singBoxError)) {
+            const std::wstring message = L"sing-box 启动失败：" + singBoxError;
+            LOG(message + L" profile=" + name);
+            SetStatus(message);
+            return false;
+        }
+        auto setProxyValue = [&](const char* key, const std::string& value) {
+            const std::string updated = FpJsonSet(uiExtra, key, value);
+            if (updated.empty()) return false;
+            uiExtra = updated;
+            return true;
+        };
+        const bool mapped =
+            setProxyValue("proxyType", "\"socks5\"") &&
+            setProxyValue("proxyHost", "\"127.0.0.1\"") &&
+            setProxyValue("proxyPort", "\"" + std::to_string(singBoxInstance->socksPort) + "\"") &&
+            setProxyValue("proxyUser", "\"\"") &&
+            setProxyValue("proxyPass", "\"\"");
+        if (!mapped) {
+            SbStopInstance(singBoxInstance);
+            const std::wstring message = L"sing-box 代理参数映射失败：" + name;
+            LOG(message);
+            SetStatus(message);
+            return false;
+        }
+        LOG(L"sing-box 已就绪 profile=" + name +
+            L" socksPort=" + std::to_wstring(singBoxInstance->socksPort) +
+            L" apiPort=" + std::to_wstring(singBoxInstance->apiPort));
+    }
     std::wstring args = FpBuildCmdline(dataDir, port, uiExtra);
     // 命令行超限守卫：CreateProcess 上限 32767（err=206）。超限直接拒绝启动，
     // 记 ext.len 供判读（根因多为 uiExtra 大字段并入 ext，修 FpBuildCmdline 白名单）。
@@ -375,6 +477,7 @@ static bool StartOneLocked(const std::wstring& name) {
                 L"先删该 profile 的 ui_fingerprint.json 重试，ext 应回落到 ~468。";
             LOG(m);
             LOG(W(FpDiagDumpLaunch(exe, effBrowserDir, dataDir, port, uiExtra, args, 0)));
+            SbStopInstance(singBoxInstance);
             SetStatus(m);
             return false;
         }
@@ -390,6 +493,7 @@ static bool StartOneLocked(const std::wstring& name) {
     }
     if (!LaunchSunBrowser(exe, effBrowserDir, args, &hProc, &pid, &err)) {
         std::wstring m = L"CreateProcess 失败 err=" + std::to_wstring(err) + L"，见 debug.log";
+        SbStopInstance(singBoxInstance);
         LOG(m); SetStatus(m); return false;
     }
     // diag-02: 诊断块（exe/三件套/sp/ext/三键/env/hint/manual，一次启动全部现场）
@@ -444,10 +548,12 @@ static bool StartOneLocked(const std::wstring& name) {
                 L"复制[diag]manual行到cmd手工跑，看弹窗/退出码。");
         }
         ::CloseHandle(hProc);
+        SbStopInstance(singBoxInstance);
         SetStatus(m);
         return false;
     }
     g.procs[name] = { hProc, pid };
+    if (singBoxInstance) g.singBoxInstances[name] = std::move(singBoxInstance);
     // 实际端口：浏览器随机分配后写 DevToolsActivePort；3 秒存活轮询已过，直接读。
     port = ReadDevToolsPort(dataDir);
     std::wstring m = L"已启动 " + name + L" pid=" + std::to_wstring(pid) +
@@ -491,6 +597,16 @@ static void OnStopOneLocked(const std::wstring& name, std::vector<DWORD>& killed
         }
         ::CloseHandle(it->second.hProcess);
         g.procs.erase(it);
+    }
+    auto proxy = g.singBoxInstances.find(name);
+    if (proxy != g.singBoxInstances.end()) {
+        DWORD code = 0;
+        if (proxy->second && proxy->second->process &&
+            ::GetExitCodeProcess(proxy->second->process, &code) && code == STILL_ACTIVE &&
+            std::find(killed.begin(), killed.end(), proxy->second->pid) == killed.end())
+            killed.push_back(proxy->second->pid);
+        SbStopInstance(proxy->second);
+        g.singBoxInstances.erase(proxy);
     }
     killedOut = killed;
 }
@@ -542,6 +658,12 @@ static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
         mkBtn(IDC_STOP, L"关闭", 606, 50, 100);
         mkBtn(IDC_REFRESH, L"刷新", 606, 88, 100);
         mkBtn(IDC_FPCONFIG, L"指纹配置", 606, 126, 100);
+        g.hSbUpload = ::CreateWindowW(L"STATIC", L"sing-box ↑ 0 B/s",
+            WS_CHILD | WS_VISIBLE | SS_LEFT, 606, 174, 138, 22, h,
+            (HMENU)(INT_PTR)IDC_SB_UPLOAD, hi, NULL);
+        g.hSbDownload = ::CreateWindowW(L"STATIC", L"sing-box ↓ 0 B/s",
+            WS_CHILD | WS_VISIBLE | SS_LEFT, 606, 198, 138, 22, h,
+            (HMENU)(INT_PTR)IDC_SB_DOWNLOAD, hi, NULL);
         // 新建环境行（搜索行上方 y=524/526/528，标签+输入框+按钮同行；标签加宽防截断）
         ::CreateWindowW(L"STATIC", L"新建环境:", WS_CHILD | WS_VISIBLE, 12, 528, 92, 22, h, NULL, hi, NULL);
         ::CreateWindowW(L"EDIT", L"", WS_CHILD | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL,
@@ -569,6 +691,7 @@ static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
         LOG(L"probe wmcreate timer-ok");
         LOG(L"probe wmcreate refresh-pre");
         RefreshList();
+        RefreshSingBoxRates();
         LOG(L"probe wmcreate refresh-done");
         return 0;
     }
@@ -677,7 +800,12 @@ static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
         return 0;
     }
     case WM_TIMER:
+        CleanupStoppedSingBoxes();
         RefreshList();
+        RefreshSingBoxRates();
+        return 0;
+    case kSbRateUpdateMessage:
+        RefreshSingBoxRates();
         return 0;
     case WM_NOTIFY: {
         NMHDR* nm = (NMHDR*)lp;
@@ -738,6 +866,11 @@ static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
         return (LRESULT)g.hBgBrush;
     }
     case WM_DESTROY:
+        {
+            std::lock_guard<std::mutex> lk(g.mu);
+            for (auto& item : g.singBoxInstances) SbStopInstance(item.second);
+            g.singBoxInstances.clear();
+        }
         if (g.hBgBrush) { ::DeleteObject(g.hBgBrush); g.hBgBrush = NULL; }
         if (g.hWhiteBrush) { ::DeleteObject(g.hWhiteBrush); g.hWhiteBrush = NULL; }
         ::PostQuitMessage(0);

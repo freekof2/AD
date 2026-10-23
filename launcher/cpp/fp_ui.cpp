@@ -691,11 +691,12 @@ std::string FpFormToFpConfig(const FpFormData& f) {
     // [{scheme,host,port,account,password}]；proxyType 空/noProxy/缺 host-port 即 []（直连）。
     // 保存链路（F_OK）原样写 static，protectFill 以缓存为准已有值时不覆盖空值，见下方。
     {
-        std::string scheme = N(f.proxyType), host = N(f.proxyHost),
+        const std::wstring proxyScheme = f.proxyType == L"sing-box" ? L"socks5" : f.proxyType;
+        std::string scheme = N(proxyScheme), host = N(f.proxyHost),
                       port = N(f.proxyPort), user = N(f.proxyUser), pass = N(f.proxyPass);
         if (!scheme.empty() && scheme != "noProxy" && scheme != "noproxy" &&
             !host.empty() && !port.empty()) {
-            o += ",\"ProxyChain\":[{\"scheme\":\"" + JEsc(f.proxyType) +
+            o += ",\"ProxyChain\":[{\"scheme\":\"" + JEsc(proxyScheme) +
                  "\",\"host\":\"" + JEsc(f.proxyHost) +
                  "\",\"port\":\"" + JEsc(f.proxyPort) +
                  "\",\"account\":\"" + JEsc(f.proxyUser) +
@@ -941,6 +942,8 @@ struct FpWnd {
     int scrollY = 0; // 当前滚动偏移（0..kFpContentH-可见高）
     int cookieLenLogged = 0; // Cookie 框长度日志（只记空<->有内容转换，避免逐键刷屏）
     int cookieLenOpened = 0; // 打开时的 Cookie 长度：区分“主动清空”和“本来就是空”
+    bool hasPreSingBoxProxy = false;
+    std::wstring preSingBoxHost, preSingBoxPort, preSingBoxUser, preSingBoxPass;
 };
 
 static HWND FpMk(HWND p, const wchar_t* cls, const wchar_t* txt, DWORD st, int x, int y, int w, int h, int id, HINSTANCE hi) {
@@ -1076,6 +1079,7 @@ static void FpBuildPages(FpWnd* w, HWND p, HINSTANCE hi) {
     FpComboAdd(w->ctl[F_PTYPE - F_BASE], L"socks5");
     FpComboAdd(w->ctl[F_PTYPE - F_BASE], L"http");
     FpComboAdd(w->ctl[F_PTYPE - F_BASE], L"https");
+    FpComboAdd(w->ctl[F_PTYPE - F_BASE], L"sing-box");
     FpMkLabel(p, w, F_PHOST, L"主机", 230, 382, 50);
     FpMkEdit(p, w, F_PHOST, 280, 380, 180);
     FpMkLabel(p, w, F_PPORT, L"端口", 470, 382, 40);
@@ -1330,6 +1334,39 @@ static void FpApplyChFromOs(FpFormData& f) {
     if (f.chBitness != L"32" && f.chBitness != L"64") f.chBitness = L"0";
     if (f.chWow64 != L"1" && f.chWow64 != L"2") f.chWow64 = L"0";
 }
+static void FpApplySingBoxProxy(FpWnd* w) {
+    FpFormData& f = w->form;
+    auto C = [&](int id) { return w->ctl[id - F_BASE]; };
+    f.proxyHost = L"127.0.0.1";
+    f.proxyUser.clear();
+    f.proxyPass.clear();
+    SingBoxConfigInfo info{};
+    std::string error;
+    const std::wstring parent = f.profDataDir.empty()
+        ? EffDataDir(w->cfg, w->profile) : f.profDataDir;
+    const std::wstring profileDir = parent + L"\\" + w->profile;
+    if (!SbReadProfileConfig(profileDir, info, error)) {
+        f.proxyPort.clear();
+        FpSet(C(F_PHOST), f.proxyHost);
+        FpSet(C(F_PPORT), f.proxyPort);
+        FpSet(C(F_PUSER), f.proxyUser);
+        FpSet(C(F_PPASS), f.proxyPass);
+        const std::wstring message = L"sing-box 配置不可用：" + W(error);
+        ::SetWindowTextW(C(F_PSTATUS), message.c_str());
+        if (w->hStatus) ::SetWindowTextW(w->hStatus, message.c_str());
+        LOG(L"指纹代理 sing-box 配置读取失败 profile=" + w->profile + L" " + W(error));
+        return;
+    }
+    f.proxyPort = std::to_wstring(info.listenPort);
+    FpSet(C(F_PHOST), f.proxyHost);
+    FpSet(C(F_PPORT), f.proxyPort);
+    FpSet(C(F_PUSER), f.proxyUser);
+    FpSet(C(F_PPASS), f.proxyPass);
+    const std::wstring message = L"sing-box " + W(info.inboundType) +
+        L" SOCKS 监听端口已读取：" + f.proxyPort;
+    ::SetWindowTextW(C(F_PSTATUS), message.c_str());
+    if (w->hStatus) ::SetWindowTextW(w->hStatus, message.c_str());
+}
 static void FpFill(FpWnd* w) {
     FpFormData& f = w->form;
     auto C = [&](int id) { return w->ctl[id - F_BASE]; };
@@ -1386,6 +1423,7 @@ static void FpFill(FpWnd* w) {
     FpSet(C(F_PPORT), f.proxyPort);
     FpSet(C(F_PUSER), f.proxyUser);
     FpSet(C(F_PPASS), f.proxyPass);
+    if (f.proxyType == L"sing-box") FpApplySingBoxProxy(w);
     FpSet(C(F_COOKIE), f.cookie);
     w->cookieLenLogged = (int)f.cookie.size();
     w->cookieLenOpened = (int)f.cookie.size(); // 保存时判断是否被清空
@@ -2403,6 +2441,31 @@ static LRESULT CALLBACK FpWndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
             // forward 同样需要伪装IP（official ["proxy","forward"] 共用 t.ip）
             ::EnableWindow(C(F_WEBRTCIP), FpWebRtcUsesIp(w->form.webrtc));
             ::EnableWindow(C(F_WEBRTCLOCAL), FpWebRtcUsesIp(w->form.webrtc));
+            return 0;
+        }
+        if (id == F_PTYPE && (code == CBN_SELCHANGE || code == CBN_SELENDOK)) {
+            const std::wstring previousType = w->form.proxyType;
+            FpCollect(w);
+            if (w->form.proxyType == L"sing-box") {
+                if (previousType != L"sing-box") {
+                    w->preSingBoxHost = w->form.proxyHost;
+                    w->preSingBoxPort = w->form.proxyPort;
+                    w->preSingBoxUser = w->form.proxyUser;
+                    w->preSingBoxPass = w->form.proxyPass;
+                    w->hasPreSingBoxProxy = true;
+                }
+                FpApplySingBoxProxy(w);
+            } else if (previousType == L"sing-box" && w->hasPreSingBoxProxy) {
+                w->form.proxyHost = w->preSingBoxHost;
+                w->form.proxyPort = w->preSingBoxPort;
+                w->form.proxyUser = w->preSingBoxUser;
+                w->form.proxyPass = w->preSingBoxPass;
+                FpSet(C(F_PHOST), w->form.proxyHost);
+                FpSet(C(F_PPORT), w->form.proxyPort);
+                FpSet(C(F_PUSER), w->form.proxyUser);
+                FpSet(C(F_PPASS), w->form.proxyPass);
+                w->hasPreSingBoxProxy = false;
+            }
             return 0;
         }
         // 浏览器类型联动浏览器目录：切 sun/flower 时按尾段目录名规则自动建议

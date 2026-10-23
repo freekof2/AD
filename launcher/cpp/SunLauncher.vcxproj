@@ -32,7 +32,7 @@
     <Link>
       <SubSystem>Windows</SubSystem>
       <!-- crypt32 = CryptUnprotectData/CryptStringToBinaryA（读 os_crypt 密钥）；bcrypt = AES-GCM -->
-      <AdditionalDependencies>comctl32.lib;ws2_32.lib;shell32.lib;ole32.lib;comdlg32.lib;crypt32.lib;bcrypt.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>comctl32.lib;ws2_32.lib;winhttp.lib;shell32.lib;ole32.lib;comdlg32.lib;crypt32.lib;bcrypt.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
@@ -41,6 +41,8 @@
     <ClCompile Include="fingerprint.cpp" />
     <ClCompile Include="fp_ui.cpp" />
     <ClCompile Include="fp_cookies.cpp" />
+    <ClCompile Include="singbox_config.cpp" />
+    <ClCompile Include="singbox.cpp" />
     <ClCompile Include="third_party\sqlite\sqlite3.c">
       <PreprocessorDefinitions>_CRT_SECURE_NO_WARNINGS;SQLITE_OMIT_LOAD_EXTENSION;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <CompileAs>CompileAsC</CompileAs>
@@ -51,6 +53,8 @@
     <ClInclude Include="fp_webrtc.h" />
     <ClInclude Include="fp_browser_config.h" />
     <ClInclude Include="fp_cookies.h" />
+    <ClInclude Include="singbox_config.h" />
+    <ClInclude Include="singbox.h" />
     <ClInclude Include="third_party\sqlite\sqlite3.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
