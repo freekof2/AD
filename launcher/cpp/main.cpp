@@ -56,11 +56,11 @@ static void RefreshSingBoxRates() {
         }
     }
     if (g.hSbUpload) {
-        const std::wstring text = L"sing-box ↑ " + FormatByteRate(up);
+        const std::wstring text = L"↑ " + FormatByteRate(up);
         ::SetWindowTextW(g.hSbUpload, text.c_str());
     }
     if (g.hSbDownload) {
-        const std::wstring text = L"sing-box ↓ " + FormatByteRate(down);
+        const std::wstring text = L"↓ " + FormatByteRate(down);
         ::SetWindowTextW(g.hSbDownload, text.c_str());
     }
 }
@@ -658,10 +658,10 @@ static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
         mkBtn(IDC_STOP, L"关闭", 606, 50, 100);
         mkBtn(IDC_REFRESH, L"刷新", 606, 88, 100);
         mkBtn(IDC_FPCONFIG, L"指纹配置", 606, 126, 100);
-        g.hSbUpload = ::CreateWindowW(L"STATIC", L"sing-box ↑ 0 B/s",
+        g.hSbUpload = ::CreateWindowW(L"STATIC", L"↑ 0 B/s",
             WS_CHILD | WS_VISIBLE | SS_LEFT, 606, 174, 138, 22, h,
             (HMENU)(INT_PTR)IDC_SB_UPLOAD, hi, NULL);
-        g.hSbDownload = ::CreateWindowW(L"STATIC", L"sing-box ↓ 0 B/s",
+        g.hSbDownload = ::CreateWindowW(L"STATIC", L"↓ 0 B/s",
             WS_CHILD | WS_VISIBLE | SS_LEFT, 606, 198, 138, 22, h,
             (HMENU)(INT_PTR)IDC_SB_DOWNLOAD, hi, NULL);
         // 新建环境行（搜索行上方 y=524/526/528，标签+输入框+按钮同行；标签加宽防截断）
@@ -669,7 +669,7 @@ static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
         ::CreateWindowW(L"EDIT", L"", WS_CHILD | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL,
             110, 526, 380, 26, h, (HMENU)(INT_PTR)IDC_NEWNAME, hi, NULL);
         mkBtn(IDC_CREATE, L"新建", 498, 524, 100);
-        // 搜索 + 批量行移到底部（y=566，与状态条 598 不重叠；窗口 760 宽，间隙 ≥16；主窗口无日志框）
+        // 搜索 + 批量行移到底部（y=566，与状态条 598 不重叠；窗口 738 宽，右缘贴近启动按钮）
         ::CreateWindowW(L"STATIC", L"搜索:", WS_CHILD | WS_VISIBLE, 12, 568, 40, 22, h, NULL, hi, NULL);
         g.hSearch = ::CreateWindowW(L"EDIT", L"", WS_CHILD | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL,
             56, 566, 220, 24, h, (HMENU)(INT_PTR)IDC_SEARCH, hi, NULL);
@@ -916,7 +916,7 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE, LPWSTR, int show) {
 
     g.hMain = ::CreateWindowExW(0, cls, L"SunLauncher（SunBrowser 启动器）",
         WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_CLIPCHILDREN,
-        CW_USEDEFAULT, CW_USEDEFAULT, 760, 660,
+        CW_USEDEFAULT, CW_USEDEFAULT, 738, 660,
         NULL, NULL, hi, NULL);
     LOG(std::wstring(L"probe CreateWindow=") + (g.hMain ? L"ok" : (L"fail err=" + std::to_wstring(::GetLastError()))));
     if (!g.hMain) {
