@@ -522,7 +522,7 @@ jobs:
             if ($fpc -notmatch $s) { throw "alignment comment '$s' missing in fp_ui.cpp" }
             Write-Host "align comment ok: $s"
           }
-          # 2e. 主窗口几何（760x660，LISTVIEW 三列占满左侧，批量行/新建行/状态条互不重叠）
+          # 2e. 主窗口几何（738x660，LISTVIEW 三列占满左侧，批量行/新建行/状态条互不重叠）
           #     无全局目录区：路径只在指纹配置 A2 行按指纹独立设置（Eff* 解析）
           #     右列操作按钮靠右对齐（x=606，无打开日志目录按钮；主窗口无 DEBUG 日志框）
           $mcpp = Get-Content launcher\cpp\main.cpp -Raw
@@ -539,7 +539,7 @@ jobs:
           }
           Write-Host "listview primary/subitem contract ok"
           foreach ($s in @(                           "12, 12, 582, 494", "606, 12, 100",
-                           "760, 660", "WC_LISTVIEWW", "LVS_REPORT", "LVS_EX_CHECKBOXES",
+                           "738, 660", "WC_LISTVIEWW", "LVS_REPORT", "LVS_EX_CHECKBOXES",
                            "LVS_EX_FULLROWSELECT", "LVN_ITEMCHANGED", "NM_CUSTOMDRAW",
                            "kUiBg", "kUiPanel", "kUiSuccess", "kUiMuted",
                            "LVM_INSERTITEMW", "LVM_SETITEMTEXTW", "LVM_DELETEALLITEMS",
