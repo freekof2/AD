@@ -15,6 +15,8 @@
 **Files:**
 - Modify: `tests/fp_webrtc_test.cpp`
 - Modify: `tests/fp_webrtc_test.vcxproj`
+- Create: `launcher/cpp/fp_json.h`
+- Create: `launcher/cpp/fp_json.cpp`
 - Create: `launcher/cpp/singbox_config.h`
 - Create: `launcher/cpp/singbox_config.cpp`
 
@@ -23,6 +25,7 @@
 - [x] Assert an external cache path is corrected to the profile config directory, `\\` is serialized correctly, already-local absolute/relative paths are unchanged, and outbound data is retained.
 - [x] Assert runtime transformation changes the selected inbound's listen/listen_port and the controller port while retaining the corrected cache path.
 - [x] Add a `socks` inbound fixture and assert it is accepted as well.
+- [x] Test proxy-only JSON persistence: update all five proxy fields and ProxyChain while preserving unrelated UI/static fields.
 - [x] Add `singbox_config.cpp` and its header to the existing test project; do not run tests locally. The GitHub Actions test step is the verification environment.
 
 ### Task 2: Implement per-profile hidden sing-box lifecycle
@@ -47,6 +50,8 @@
 **Files:**
 - Modify: `launcher/cpp/fp_ui.h`
 - Modify: `launcher/cpp/fp_ui.cpp`
+- Modify: `launcher/cpp/fp_json.h`
+- Modify: `launcher/cpp/fp_json.cpp`
 - Modify: `launcher/cpp/fingerprint.cpp`
 - Modify: `launcher/cpp/main.cpp`
 - Modify: `launcher/cpp/SunLauncher.h`
@@ -58,6 +63,7 @@
 - [x] Stream each active instance's Clash API `/traffic` WebSocket on a worker thread, sum the current upload/download rates, and post updates to two labels in the main window's unused right-side area.
 - [x] Show missing executable/config, invalid config, port allocation, and startup errors in the relevant status bar without opening a modal dialog. When API statistics are unavailable, keep the proxy/browser running and show zero rates.
 - [x] Preserve all existing proxy behavior when the selected type is not `sing-box`.
+- [x] Make the renamed “保存代理” button persist only the proxy form fields and ProxyChain immediately, leaving other pending fingerprint edits untouched.
 
 ### Task 4: Add GitHub Actions contract checks and remote verification
 
@@ -65,7 +71,7 @@
 - Modify: `.github/workflows/build-app.yml`
 - Modify: `launcher/README.md`
 
-- [x] Add CI contract checks for the per-profile config path, supported `mixed`/`socks` inbound, hidden process flags, SOCKS5 command mapping, conditional startup, paired stop, and summed traffic UI.
+- [x] Add CI contract checks for per-profile config/cache paths, supported `mixed`/`socks` inbound, hidden process flags, SOCKS5 command mapping, conditional startup, paired stop, summed traffic UI, and proxy-only save behavior.
 - [x] Document the runtime asset layout and that the profile config is `<profile data directory>\\config.json`; missing resources are reported in the status bar.
 - [ ] Review `git status`, `git diff`, and recent commits; stage only the implementation plan and intended feature/test/workflow files, leaving pre-existing `.gitignore` and untracked user files untouched.
 - [ ] Commit on `main`, push to `origin main`, and use the resulting GitHub Actions run as the only test/build verification. Do not run local tests.

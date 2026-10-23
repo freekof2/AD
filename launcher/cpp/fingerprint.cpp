@@ -473,34 +473,6 @@ static size_t SkipValue(const std::string& j, size_t p) {
     while (e > 0 && (j[e - 1] == ' ' || j[e - 1] == '\t' || j[e - 1] == '\r' || j[e - 1] == '\n')) e--;
     return e;
 }
-std::string FpJsonGet(const std::string& json, const std::string& key) {
-    size_t p = SkipWs(json, 0);
-    if (p >= json.size() || json[p] != '{') return "";
-    p++;
-    std::string q = "\"" + key + "\"";
-    while (p < json.size()) {
-        p = SkipWs(json, p);
-        if (p >= json.size() || json[p] == '}') break;
-        if (json.compare(p, q.size(), q) == 0) {
-            p += q.size();
-            p = SkipWs(json, p);
-            if (p < json.size() && json[p] == ':') {
-                p++;
-                size_t vs = SkipWs(json, p);
-                size_t ve = SkipValue(json, vs);
-                return json.substr(vs, ve - vs);
-            }
-            return "";
-        }
-        // 跳过 key: value
-        p = SkipValue(json, p);                       // key
-        p = SkipWs(json, p);
-        if (p < json.size() && json[p] == ':') p = SkipValue(json, p + 1);  // value
-        p = SkipWs(json, p);
-        if (p < json.size() && json[p] == ',') p++;
-    }
-    return "";
-}
 static std::string JsonEscapeStr(const std::string& s) {
     std::string o;
     for (char c : s) {
@@ -509,48 +481,6 @@ static std::string JsonEscapeStr(const std::string& s) {
     }
     return o;
 }
-std::string FpJsonSet(const std::string& json, const std::string& key, const std::string& valueRaw) {
-    if (valueRaw.empty()) return "";
-    size_t p = SkipWs(json, 0);
-    if (p >= json.size() || json[p] != '{') return "";
-    std::string q = "\"" + key + "\"";
-    p++;
-    while (p < json.size()) {
-        size_t sp = SkipWs(json, p);
-        if (sp >= json.size() || json[sp] == '}') break;
-        if (json.compare(sp, q.size(), q) == 0) {
-            size_t vp = sp + q.size();
-            vp = SkipWs(json, vp);
-            if (vp < json.size() && json[vp] == ':') {
-                size_t vs = SkipWs(json, vp + 1);
-                size_t ve = SkipValue(json, vs);
-                std::string o = json;
-                o.replace(vs, ve - vs, valueRaw);
-                return o;
-            }
-            return "";
-        }
-        p = SkipValue(json, sp);
-        p = SkipWs(json, p);
-        if (p < json.size() && json[p] == ':') p = SkipValue(json, p + 1);
-        p = SkipWs(json, p);
-        if (p < json.size() && json[p] == ',') p++;
-    }
-    // key 不存在：追加到 } 之前
-    size_t end = json.find_last_of('}');
-    if (end == std::string::npos) return "";
-    // 判断是否空对象
-    bool emptyObj = true;
-    for (size_t i = 0; i < end; i++) {
-        char c = json[i];
-        if (c != '{' && c != ' ' && c != '\t' && c != '\r' && c != '\n') { emptyObj = false; break; }
-    }
-    std::string o = json;
-    o.insert(end, (emptyObj ? "" : ",") + q + ":" + valueRaw);
-    (void)JsonEscapeStr;
-    return o;
-}
-
 static std::wstring FpWebGlProfilePath(const std::wstring& profileDir,
     const std::string& fbcc, const std::string& staticJson) {
     std::string platformRaw = FpJsonGet(staticJson, "Platform");

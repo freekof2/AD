@@ -1089,7 +1089,7 @@ static void FpBuildPages(FpWnd* w, HWND p, HINSTANCE hi) {
     FpMkLabel(p, w, F_PPASS, L"密码", 290, 416, 40);
     FpMkEdit(p, w, F_PPASS, 330, 414, 150);
     FpMkBtn(p, w, F_PTEST, L"测速/检测", 490, 412, 90);
-    FpMkBtn(p, w, F_PSAVE, L"保存为代理", 590, 412, 110);
+    FpMkBtn(p, w, F_PSAVE, L"保存代理", 590, 412, 100);
     FpMkLabel(p, w, F_PSTATUS, L"未检测", 12, 448, 400);
     // ---- 1. WebRTC（forward 直通；proxy 必须有伪装 IP）----
     FpMkLabel(p, w, F_WEBRTC, L"WebRTC", 12, 482, 70);
@@ -1932,6 +1932,57 @@ static void FpApplyStaticSystemKeys(std::string& sj, const FpFormData& f,
             L" mode=" + f.webrtc + L" " + profileName);
     }
 }
+static bool FpSaveProxyOnly(FpWnd* w, std::wstring& statusOut) {
+    FpCollect(w);
+    const std::wstring profileDir = EffDataDir(w->cfg, w->profile) + L"\\" + w->profile;
+    const std::wstring uiPath = profileDir + L"\\ui_fingerprint.json";
+    const std::wstring staticPath = profileDir + L"\\" + W(FpStaticName(FpFbccIdOf(w->profile)));
+
+    std::string currentUi;
+    const bool uiLoaded = FpLoadUiExtra(profileDir, currentUi);
+    const bool uiFileExists = ::GetFileAttributesW(uiPath.c_str()) != INVALID_FILE_ATTRIBUTES;
+    if (!uiLoaded && uiFileExists) {
+        statusOut = L"代理保存失败：无法读取 ui_fingerprint.json";
+        return false;
+    }
+    if (currentUi.empty()) currentUi = "{}";
+
+    std::string currentStatic;
+    const bool staticLoaded = FpLoadStaticJson(profileDir, currentStatic);
+    const bool staticFileExists = ::GetFileAttributesW(staticPath.c_str()) != INVALID_FILE_ATTRIBUTES;
+    if (!staticLoaded && staticFileExists) {
+        statusOut = L"代理保存失败：static 指纹文件无法解码";
+        return false;
+    }
+    if (currentStatic.empty()) currentStatic = "{}";
+
+    FpProxyJsonPair updated;
+    std::string error;
+    if (!FpBuildProxySaveJson(currentUi, currentStatic, N(w->form.proxyType),
+        N(w->form.proxyHost), N(w->form.proxyPort), N(w->form.proxyUser),
+        N(w->form.proxyPass), updated, error)) {
+        statusOut = L"代理保存失败：" + W(error);
+        return false;
+    }
+    if (!FpSaveUiExtra(profileDir, updated.uiJson)) {
+        statusOut = L"代理保存失败：ui_fingerprint.json 写入失败";
+        return false;
+    }
+    if (!FpSaveStaticJson(profileDir, updated.staticJson)) {
+        const bool rolledBack = uiLoaded
+            ? FpSaveUiExtra(profileDir, currentUi)
+            : (::DeleteFileW(uiPath.c_str()) != FALSE ||
+               ::GetFileAttributesW(uiPath.c_str()) == INVALID_FILE_ATTRIBUTES);
+        statusOut = rolledBack ? L"代理保存失败：static ProxyChain 写入失败，ui 存档已回滚"
+                               : L"代理保存失败且 ui 存档回滚失败，请检查文件权限";
+        return false;
+    }
+    statusOut = L"代理已保存（未保存其它指纹修改）";
+    LOG(L"单独保存代理 OK profile=" + w->profile + L" type=" + w->form.proxyType +
+        L" host=" + w->form.proxyHost + L" port=" + w->form.proxyPort);
+    return true;
+}
+
 // fp_ui.cpp — part 6/6：模态窗口过程 + 保存 + 导入
 static LRESULT CALLBACK FpWndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
     FpWnd* w = (FpWnd*)::GetWindowLongPtrW(h, GWLP_USERDATA);
@@ -2987,7 +3038,10 @@ static LRESULT CALLBACK FpWndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
         }
         if (id == F_PSAVE) {
-            ::SetWindowTextW(w->hStatus, L"代理已随指纹保存（进 ui 存档）");
+            std::wstring status;
+            FpSaveProxyOnly(w, status);
+            FpSet(C(F_PSTATUS), status);
+            ::SetWindowTextW(w->hStatus, status.c_str());
             return 0;
         }
         if (id == F_RANDOM) {

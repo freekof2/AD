@@ -9,6 +9,7 @@
 //      其中 sunBrowserParams.StaticConfig/DynamicConfig/CookiesFile 是上述三个文件的绝对路径
 #pragma once
 #include "SunLauncher.h"
+#include "fp_json.h"
 #include <cstdlib>   // strtol
 #include <cwctype>   // towlower
 #include <cstring>   // memcpy
@@ -42,13 +43,6 @@ bool FpLoadCookiesJson(const std::wstring& profileDir, std::string& jsonOut);
 // 保存：JSON 文本 -> 换表编码 -> 写 md5 文件。写前做 md5(内容)比对，一致则跳过（与官方逻辑一致）。
 bool FpSaveStaticJson(const std::wstring& profileDir, const std::string& jsonText);
 bool FpSaveDynamicJson(const std::wstring& profileDir, const std::string& jsonText);
-
-// ---------- 极简 JSON 键值读写（只够 static/dynamic 的顶层标量/小对象，无第三方依赖） ----------
-// 取顶层 string/number/bool/object/array 的原始文本（含引号/括号）；缺失返回 ""。
-std::string FpJsonGet(const std::string& json, const std::string& key);
-// 设置顶层键：valueRaw 为已序列化的 JSON 片段（如 "\"Win32\"" / "16" / "{\"a\":1}"）。
-// key 不存在则追加到尾部对象。返回新 JSON，失败返回 ""。
-std::string FpJsonSet(const std::string& json, const std::string& key, const std::string& valueRaw);
 
 // CookiesFile 读/写（明文 JSON 数组，官方 setCookie 即 writeFile 明文；读兼容旧换表编码）。
 // 写前做 md5(内容)比对，一致则跳过。

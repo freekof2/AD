@@ -1,6 +1,7 @@
 #include "fp_webrtc.h"
 #include "fp_browser_config.h"
 #include "fp_cookies.h"
+#include "fp_json.h"
 #include "singbox_config.h"
 #include <iostream>
 
@@ -369,6 +370,38 @@ int main() {
     CHECK(!SbParseConfig("not-json", sbInfo, sbError));
     CHECK(!SbParseConfig(R"json({"inbounds":[],"outbounds":[{"type":"direct"}]})json", sbInfo, sbError));
     CHECK(!SbParseConfig(R"json({"inbounds":[{"type":"mixed","listen_port":1080},{"type":"socks","listen_port":1081}]})json", sbInfo, sbError));
+
+    // Save Proxy persists only the proxy fields and static ProxyChain immediately.
+    const std::string priorUi =
+        R"json({"remark":"keep remark","ua":"keep ua","proxyType":"http","proxyHost":"old","proxyPort":"80"})json";
+    const std::string priorStatic =
+        R"json({"UserId":123,"DeviceName":"keep device","ProxyChain":[{"scheme":"http"}]})json";
+    FpProxyJsonPair proxySaved{};
+    std::string proxySaveError;
+    CHECK(FpBuildProxySaveJson(priorUi, priorStatic, "sing-box", "127.0.0.1",
+        "1208", "", "", proxySaved, proxySaveError));
+    CHECK(FpJsonGet(proxySaved.uiJson, "proxyType") == "\"sing-box\"");
+    CHECK(FpJsonGet(proxySaved.uiJson, "proxyHost") == "\"127.0.0.1\"");
+    CHECK(FpJsonGet(proxySaved.uiJson, "proxyPort") == "\"1208\"");
+    CHECK(FpJsonGet(proxySaved.uiJson, "remark") == "\"keep remark\"");
+    CHECK(FpJsonGet(proxySaved.uiJson, "ua") == "\"keep ua\"");
+    CHECK(FpJsonGet(proxySaved.staticJson, "DeviceName") == "\"keep device\"");
+    const std::string savedChain = FpJsonGet(proxySaved.staticJson, "ProxyChain");
+    CHECK(savedChain.find("\"scheme\":\"socks5\"") != std::string::npos);
+    CHECK(savedChain.find("\"host\":\"127.0.0.1\"") != std::string::npos);
+    CHECK(savedChain.find("\"port\":\"1208\"") != std::string::npos);
+
+    CHECK(FpBuildProxySaveJson(proxySaved.uiJson, proxySaved.staticJson, "http",
+        "198.51.100.2", "3128", "ali\"ce", "p\\ass", proxySaved, proxySaveError));
+    CHECK(FpJsonGet(proxySaved.uiJson, "proxyType") == "\"http\"");
+    CHECK(FpJsonGet(proxySaved.uiJson, "proxyUser") == R"("ali\"ce")");
+    CHECK(FpJsonGet(proxySaved.uiJson, "proxyPass") == R"("p\\ass")");
+    const std::string httpChain = FpJsonGet(proxySaved.staticJson, "ProxyChain");
+    CHECK(httpChain.find("\"scheme\":\"http\"") != std::string::npos);
+    CHECK(httpChain.find(R"("account":"ali\"ce")") != std::string::npos);
+    CHECK(httpChain.find(R"("password":"p\\ass")") != std::string::npos);
+    CHECK(!FpBuildProxySaveJson("broken", priorStatic, "http", "host", "80", "", "",
+        proxySaved, proxySaveError));
 
     ::WSACleanup();
     return 0;

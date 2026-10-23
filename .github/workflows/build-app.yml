@@ -180,6 +180,15 @@ jobs:
                            'f.proxyType == L"sing-box" ? L"socks5"')) {
             if ($fpcProxy -notmatch [regex]::Escape($s)) { throw "sing-box proxy UI contract '$s' missing" }
           }
+          $fpJson = Get-Content launcher\cpp\fp_json.cpp -Raw
+          foreach ($s in @("FpBuildProxySaveJson", "proxyType", "proxyHost", "proxyPort",
+                           "proxyUser", "proxyPass", "ProxyChain", '"sing-box" ? "socks5"')) {
+            if ($fpJson -notmatch [regex]::Escape($s)) { throw "proxy-save JSON contract '$s' missing" }
+          }
+          foreach ($s in @("if (id == F_PSAVE)", "FpBuildProxySaveJson", "FpSaveUiExtra",
+                           "FpSaveStaticJson", 'L"保存代理"', "590, 412, 100")) {
+            if ($fpcProxy -notmatch [regex]::Escape($s)) { throw "immediate proxy-save UI contract '$s' missing" }
+          }
           Write-Host "sing-box config/runtime/proxy contracts ok"
           foreach ($s in @('"ProxyChain"', "指纹保存 static ")) {
             if ($fpcProxy -notmatch [regex]::Escape($s)) { throw "missing proxy-save symbol '$s' in fp_ui.cpp" }
@@ -498,13 +507,14 @@ jobs:
           # 2c. vcxproj 必须编译新模块
           $vcx = Get-Content launcher\cpp\SunLauncher.vcxproj -Raw
           foreach ($s in @("fp_ui.cpp", "fp_ui.h", "fp_webrtc.h", "fp_browser_config.h",
+                           "fp_json.cpp", "fp_json.h",
                            "singbox.cpp", "singbox.h", "singbox_config.cpp", "singbox_config.h",
                            "winhttp.lib")) {
             if ($vcx -notmatch [regex]::Escape($s)) { throw "missing '$s' in vcxproj" }
             Write-Host "vcxproj ok: $s"
           }
           $testProject = Get-Content tests\fp_webrtc_test.vcxproj -Raw
-          foreach ($s in @("singbox_config.cpp", "singbox_config.h")) {
+          foreach ($s in @("fp_json.cpp", "fp_json.h", "singbox_config.cpp", "singbox_config.h")) {
             if ($testProject -notmatch [regex]::Escape($s)) { throw "sing-box test project missing '$s'" }
           }
           # 2d. 注释溯源：关键函数名必须出现在 fp_ui.cpp（防实现漂移）
