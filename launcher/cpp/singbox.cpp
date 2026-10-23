@@ -35,19 +35,43 @@ static bool SbWriteUtf8File(const std::wstring& path, const std::string& content
     if (file == INVALID_HANDLE_VALUE) return false;
     size_t written = 0;
     bool ok = true;
+    DWORD failure = ERROR_SUCCESS;
     while (written < content.size()) {
         DWORD chunk = (DWORD)std::min<size_t>(content.size() - written, 1u << 20);
         DWORD done = 0;
         if (!::WriteFile(file, content.data() + written, chunk, &done, NULL) || done == 0) {
             ok = false;
+            failure = ::GetLastError();
             break;
         }
         written += done;
     }
-    if (ok && !::FlushFileBuffers(file)) ok = false;
+    if (ok && !::FlushFileBuffers(file)) { ok = false; failure = ::GetLastError(); }
     ::CloseHandle(file);
-    if (!ok) ::DeleteFileW(path.c_str());
+    if (!ok) {
+        ::DeleteFileW(path.c_str());
+        ::SetLastError(failure);
+    }
     return ok;
+}
+
+static bool SbReplaceUtf8File(const std::wstring& path, const std::string& content,
+    DWORD& errorOut) {
+    std::wstring temporary = path + L".sunlauncher." +
+        std::to_wstring(::GetCurrentProcessId()) + L"." +
+        std::to_wstring(::GetTickCount64()) + L".tmp";
+    if (!SbWriteUtf8File(temporary, content)) {
+        errorOut = ::GetLastError();
+        return false;
+    }
+    if (!::MoveFileExW(temporary.c_str(), path.c_str(),
+        MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+        errorOut = ::GetLastError();
+        ::DeleteFileW(temporary.c_str());
+        return false;
+    }
+    errorOut = ERROR_SUCCESS;
+    return true;
 }
 
 static std::string SbNewApiSecret() {
@@ -287,8 +311,34 @@ bool SbStartInstance(const std::wstring& appDir, const std::wstring& profileDir,
     }
     SingBoxConfigInfo sourceInfo{};
     std::string detail;
-    if (!SbReadProfileConfig(profileDir, sourceInfo, detail)) {
-        error = W(detail);
+    const std::wstring sourceConfigPath = profileDir + L"\\config.json";
+    std::string sourceJson;
+    if (!FpReadTextFile(sourceConfigPath, sourceJson)) {
+        error = L"profile sing-box config not found：" + sourceConfigPath;
+        return false;
+    }
+    if (sourceJson.size() >= 3 && (unsigned char)sourceJson[0] == 0xef &&
+        (unsigned char)sourceJson[1] == 0xbb && (unsigned char)sourceJson[2] == 0xbf)
+        sourceJson.erase(0, 3);
+    std::string normalizedConfig, cachePath;
+    bool cachePathChanged = false;
+    if (!SbNormalizeCacheFilePath(sourceJson, SbWideToUtf8(sourceConfigPath),
+        normalizedConfig, cachePath, cachePathChanged, detail)) {
+        error = L"检查 sing-box cache_file.path 失败：" + W(detail);
+        return false;
+    }
+    if (cachePathChanged) {
+        DWORD writeError = 0;
+        if (!SbReplaceUtf8File(sourceConfigPath, normalizedConfig, writeError)) {
+            error = L"修正 sing-box config.json 的 cache_file.path 失败，错误码=" +
+                std::to_wstring(writeError);
+            return false;
+        }
+        LOG(L"sing-box cache_file.path 已修正到指纹目录 " + W(cachePath));
+    }
+    sourceJson = normalizedConfig;
+    if (!SbParseConfig(sourceJson, sourceInfo, detail)) {
+        error = L"sing-box 配置无效：" + W(detail);
         return false;
     }
     const std::wstring executable = appDir + L"\\sing-box\\sing-box.exe";
@@ -310,18 +360,9 @@ bool SbStartInstance(const std::wstring& appDir, const std::wstring& profileDir,
     }
 
     const std::string secret = SbNewApiSecret();
-    const std::wstring cachePathW = profileDir + L"\\sing-box-cache.db";
     std::string runtimeJson;
-    std::string sourceJson;
-    if (!FpReadTextFile(profileDir + L"\\config.json", sourceJson)) {
-        error = L"读取 sing-box 配置失败：" + profileDir + L"\\config.json";
-        return false;
-    }
-    if (sourceJson.size() >= 3 && (unsigned char)sourceJson[0] == 0xef &&
-        (unsigned char)sourceJson[1] == 0xbb && (unsigned char)sourceJson[2] == 0xbf)
-        sourceJson.erase(0, 3);
     std::string buildError;
-    if (!SbBuildRuntimeConfig(sourceJson, socksPort, apiPort, SbWideToUtf8(cachePathW),
+    if (!SbBuildRuntimeConfig(sourceJson, socksPort, apiPort, cachePath,
         secret, runtimeJson, buildError)) {
         error = L"sing-box 配置处理失败：" + W(buildError);
         return false;

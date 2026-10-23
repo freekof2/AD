@@ -4,7 +4,7 @@
 
 **Goal:** Start one hidden sing-box instance only for profiles whose saved proxy mode is `sing-box`, route that browser through its SOCKS-compatible local inbound, and display summed live upload/download rates.
 
-**Architecture:** Read each profile's `config.json` from its effective profile data directory and read the application-wide executable from `AppDir()\sing-box\sing-box.exe`. Build an unmodified-source runtime copy with per-instance inbound, Clash API, and cache paths; pair its process with the profile's browser process. Keep JSON/config transforms separately testable and keep network statistics off the UI thread.
+**Architecture:** Read each profile's `config.json` from its effective profile data directory and read the application-wide executable from `AppDir()\sing-box\sing-box.exe`. Before each launch, repair the original config's `experimental.cache_file.path` only if its resolved parent is not the config directory, preserving the database filename and writing valid JSON escapes. Then build a runtime copy with per-instance inbound and Clash API ports; pair its process with the profile's browser process. Keep JSON/config transforms separately testable and keep network statistics off the UI thread.
 
 **Tech Stack:** C++17, Win32 process/window APIs, WinHTTP WebSocket API, MSVC/GitHub Actions.
 
@@ -20,7 +20,8 @@
 
 - [x] Add a fixture with one `mixed` inbound (`listen_port: 1208`), a loopback `clash_api.external_controller`, and an enabled `cache_file`.
 - [x] Assert parsing returns the inbound type and listen port; reject malformed JSON, no supported inbound, and multiple supported inbounds.
-- [x] Assert runtime transformation changes only the selected inbound's listen/listen_port, changes the controller port, and gives the cache a profile-specific path while retaining outbound data.
+- [x] Assert an external cache path is corrected to the profile config directory, `\\` is serialized correctly, already-local absolute/relative paths are unchanged, and outbound data is retained.
+- [x] Assert runtime transformation changes the selected inbound's listen/listen_port and the controller port while retaining the corrected cache path.
 - [x] Add a `socks` inbound fixture and assert it is accepted as well.
 - [x] Add `singbox_config.cpp` and its header to the existing test project; do not run tests locally. The GitHub Actions test step is the verification environment.
 
@@ -34,6 +35,7 @@
 
 - [x] Define profile runtime state containing the sing-box process handle/PID, effective SOCKS and API ports, runtime config path, API secret, and latest upload/download rates.
 - [x] Resolve the executable as `AppDir() + L"\\sing-box\\sing-box.exe"` and the source config as `<effective profile directory>\\config.json`.
+- [x] Before allocation, normalize the original profile config's `cache_file.path`; atomically write it back only if it is outside the config directory, preserving its filename (for example, `cache.db`).
 - [x] Allocate non-conflicting loopback inbound and API ports; generate the runtime config beside the profile config so relative paths keep the profile directory as working directory.
 - [x] Start `sing-box.exe run -c <runtime config>` with hidden/no-console process flags, wait for the SOCKS port to accept connections, and roll back the process/config on startup failure.
 - [x] Bind the generated SOCKS listener and Clash API to `127.0.0.1`; change an existing Clash controller port or add one when absent; assign a unique cache path if `cache_file` is enabled.
@@ -72,4 +74,5 @@
 
 - Runtime evidence from the deployment directory showed `F:\\AD\\sing-box\\sing-box.exe` and a profile config at `F:\\AD\\cache\\k1hiq8ua_hyg6dd\\config.json`.
 - That config uses one `mixed` inbound, a loopback Clash API, and an enabled cache file. Other profiles may lack their own `config.json`; this must produce a status-bar message.
+- If `experimental.cache_file.path` is outside the profile config directory, each sing-box launch rewrites only that source field to `<profile directory>\<original filename>` with JSON backslashes escaped.
 - The repository's current local changes are unrelated and must not be staged or overwritten.

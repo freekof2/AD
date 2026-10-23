@@ -157,15 +157,16 @@ jobs:
           Write-Host "localip contract ok"
           # sing-box config parsing and isolated runtime configuration.
           $sbConfig = Get-Content launcher\cpp\singbox_config.cpp -Raw
-          foreach ($s in @("SbParseConfig", "SbBuildRuntimeConfig", '"mixed"', '"socks"',
+          foreach ($s in @("SbParseConfig", "SbNormalizeCacheFilePath", "SbBuildRuntimeConfig", '"mixed"', '"socks"',
                            '"listen_port"', '"external_controller"', '"cache_file"',
-                           'StringValue("127.0.0.1")')) {
+                           'StringValue("127.0.0.1")', 'cache_file.path')) {
             if ($sbConfig -notmatch [regex]::Escape($s)) { throw "sing-box config contract '$s' missing" }
           }
           $sbRuntime = Get-Content launcher\cpp\singbox.cpp -Raw
           foreach ($s in @('L"\\sing-box\\sing-box.exe"', 'L"\\config.json"',
                            "CREATE_NO_WINDOW", "SW_HIDE", '"/traffic"',
-                           'L"Authorization: Bearer "', "SbWaitForInbound", "SbStopInstance")) {
+                           'L"Authorization: Bearer "', "SbNormalizeCacheFilePath",
+                           "SbReplaceUtf8File", "cachePathChanged", "SbWaitForInbound", "SbStopInstance")) {
             if ($sbRuntime -notmatch [regex]::Escape($s)) { throw "sing-box runtime contract '$s' missing" }
           }
           $mainSb = Get-Content launcher\cpp\main.cpp -Raw

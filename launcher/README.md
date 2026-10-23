@@ -19,8 +19,11 @@ profile，一键**指纹注入启动**/关闭。只读写本地缓存目录，**
 - sing-box：程序放在 `SunLauncher.exe` 同级 `sing-box\sing-box.exe`；每个 profile 的配置
   放在其生效数据目录下的 `<profile>\config.json`。代理下拉框选 `sing-box` 才会启动隐藏的
   sing-box 子进程；支持单个 `socks` 或 `mixed` 入站，浏览器以 SOCKS5 连接 loopback。
-  启动器为每个 profile 创建临时配置副本，隔离监听/API/cache 端口，不修改原始配置；主窗口
-  汇总所有运行中 sing-box 的上传/下载速率。缺少程序或配置、配置无效时在状态栏提示。
+  启动器为每个 profile 创建临时配置副本，隔离监听/API 端口并使用该 profile 的 cache 文件；
+  原始配置仅按下条规则修正 cache 路径。主窗口
+  汇总所有运行中 sing-box 的上传/下载速率。每次启动前会检查原始配置的
+  `experimental.cache_file.path`；若缓存文件不在 `config.json` 同目录，会保留文件名并写回为该目录下的路径。
+  缺少程序或配置、配置无效时在状态栏提示。
 - 代理选 `socks5` / `http` / `https` 时继续使用现有代理启动路径，不会启动 sing-box。
 - 冲突规则（以缓存为准）：`UserId/CanvasMark/WebGLMark/AudioFp/ClientRects/`
   `ProxyChain/DeviceName/MacAddress/MediaDevices/TTSEngines/Langs/`

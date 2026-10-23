@@ -1,6 +1,7 @@
 #include "singbox_config.h"
 
 #include <cstdlib>
+#include <cctype>
 #include <cstring>
 #include <utility>
 #include <vector>
@@ -257,6 +258,96 @@ static void SetMember(JsonValue& object, const std::string& key, JsonValue value
     object.members.emplace_back(key, std::move(value));
 }
 
+static std::string NormalizeWindowsPath(const std::string& raw) {
+    std::string path = raw;
+    for (char& c : path) if (c == '/') c = '\\';
+    std::string prefix;
+    size_t position = 0;
+    bool rooted = false;
+    if (path.size() >= 2 && path[0] == '\\' && path[1] == '\\') {
+        prefix = "\\\\";
+        position = 2;
+        rooted = true;
+    } else if (path.size() >= 2 && std::isalpha((unsigned char)path[0]) && path[1] == ':') {
+        prefix = path.substr(0, 2);
+        position = 2;
+        if (position < path.size() && path[position] == '\\') {
+            prefix.push_back('\\');
+            position++;
+            rooted = true;
+        } else {
+            // A drive-relative path is treated as rooted so it cannot be mistaken
+            // for a path under the config directory.
+            prefix.push_back('\\');
+            rooted = true;
+        }
+    } else if (!path.empty() && path[0] == '\\') {
+        prefix = "\\";
+        position = 1;
+        rooted = true;
+    }
+
+    std::vector<std::string> parts;
+    while (position <= path.size()) {
+        const size_t next = path.find('\\', position);
+        const size_t end = next == std::string::npos ? path.size() : next;
+        const std::string part = path.substr(position, end - position);
+        if (!part.empty() && part != ".") {
+            if (part == "..") {
+                if (!parts.empty() && parts.back() != "..") parts.pop_back();
+                else if (!rooted) parts.push_back(part);
+            } else {
+                parts.push_back(part);
+            }
+        }
+        if (next == std::string::npos) break;
+        position = next + 1;
+    }
+    std::string normalized = prefix;
+    for (const std::string& part : parts) {
+        if (!normalized.empty() && normalized.back() != '\\') normalized.push_back('\\');
+        normalized += part;
+    }
+    if (normalized.empty()) return ".";
+    return normalized;
+}
+
+static bool IsAbsoluteWindowsPath(const std::string& path) {
+    return (!path.empty() && (path[0] == '\\' || path[0] == '/')) ||
+        (path.size() >= 2 && std::isalpha((unsigned char)path[0]) && path[1] == ':');
+}
+
+static std::string DirectoryName(const std::string& path) {
+    const std::string normalized = NormalizeWindowsPath(path);
+    const size_t slash = normalized.find_last_of('\\');
+    if (slash == std::string::npos) return {};
+    if (slash == 2 && normalized.size() >= 3 && normalized[1] == ':')
+        return normalized.substr(0, 3);
+    if (slash == 0) return "\\";
+    return normalized.substr(0, slash);
+}
+
+static std::string BaseName(const std::string& path) {
+    std::string normalized = path;
+    for (char& c : normalized) if (c == '/') c = '\\';
+    while (!normalized.empty() && normalized.back() == '\\') normalized.pop_back();
+    const size_t slash = normalized.find_last_of('\\');
+    return slash == std::string::npos ? normalized : normalized.substr(slash + 1);
+}
+
+static std::string JoinWindowsPath(const std::string& directory, const std::string& leaf) {
+    if (directory.empty()) return leaf;
+    if (directory.back() == '\\') return directory + leaf;
+    return directory + "\\" + leaf;
+}
+
+static std::string FoldWindowsPath(const std::string& path) {
+    std::string folded = NormalizeWindowsPath(path);
+    for (char& c : folded) c = (char)std::tolower((unsigned char)c);
+    while (folded.size() > 3 && folded.back() == '\\') folded.pop_back();
+    return folded;
+}
+
 static JsonValue StringValue(const std::string& text) {
     JsonValue value;
     value.kind = JsonValue::Kind::String;
@@ -452,6 +543,66 @@ bool SbParseConfig(const std::string& json, SingBoxConfigInfo& info, std::string
     }
     info = std::move(parsed);
     error.clear();
+    return true;
+}
+
+bool SbNormalizeCacheFilePath(const std::string& json, const std::string& configPath,
+    std::string& normalizedJson, std::string& cachePath, bool& changed,
+    std::string& error) {
+    normalizedJson = json;
+    cachePath.clear();
+    changed = false;
+    error.clear();
+    const std::string configDirectory = DirectoryName(configPath);
+    if (configDirectory.empty()) {
+        error = "config path must include its containing directory";
+        return false;
+    }
+
+    JsonValue root;
+    if (!ParseDocument(json, root, error)) return false;
+    JsonValue* experimental = FindMember(root, "experimental");
+    if (!experimental) return true;
+    if (experimental->kind != JsonValue::Kind::Object) {
+        error = "experimental must be an object";
+        return false;
+    }
+    JsonValue* cache = FindMember(*experimental, "cache_file");
+    if (!cache) return true;
+    if (cache->kind != JsonValue::Kind::Object) {
+        error = "experimental.cache_file must be an object";
+        return false;
+    }
+    const JsonValue* enabled = FindMember(*cache, "enabled");
+    if (enabled && enabled->kind != JsonValue::Kind::Boolean) {
+        error = "cache_file.enabled must be a boolean";
+        return false;
+    }
+    const bool cacheEnabled = enabled && enabled->scalar == "true";
+    const JsonValue* path = FindMember(*cache, "path");
+    if (path && path->kind != JsonValue::Kind::String) {
+        error = "cache_file.path must be a string";
+        return false;
+    }
+    if (!path && !cacheEnabled) return true;
+
+    const std::string currentPath = path ? path->scalar : std::string();
+    if (!currentPath.empty()) {
+        const std::string resolvedPath = IsAbsoluteWindowsPath(currentPath)
+            ? currentPath : JoinWindowsPath(configDirectory, currentPath);
+        if (FoldWindowsPath(DirectoryName(resolvedPath)) == FoldWindowsPath(configDirectory)) {
+            cachePath = currentPath;
+            return true;
+        }
+    }
+
+    std::string fileName = BaseName(currentPath);
+    if (fileName.empty() || fileName == "." || fileName == "..") fileName = "cache.db";
+    cachePath = JoinWindowsPath(NormalizeWindowsPath(configDirectory), fileName);
+    SetMember(*cache, "path", StringValue(cachePath));
+    changed = true;
+    normalizedJson.clear();
+    Serialize(root, normalizedJson);
     return true;
 }
 

@@ -295,7 +295,7 @@ int main() {
     CHECK(FpCookiesSameSiteToInt("Unspecified") == -1);
     CHECK(FpCookiesSameSiteToInt("") == -1);
 
-    // sing-box: each profile gets an isolated runtime copy while its source config remains unchanged.
+    // sing-box runtime transformation keeps the source input intact after path normalization.
     const std::string mixedConfig = R"json({
       "inbounds": [{"type":"mixed","tag":"socks","listen":"0.0.0.0","listen_port":1208}],
       "outbounds": [{"type":"direct","tag":"proxy"}],
@@ -310,6 +310,35 @@ int main() {
     CHECK(sbInfo.inboundType == "mixed" && sbInfo.inboundListen == "0.0.0.0");
     CHECK(sbInfo.listenPort == 1208 && sbInfo.controller == "127.0.0.1:1210");
     CHECK(sbInfo.cachePath == "shared-cache.db");
+
+    // An external cache path is repaired into the profile config directory and JSON-escaped.
+    const std::string cachePathConfig = R"json({
+      "inbounds":[{"type":"mixed","listen":"0.0.0.0","listen_port":1208}],
+      "experimental":{"cache_file":{"enabled":true,"path":"F:\\软件\\v2rayN\\bin\\cache.db"}}
+    })json";
+    const std::string profileConfigPath = R"(F:\AD\cache\profile\config.json)";
+    std::string repairedJson, repairedCachePath;
+    bool cachePathChanged = false;
+    CHECK(SbNormalizeCacheFilePath(cachePathConfig, profileConfigPath,
+        repairedJson, repairedCachePath, cachePathChanged, sbError));
+    CHECK(cachePathChanged);
+    CHECK(repairedCachePath == R"(F:\AD\cache\profile\cache.db)");
+    CHECK(repairedJson.find(R"("path":"F:\\AD\\cache\\profile\\cache.db")") != std::string::npos);
+    CHECK(SbParseConfig(repairedJson, sbInfo, sbError));
+    CHECK(sbInfo.cachePath == repairedCachePath);
+    std::string alreadyLocalJson, alreadyLocalPath;
+    cachePathChanged = true;
+    CHECK(SbNormalizeCacheFilePath(repairedJson, profileConfigPath,
+        alreadyLocalJson, alreadyLocalPath, cachePathChanged, sbError));
+    CHECK(!cachePathChanged && alreadyLocalJson == repairedJson);
+    const std::string relativeCacheConfig = R"json({
+      "inbounds":[{"type":"socks","listen_port":1080}],
+      "experimental":{"cache_file":{"enabled":true,"path":"cache.db"}}
+    })json";
+    CHECK(SbNormalizeCacheFilePath(relativeCacheConfig, profileConfigPath,
+        alreadyLocalJson, alreadyLocalPath, cachePathChanged, sbError));
+    CHECK(!cachePathChanged && alreadyLocalPath == "cache.db");
+
     std::string sbRuntime;
     CHECK(SbBuildRuntimeConfig(mixedConfig, 1308, 1310,
         "F:\\AD\\cache\\profile\\sing-box-cache.db", "test-secret",
