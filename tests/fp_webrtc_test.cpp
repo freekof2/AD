@@ -325,8 +325,9 @@ int main() {
     CHECK(cachePathChanged);
     CHECK(repairedCachePath == R"(F:\AD\cache\profile\cache.db)");
     CHECK(repairedJson.find(R"("path":"F:\\AD\\cache\\profile\\cache.db")") != std::string::npos);
-    CHECK(SbParseConfig(repairedJson, sbInfo, sbError));
-    CHECK(sbInfo.cachePath == repairedCachePath);
+    SingBoxConfigInfo repairedInfo{};
+    CHECK(SbParseConfig(repairedJson, repairedInfo, sbError));
+    CHECK(repairedInfo.cachePath == repairedCachePath);
     std::string alreadyLocalJson, alreadyLocalPath;
     cachePathChanged = true;
     CHECK(SbNormalizeCacheFilePath(repairedJson, profileConfigPath,
