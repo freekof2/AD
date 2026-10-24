@@ -3,8 +3,9 @@
 #include <cstdint>
 #include <string>
 
-// sing-box config.json subset used by SunLauncher. Only cache_file.path may be normalized
-// in the original file; per-instance ports are written to a separate runtime copy.
+// sing-box config.json subset used by SunLauncher. cache_file.path and the saved
+// preferred listen_port may be normalized in the profile config; runtime ports
+// are written to a separate per-instance copy.
 struct SingBoxConfigInfo {
     std::string inboundType;
     std::string inboundListen;

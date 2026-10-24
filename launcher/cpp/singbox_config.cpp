@@ -606,6 +606,40 @@ bool SbNormalizeCacheFilePath(const std::string& json, const std::string& config
     return true;
 }
 
+bool SbUpdateListenPortConfig(const std::string& sourceJson,
+    const std::string& requestedPort, std::string& updatedJson,
+    uint16_t& portOut, bool& changed, std::string& error) {
+    updatedJson = sourceJson;
+    portOut = 0;
+    changed = false;
+    error.clear();
+    if (requestedPort.empty() || requestedPort.find_first_not_of("0123456789") != std::string::npos) {
+        error = "listen_port must contain decimal digits only";
+        return false;
+    }
+    char* end = nullptr;
+    const unsigned long requested = std::strtoul(requestedPort.c_str(), &end, 10);
+    if (!end || *end != '\0' || requested < 1 || requested > 65535) {
+        error = "listen_port must be in the range 1..65535";
+        return false;
+    }
+
+    JsonValue root;
+    if (!ParseDocument(sourceJson, root, error)) return false;
+    JsonValue* inbound = nullptr;
+    std::string inboundType;
+    uint16_t originalPort = 0;
+    if (!FindSocksInbound(root, inbound, inboundType, originalPort, error)) return false;
+
+    portOut = (uint16_t)requested;
+    changed = (portOut != originalPort);
+    if (!changed) return true;
+    SetMember(*inbound, "listen_port", NumberValue(portOut));
+    updatedJson.clear();
+    Serialize(root, updatedJson);
+    return true;
+}
+
 bool SbBuildRuntimeConfig(const std::string& sourceJson, uint16_t listenPort,
     uint16_t apiPort, const std::string& cachePath, const std::string& apiSecret,
     std::string& runtimeJson, std::string& error) {
