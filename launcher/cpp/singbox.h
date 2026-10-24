@@ -35,5 +35,9 @@ bool SbReadProfileConfig(const std::wstring& profileDir, SingBoxConfigInfo& info
 bool SbStartInstance(const std::wstring& appDir, const std::wstring& profileDir,
     HWND notifyWindow, std::unique_ptr<SingBoxInstance>& instance, std::wstring& error);
 
+// Atomically replace a UTF-8 profile sing-box config file.
+bool SbWriteConfigAtomically(const std::wstring& path, const std::string& content,
+    DWORD& errorOut);
+
 // Stops and joins only this profile's instance, then removes its generated config.
 void SbStopInstance(std::unique_ptr<SingBoxInstance>& instance);

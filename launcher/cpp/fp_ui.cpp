@@ -1937,6 +1937,31 @@ static bool FpSaveProxyOnly(FpWnd* w, std::wstring& statusOut) {
     const std::wstring profileDir = EffDataDir(w->cfg, w->profile) + L"\\" + w->profile;
     const std::wstring uiPath = profileDir + L"\\ui_fingerprint.json";
     const std::wstring staticPath = profileDir + L"\\" + W(FpStaticName(FpFbccIdOf(w->profile)));
+    const bool singBoxMode = w->form.proxyType == L"sing-box";
+    const std::wstring configPath = profileDir + L"\\config.json";
+    std::string updatedConfig;
+    bool configChanged = false;
+    if (singBoxMode) {
+        std::string sourceConfig;
+        if (!FpReadTextFile(configPath, sourceConfig)) {
+            statusOut = L"代理保存失败：找不到该指纹的 config.json";
+            return false;
+        }
+        if (sourceConfig.size() >= 3 && (unsigned char)sourceConfig[0] == 0xef &&
+            (unsigned char)sourceConfig[1] == 0xbb && (unsigned char)sourceConfig[2] == 0xbf)
+            sourceConfig.erase(0, 3);
+        uint16_t listenPort = 0;
+        std::string configError;
+        if (!SbUpdateListenPortConfig(sourceConfig, N(w->form.proxyPort), updatedConfig,
+            listenPort, configChanged, configError)) {
+            statusOut = L"代理保存失败：" + W(configError);
+            return false;
+        }
+        w->form.proxyHost = L"127.0.0.1";
+        w->form.proxyPort = std::to_wstring(listenPort);
+        FpSet(w->ctl[F_PHOST - F_BASE], w->form.proxyHost);
+        FpSet(w->ctl[F_PPORT - F_BASE], w->form.proxyPort);
+    }
 
     std::string currentUi;
     const bool uiLoaded = FpLoadUiExtra(profileDir, currentUi);
@@ -1956,6 +1981,19 @@ static bool FpSaveProxyOnly(FpWnd* w, std::wstring& statusOut) {
     }
     if (currentStatic.empty()) currentStatic = "{}";
 
+    auto rollbackUi = [&]() {
+        return uiLoaded
+            ? FpSaveUiExtra(profileDir, currentUi)
+            : (::DeleteFileW(uiPath.c_str()) != FALSE ||
+               ::GetFileAttributesW(uiPath.c_str()) == INVALID_FILE_ATTRIBUTES);
+    };
+    auto rollbackStatic = [&]() {
+        return staticLoaded
+            ? FpSaveStaticJson(profileDir, currentStatic)
+            : (::DeleteFileW(staticPath.c_str()) != FALSE ||
+               ::GetFileAttributesW(staticPath.c_str()) == INVALID_FILE_ATTRIBUTES);
+    };
+
     FpProxyJsonPair updated;
     std::string error;
     if (!FpBuildProxySaveJson(currentUi, currentStatic, N(w->form.proxyType),
@@ -1965,19 +2003,32 @@ static bool FpSaveProxyOnly(FpWnd* w, std::wstring& statusOut) {
         return false;
     }
     if (!FpSaveUiExtra(profileDir, updated.uiJson)) {
-        statusOut = L"代理保存失败：ui_fingerprint.json 写入失败";
+        statusOut = rollbackUi() ? L"代理保存失败：ui_fingerprint.json 写入失败，原存档已恢复"
+                                 : L"代理存档写入及回滚均失败，请检查文件权限";
         return false;
     }
     if (!FpSaveStaticJson(profileDir, updated.staticJson)) {
-        const bool rolledBack = uiLoaded
-            ? FpSaveUiExtra(profileDir, currentUi)
-            : (::DeleteFileW(uiPath.c_str()) != FALSE ||
-               ::GetFileAttributesW(uiPath.c_str()) == INVALID_FILE_ATTRIBUTES);
-        statusOut = rolledBack ? L"代理保存失败：static ProxyChain 写入失败，ui 存档已回滚"
-                               : L"代理保存失败且 ui 存档回滚失败，请检查文件权限";
+        const bool staticRolledBack = rollbackStatic();
+        const bool uiRolledBack = rollbackUi();
+        statusOut = (staticRolledBack && uiRolledBack)
+            ? L"代理保存失败：static ProxyChain 写入失败，存档已回滚"
+            : L"代理保存失败且存档回滚不完整，请检查文件权限";
         return false;
     }
-    statusOut = L"代理已保存（未保存其它指纹修改）";
+    if (singBoxMode && configChanged) {
+        DWORD writeError = ERROR_SUCCESS;
+        if (!SbWriteConfigAtomically(configPath, updatedConfig, writeError)) {
+            const bool staticRolledBack = rollbackStatic();
+            const bool uiRolledBack = rollbackUi();
+            statusOut = (staticRolledBack && uiRolledBack)
+                ? L"代理 config.json 写入失败，代理存档已回滚，错误码=" + std::to_wstring(writeError)
+                : L"代理 config.json 写入失败且代理存档回滚不完整，请检查文件权限";
+            return false;
+        }
+    }
+    statusOut = singBoxMode
+        ? L"sing-box 代理和端口已保存；新端口下次启动生效（未保存其它指纹修改）"
+        : L"代理已保存（未保存其它指纹修改）";
     LOG(L"单独保存代理 OK profile=" + w->profile + L" type=" + w->form.proxyType +
         L" host=" + w->form.proxyHost + L" port=" + w->form.proxyPort);
     return true;

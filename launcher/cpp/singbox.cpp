@@ -74,6 +74,11 @@ static bool SbReplaceUtf8File(const std::wstring& path, const std::string& conte
     return true;
 }
 
+bool SbWriteConfigAtomically(const std::wstring& path, const std::string& content,
+    DWORD& errorOut) {
+    return SbReplaceUtf8File(path, content, errorOut);
+}
+
 static std::string SbNewApiSecret() {
     GUID guid{};
     wchar_t wide[40]{};

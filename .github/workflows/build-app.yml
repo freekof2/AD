@@ -157,7 +157,8 @@ jobs:
           Write-Host "localip contract ok"
           # sing-box config parsing and isolated runtime configuration.
           $sbConfig = Get-Content launcher\cpp\singbox_config.cpp -Raw
-          foreach ($s in @("SbParseConfig", "SbNormalizeCacheFilePath", "SbBuildRuntimeConfig", '"mixed"', '"socks"',
+          foreach ($s in @("SbParseConfig", "SbNormalizeCacheFilePath", "SbUpdateListenPortConfig",
+                           "SbBuildRuntimeConfig", '"mixed"', '"socks"',
                            '"listen_port"', '"external_controller"', '"cache_file"',
                            'StringValue("127.0.0.1")', 'cache_file.path')) {
             if ($sbConfig -notmatch [regex]::Escape($s)) { throw "sing-box config contract '$s' missing" }
@@ -166,7 +167,8 @@ jobs:
           foreach ($s in @('L"\\sing-box\\sing-box.exe"', 'L"\\config.json"',
                            "CREATE_NO_WINDOW", "SW_HIDE", '"/traffic"',
                            'L"Authorization: Bearer "', "SbNormalizeCacheFilePath",
-                           "SbReplaceUtf8File", "cachePathChanged", "SbWaitForInbound", "SbStopInstance")) {
+                           "SbReplaceUtf8File", "SbWriteConfigAtomically", "cachePathChanged",
+                           "SbWaitForInbound", "SbStopInstance")) {
             if ($sbRuntime -notmatch [regex]::Escape($s)) { throw "sing-box runtime contract '$s' missing" }
           }
           $mainSb = Get-Content launcher\cpp\main.cpp -Raw
@@ -185,9 +187,26 @@ jobs:
                            "proxyUser", "proxyPass", "ProxyChain", '"sing-box" ? "socks5"')) {
             if ($fpJson -notmatch [regex]::Escape($s)) { throw "proxy-save JSON contract '$s' missing" }
           }
-          foreach ($s in @("if (id == F_PSAVE)", "FpBuildProxySaveJson", "FpSaveUiExtra",
-                           "FpSaveStaticJson", 'L"保存代理"', "590, 412, 100")) {
+          foreach ($s in @("if (id == F_PSAVE)", "FpSaveProxyOnly", "FpBuildProxySaveJson",
+                           "SbUpdateListenPortConfig", "SbWriteConfigAtomically",
+                           'w->form.proxyType == L"sing-box"', "if (singBoxMode && configChanged)",
+                           "staticRolledBack", "uiRolledBack", "FpSaveUiExtra", "FpSaveStaticJson",
+                           'L"保存代理"', "590, 412, 100")) {
             if ($fpcProxy -notmatch [regex]::Escape($s)) { throw "immediate proxy-save UI contract '$s' missing" }
+          }
+          $proxySaveStart = $fpcProxy.IndexOf("static bool FpSaveProxyOnly(")
+          $proxySaveEnd = $fpcProxy.IndexOf("// fp_ui.cpp — part 6/6", $proxySaveStart)
+          $proxySaveBody = $fpcProxy.Substring($proxySaveStart, $proxySaveEnd - $proxySaveStart)
+          $uiWrite = $proxySaveBody.IndexOf("FpSaveUiExtra(profileDir, updated.uiJson)")
+          $staticWrite = $proxySaveBody.IndexOf("FpSaveStaticJson(profileDir, updated.staticJson)")
+          $configWrite = $proxySaveBody.IndexOf("if (singBoxMode && configChanged)")
+          $singBoxRead = $proxySaveBody.IndexOf("if (singBoxMode)")
+          $configRead = $proxySaveBody.IndexOf("FpReadTextFile(configPath, sourceConfig)")
+          $portValidation = $proxySaveBody.IndexOf("SbUpdateListenPortConfig(sourceConfig")
+          if ($singBoxRead -lt 0 -or $configRead -le $singBoxRead -or
+              $portValidation -le $configRead -or $uiWrite -le $portValidation -or
+              $staticWrite -le $uiWrite -or $configWrite -le $staticWrite) {
+            throw "sing-box config write must follow proxy JSON persistence so prior files can be rolled back"
           }
           Write-Host "sing-box config/runtime/proxy contracts ok"
           foreach ($s in @('"ProxyChain"', "指纹保存 static ")) {

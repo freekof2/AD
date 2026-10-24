@@ -16,7 +16,7 @@ profile，一键**指纹注入启动**/关闭。只读写本地缓存目录，**
   `--no-first-run --no-default-browser-check about:blank`。
 - 停止：先按 `user-data-dir` 树杀 SunBrowser 进程，再结束 launcher 句柄兜底。
 - 代理检测：指纹配置窗口内的测速按钮（本机 TCP connect，3s 超时）。
-- “保存代理”会立即单独持久化代理类型、主机、端口、账号、密码和 `ProxyChain`，不写入其它未保存的指纹项。
+- “保存代理”会立即单独持久化代理类型、主机、端口、账号、密码和 `ProxyChain`，不写入其它未保存的指纹项。选 `sing-box` 时还会将该端口写回 profile `config.json` 中唯一 `socks` / `mixed` 入站的 `listen_port`；新值下次启动生效。
 - sing-box：程序放在 `SunLauncher.exe` 同级 `sing-box\sing-box.exe`；每个 profile 的配置
   放在其生效数据目录下的 `<profile>\config.json`。代理下拉框选 `sing-box` 才会启动隐藏的
   sing-box 子进程；支持单个 `socks` 或 `mixed` 入站，浏览器以 SOCKS5 连接 loopback。
