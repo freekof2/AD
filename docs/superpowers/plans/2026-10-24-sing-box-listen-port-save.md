@@ -57,7 +57,6 @@ bool SbUpdateListenPortConfig(const std::string& sourceJson,
 - Modify: `launcher/cpp/singbox.h`
 - Modify: `launcher/cpp/singbox.cpp`
 - Modify: `launcher/cpp/fp_ui.cpp`
-- Modify: `launcher/cpp/SunLauncher.vcxproj`
 
 - [x] Expose `SbWriteConfigAtomically(const std::wstring& path, const std::string& content, DWORD& errorOut)` in `singbox.h` and implement it as a thin wrapper around the existing unique-temp-file `SbReplaceUtf8File` implementation.
 - [x] In `FpSaveProxyOnly`, after `FpCollect`, detect `proxyType == L"sing-box"`; force proxy host to `127.0.0.1`, read `<effective profile directory>\config.json`, strip an optional UTF-8 BOM for parsing, and call `SbUpdateListenPortConfig` with the proxy port edit text. On validation/config errors, show status and return before writing any proxy/config files.
@@ -76,7 +75,7 @@ bool SbUpdateListenPortConfig(const std::string& sourceJson,
 - [x] Add contract checks for the port-update helper, range validation, only updating `listen_port`, validation before writes, atomic `config.json` replacement, rollback of proxy JSON files, unchanged-port write skip, and no sing-box config access for other proxy modes.
 - [x] Document that **保存代理** updates the selected profile's `config.json` preferred `listen_port`, and an already-running profile picks it up on its next launch.
 - [x] Run `git status --short --branch`, `git diff --cached --check`, and inspect the staged name list. Stage only intended plan/spec/source/test/workflow/docs files; leave `.gitignore`, `SunBrowser/`, `UILOG/`, `asar/`, `chrome/`, `log/`, `reports/`, and other user files untouched.
-- [ ] Commit on `main`, push to `origin main`, and wait for the GitHub Actions run for the exact pushed SHA. Do not run local tests.
+- [x] Commit on `main` (`3913355`), push to `origin main`, and verify GitHub Actions #98 passed for that SHA. Do not run local tests.
 
 ## Self-review
 
