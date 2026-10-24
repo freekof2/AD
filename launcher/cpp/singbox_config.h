@@ -24,6 +24,11 @@ bool SbNormalizeCacheFilePath(const std::string& json, const std::string& config
     std::string& normalizedJson, std::string& cachePath, bool& changed,
     std::string& error);
 
+// Validate a decimal port and update the only supported SOCKS-compatible inbound.
+bool SbUpdateListenPortConfig(const std::string& sourceJson,
+    const std::string& requestedPort, std::string& updatedJson,
+    uint16_t& portOut, bool& changed, std::string& error);
+
 // Makes a per-profile runtime copy with loopback-only listeners and isolated ports/cache.
 bool SbBuildRuntimeConfig(const std::string& sourceJson, uint16_t listenPort,
     uint16_t apiPort, const std::string& cachePath, const std::string& apiSecret,

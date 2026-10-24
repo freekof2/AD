@@ -312,6 +312,41 @@ int main() {
     CHECK(sbInfo.listenPort == 1208 && sbInfo.controller == "127.0.0.1:1210");
     CHECK(sbInfo.cachePath == "shared-cache.db");
 
+    std::string portUpdatedConfig;
+    uint16_t requestedListenPort = 0;
+    bool listenPortChanged = false;
+    CHECK(SbUpdateListenPortConfig(mixedConfig, "1308", portUpdatedConfig,
+        requestedListenPort, listenPortChanged, sbError));
+    CHECK(requestedListenPort == 1308 && listenPortChanged);
+    SingBoxConfigInfo portUpdatedInfo{};
+    CHECK(SbParseConfig(portUpdatedConfig, portUpdatedInfo, sbError));
+    CHECK(portUpdatedInfo.listenPort == 1308 && portUpdatedInfo.inboundListen == "0.0.0.0");
+    CHECK(portUpdatedInfo.controller == "127.0.0.1:1210");
+    CHECK(portUpdatedInfo.cachePath == "shared-cache.db");
+    CHECK(portUpdatedConfig.find("\"tag\":\"proxy\"") != std::string::npos);
+    CHECK(sbInfo.listenPort == 1208 && mixedConfig.find("\"listen_port\":1208") != std::string::npos);
+    CHECK(SbUpdateListenPortConfig(mixedConfig, "1208", portUpdatedConfig,
+        requestedListenPort, listenPortChanged, sbError));
+    CHECK(requestedListenPort == 1208 && !listenPortChanged && portUpdatedConfig == mixedConfig);
+
+    const char* invalidListenPorts[] = { "", "0", "65536", "-1", "12x", " 1208" };
+    for (const char* invalidPort : invalidListenPorts) {
+        std::string rejectedConfig;
+        requestedListenPort = 99;
+        listenPortChanged = true;
+        CHECK(!SbUpdateListenPortConfig(mixedConfig, invalidPort, rejectedConfig,
+            requestedListenPort, listenPortChanged, sbError));
+        CHECK(rejectedConfig == mixedConfig && requestedListenPort == 0 && !listenPortChanged);
+    }
+    CHECK(!SbUpdateListenPortConfig("not-json", "1308", portUpdatedConfig,
+        requestedListenPort, listenPortChanged, sbError));
+    CHECK(!SbUpdateListenPortConfig(
+        R"json({"inbounds":[],"outbounds":[{"type":"direct"}]})json", "1308",
+        portUpdatedConfig, requestedListenPort, listenPortChanged, sbError));
+    CHECK(!SbUpdateListenPortConfig(
+        R"json({"inbounds":[{"type":"mixed","listen_port":1208},{"type":"socks","listen_port":1080}]})json",
+        "1308", portUpdatedConfig, requestedListenPort, listenPortChanged, sbError));
+
     // An external cache path is repaired into the profile config directory and JSON-escaped.
     const std::string cachePathConfig = R"json({
       "inbounds":[{"type":"mixed","listen":"0.0.0.0","listen_port":1208}],
@@ -361,6 +396,11 @@ int main() {
     })json";
     CHECK(SbParseConfig(socksConfig, sbInfo, sbError));
     CHECK(sbInfo.inboundType == "socks" && sbInfo.listenPort == 1080);
+    CHECK(SbUpdateListenPortConfig(socksConfig, "2080", portUpdatedConfig,
+        requestedListenPort, listenPortChanged, sbError));
+    CHECK(requestedListenPort == 2080 && listenPortChanged);
+    CHECK(SbParseConfig(portUpdatedConfig, portUpdatedInfo, sbError));
+    CHECK(portUpdatedInfo.inboundType == "socks" && portUpdatedInfo.listenPort == 2080);
     CHECK(SbBuildRuntimeConfig(socksConfig, 1081, 1311,
         "F:\\AD\\cache\\profile2\\sing-box-cache.db", "second-secret",
         sbRuntime, sbError));
