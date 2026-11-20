@@ -138,6 +138,44 @@ int main() {
     CHECK(FpBuildDeviceOrientationStaticJson("fbcc").find("absolute\":false") != std::string::npos);
     CHECK(FpBuildDeviceMotionStaticJson().find("9.78") != std::string::npos);
 
+    // Offline profile data remains authoritative and is applied to the browser
+    // without fetching AdsPower data.
+    CHECK(FpBuildGeopositionValue(" 31.2304 ", "121.4737", "1000") ==
+        "31.2304,121.4737,1000");
+    CHECK(FpBuildGeopositionValue("-90", "-180", "0") == "-90,-180,0");
+    CHECK(FpBuildGeopositionValue("91", "0", "100").empty());
+    CHECK(FpBuildGeopositionValue("0", "181", "100").empty());
+    CHECK(FpBuildGeopositionValue("0", "0", "nan").empty());
+    CHECK(FpNormalizeGeoposition("31.2304,121.4737,1000") ==
+        "31.2304,121.4737,1000");
+    CHECK(FpNormalizeGeoposition("invalid,121.4737,1000").empty());
+
+    const std::wstring ua = L"Mozilla/5.0 (Windows NT 10.0; Win64; x64)";
+    CHECK(FpBuildUserAgentArg(ua) == L"\"--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64)\"");
+    CHECK(FpBuildUserAgentArg(L"").empty());
+    CHECK(FpBuildUserAgentArg(L"ua \"quoted\"") == L"\"--user-agent=ua \\\"quoted\\\"\"");
+
+    CHECK(!FpShouldUseDeviceOrientationRanges(147, 20260831));
+    CHECK(!FpShouldUseDeviceOrientationRanges(148, 20260701));
+    CHECK(FpShouldUseDeviceOrientationRanges(148, 20260702));
+    CHECK(FpBuildDeviceOrientationStaticJson(1.24, -2.34, 3.56) ==
+        "{\"alpha\":1.2,\"beta\":-2.3,\"gamma\":3.6,\"absolute\":false}");
+    CHECK(FpBuildDeviceOrientationRangeJson(10.2, 10.0, -3.0, -4.0, 2.0, 1.0) ==
+        "{\"alpha\":[10.0,10.2],\"beta\":[-4.0,-3.0],"
+        "\"gamma\":[1.0,2.0],\"absolute\":false}");
+
+    const std::string cachedMedia = "[{\"kind\":\"audioinput\",\"label\":\"preset mic\"}]";
+    const std::string generatedMedia = "[{\"kind\":\"audioinput\",\"label\":\"fallback mic\"}]";
+    CHECK(FpBuildEmptyMediaDevicesJson() ==
+        "[{\"kind\":\"audioinput\",\"label\":\"\"},"
+        "{\"kind\":\"videoinput\",\"label\":\"\"},"
+        "{\"kind\":\"audiooutput\",\"label\":\"\"}]");
+    CHECK(FpSelectMediaDevicesPreset("0", cachedMedia, generatedMedia) == cachedMedia);
+    CHECK(FpSelectMediaDevicesPreset("2", cachedMedia, generatedMedia) == cachedMedia);
+    CHECK(FpSelectMediaDevicesPreset("0", "", generatedMedia).empty());
+    CHECK(FpSelectMediaDevicesPreset("1", "[]", generatedMedia) == generatedMedia);
+    CHECK(FpSelectMediaDevicesPreset("1", "", generatedMedia) == generatedMedia);
+
     // ClientHints -> UserAgentMetadata（official setClientHints）
     CHECK(FpBuildUserAgentMetadataJson("Windows", "10.0.0", "x86", "", "0", "", "") ==
         "{\"platform\":\"Windows\",\"platformVersion\":\"10.0.0\",\"architecture\":\"x86\","

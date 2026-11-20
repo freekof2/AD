@@ -1,7 +1,13 @@
 #pragma once
 
 #include <cctype>
+#include <cmath>
+#include <cstdlib>
+#include <iomanip>
+#include <locale>
+#include <sstream>
 #include <string>
+#include <cwctype>
 
 inline std::string FpBrowserConfigJsonQuote(const std::string& value) {
     std::string out = "\"";
@@ -43,6 +49,81 @@ inline std::string FpBuildTimeZoneSunParam(const std::string& timezone) {
     const std::string normalized = FpNormalizeTimezone(timezone);
     if (normalized.empty()) return "";
     return "\"TimeZone\":" + FpBrowserConfigJsonQuote(normalized);
+}
+
+inline std::string FpTrimAsciiWhitespace(const std::string& value) {
+    const size_t first = value.find_first_not_of(" \t\r\n");
+    if (first == std::string::npos) return "";
+    const size_t last = value.find_last_not_of(" \t\r\n");
+    return value.substr(first, last - first + 1);
+}
+
+inline bool FpParseFiniteNumber(const std::string& value, double& result) {
+    const std::string trimmed = FpTrimAsciiWhitespace(value);
+    if (trimmed.empty()) return false;
+    char* end = nullptr;
+    const double parsed = std::strtod(trimmed.c_str(), &end);
+    if (end == trimmed.c_str() || *end != '\0' || !std::isfinite(parsed)) return false;
+    result = parsed;
+    return true;
+}
+
+// Builds the native Geoposition value from the profile's local latitude,
+// longitude and accuracy fields. The custom parameter is a comma-separated
+// string because that is the format consumed by the browser kernel.
+inline std::string FpBuildGeopositionValue(const std::string& latitude,
+    const std::string& longitude, const std::string& accuracy) {
+    const std::string lat = FpTrimAsciiWhitespace(latitude);
+    const std::string lon = FpTrimAsciiWhitespace(longitude);
+    const std::string acc = FpTrimAsciiWhitespace(accuracy);
+    double latValue = 0.0, lonValue = 0.0, accuracyValue = 0.0;
+    if (!FpParseFiniteNumber(lat, latValue) || !FpParseFiniteNumber(lon, lonValue) ||
+        !FpParseFiniteNumber(acc, accuracyValue)) return "";
+    if (latValue < -90.0 || latValue > 90.0 || lonValue < -180.0 ||
+        lonValue > 180.0 || accuracyValue < 0.0) return "";
+    return lat + "," + lon + "," + acc;
+}
+
+inline std::string FpNormalizeGeoposition(const std::string& value) {
+    const size_t first = value.find(',');
+    if (first == std::string::npos) return "";
+    const size_t second = value.find(',', first + 1);
+    if (second == std::string::npos || value.find(',', second + 1) != std::string::npos)
+        return "";
+    return FpBuildGeopositionValue(value.substr(0, first),
+        value.substr(first + 1, second - first - 1), value.substr(second + 1));
+}
+
+inline std::wstring FpQuoteWindowsCommandLineArg(const std::wstring& arg) {
+    std::wstring quoted = L"\"";
+    size_t backslashes = 0;
+    for (wchar_t ch : arg) {
+        if (ch == L'\\') {
+            ++backslashes;
+            continue;
+        }
+        if (ch == L'\"') {
+            quoted.append(backslashes * 2 + 1, L'\\');
+            quoted.push_back(ch);
+            backslashes = 0;
+            continue;
+        }
+        quoted.append(backslashes, L'\\');
+        backslashes = 0;
+        quoted.push_back(ch);
+    }
+    quoted.append(backslashes * 2, L'\\');
+    quoted.push_back(L'\"');
+    return quoted;
+}
+
+inline std::wstring FpBuildUserAgentArg(const std::wstring& userAgent) {
+    size_t first = 0;
+    while (first < userAgent.size() && std::iswspace(userAgent[first])) ++first;
+    size_t last = userAgent.size();
+    while (last > first && std::iswspace(userAgent[last - 1])) --last;
+    if (first == last) return L"";
+    return FpQuoteWindowsCommandLineArg(L"--user-agent=" + userAgent.substr(first, last - first));
 }
 
 inline std::string FpBrowserPlatformTag(const std::string& platform) {
@@ -210,8 +291,14 @@ inline std::string FpBuildDeviceMotionStaticJson() {
            "\"accelerationIncludingGravity\":{\"x\":[-0.2,0.2],\"y\":[-0.2,0.2],"
            "\"z\":[9.78,9.81]}}";
 }
-// official deviceorientationdata 每次启动随机 alpha/beta/gamma；离线用 fbcc 种子做确定性值，
-// 避免全 0 被检测为注入。
+inline std::string FpBuildEmptyMediaDevicesJson() {
+    return "[{\"kind\":\"audioinput\",\"label\":\"\"},"
+           "{\"kind\":\"videoinput\",\"label\":\"\"},"
+           "{\"kind\":\"audiooutput\",\"label\":\"\"}]";
+}
+// Initial offline profile-save fallback; the launcher refreshes this value from
+// the local system RNG on each enabled mobile Chrome launch to match the
+// official per-launch randomization.
 inline std::string FpBuildDeviceOrientationStaticJson(const std::string& fbcc) {
     unsigned h = 2166136261u;
     for (unsigned char c : fbcc) { h ^= c; h *= 16777619u; }
@@ -221,6 +308,40 @@ inline std::string FpBuildDeviceOrientationStaticJson(const std::string& fbcc) {
     return "{\"alpha\":" + std::to_string(alpha) +
         ",\"beta\":" + std::to_string(beta) +
         ",\"gamma\":" + std::to_string(gamma) + ",\"absolute\":false}";
+}
+
+inline bool FpShouldUseDeviceOrientationRanges(int kernelVersion, int browserBuildDate) {
+    return kernelVersion >= 148 && browserBuildDate > 20260701;
+}
+
+inline std::string FpBuildDeviceOrientationStaticJson(double alpha, double beta, double gamma) {
+    auto number = [](double value) {
+        if (value == 0.0) value = 0.0; // avoid serializing negative zero
+        std::ostringstream out;
+        out.imbue(std::locale::classic());
+        out << std::fixed << std::setprecision(1) << value;
+        return out.str();
+    };
+    return "{\"alpha\":" + number(alpha) + ",\"beta\":" + number(beta) +
+        ",\"gamma\":" + number(gamma) + ",\"absolute\":false}";
+}
+
+inline std::string FpBuildDeviceOrientationRangeJson(double alphaA, double alphaB,
+    double betaA, double betaB, double gammaA, double gammaB) {
+    auto range = [](double a, double b) {
+        if (b < a) { const double temp = a; a = b; b = temp; }
+        auto number = [](double value) {
+            if (value == 0.0) value = 0.0;
+            std::ostringstream out;
+            out.imbue(std::locale::classic());
+            out << std::fixed << std::setprecision(1) << value;
+            return out.str();
+        };
+        return "[" + number(a) + "," + number(b) + "]";
+    };
+    return "{\"alpha\":" + range(alphaA, alphaB) + ",\"beta\":" +
+        range(betaA, betaB) + ",\"gamma\":" + range(gammaA, gammaB) +
+        ",\"absolute\":false}";
 }
 
 // ---- ClientHints -> official staticConfig.UserAgentMetadata（setClientHints） ----
@@ -308,4 +429,15 @@ inline std::string FpBuildNoiseSunParams(bool canvas, bool webglImage, bool audi
     if (first) return "";
     json += "}";
     return json;
+}
+
+// AdsPower's setMediaDevices is a no-op for mode 0 and uses an existing
+// profile-generated list when one is present for modes 1/2. Keep that local
+// preset intact; only fall back to the offline fbcc generator when missing.
+inline std::string FpSelectMediaDevicesPreset(const std::string& mode,
+    const std::string& cachedJson, const std::string& generatedJson) {
+    if (mode == "0") return cachedJson;
+    if (!cachedJson.empty() && cachedJson != "[]" && cachedJson != "\"\"")
+        return cachedJson;
+    return generatedJson;
 }

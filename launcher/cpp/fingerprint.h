@@ -73,12 +73,13 @@ std::string FpResolveLangArg(const std::string& extraSunParamsJson, const std::s
 // ---------- 启动参数组装 ----------
 //   --user-data-dir="<profileDir>" --profile-directory=Default
 //   --remote-debugging-port=<port> --no-first-run --no-default-browser-check
+//   --user-agent=<ui_fingerprint.json.ua|static.ua>
 //   --extended-parameters=<FpEncode(JSON(sunBrowserParams))>
 //   --enable-logging=stderr --v=0 <start_url|about:blank>   // 起始页=Config.json 顶层 start_url
 // sunBrowserParams 最小集：UserId + StaticConfig/DynamicConfig/CookiesFile 三个绝对路径
-// + 调用方附加的 extraJson（顶层合并，冲突时 extra 覆盖）。
+// + profile 预设 Geoposition + 调用方附加的白名单 extraJson。
 std::wstring FpBuildCmdline(const std::wstring& profileDir, int port,
-    const std::string& extraSunParamsJson);
+    const std::string& extraSunParamsJson, const std::wstring& browserDir = L"");
 
 // FpCmdTooLong：诊断用，ext/命令行是否超限（CreateProcess 上限 32767，超限即 err=206）。
 // 返回 true=超限，lenOut=ext 值长度。调用方在 CreateProcess 前检查，超限直接记日志拒绝启动。

@@ -6,6 +6,8 @@
 #include "fp_browser_config.h"
 #include "fp_cookies.h"
 #include <tlhelp32.h>
+#include <bcrypt.h>
+#include <limits>
 
 const wchar_t* FP_C1 = L"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 const wchar_t* FP_C2 = L"hTy1bfRJz4nLPcBCO7WtmNIaGvVeul5Zo8kq32UxrYw_-0gsjp96SDFXQiEMKdHA";
@@ -515,6 +517,96 @@ static std::wstring FpStartUrl() {
     return W(u);
 }
 
+static bool FpRandomBetweenOneDecimal(double minValue, double maxValue, double& valueOut) {
+    ULONG randomValue = 0;
+    if (!BCRYPT_SUCCESS(::BCryptGenRandom(NULL, (PUCHAR)&randomValue, sizeof(randomValue),
+        BCRYPT_USE_SYSTEM_PREFERRED_RNG))) return false;
+    const double unit = static_cast<double>(randomValue) /
+        (static_cast<double>(std::numeric_limits<ULONG>::max()) + 1.0);
+    valueOut = std::round((minValue + unit * (maxValue - minValue)) * 10.0) / 10.0;
+    return true;
+}
+
+static std::wstring FpBrowserKernelDirectory(const std::wstring& browserDir) {
+    if (browserDir.empty()) return L"";
+    const size_t slash = browserDir.find_last_of(L"\\/");
+    const std::wstring leaf = slash == std::wstring::npos
+        ? browserDir : browserDir.substr(slash + 1);
+    if (slash != std::wstring::npos && !leaf.empty() &&
+        leaf[0] >= L'0' && leaf[0] <= L'9')
+        return browserDir.substr(0, slash);
+    return browserDir;
+}
+
+static int FpBrowserBuildDate(const std::wstring& browserDir) {
+    const std::wstring kernelDir = FpBrowserKernelDirectory(browserDir);
+    if (kernelDir.empty()) return 0;
+    const size_t slash = kernelDir.find_last_of(L"\\/");
+    const std::wstring leaf = slash == std::wstring::npos
+        ? kernelDir : kernelDir.substr(slash + 1);
+    int kernelVersion = FpBrowserKernelFromDirLeaf(N(leaf));
+    std::string versionKey;
+    if (!FpReadTextFile(kernelDir + L"\\update_version_key", versionKey)) return 0;
+    int buildDate = 0;
+    for (char ch : versionKey) {
+        if (ch >= '0' && ch <= '9') buildDate = buildDate * 10 + (ch - '0');
+    }
+    if (buildDate < 10000000 || buildDate > 99999999 || kernelVersion == 0) return 0;
+    return buildDate;
+}
+
+// FingerprintTask.setGyroscope creates fresh orientation values for each
+// browser launch. Keep the cached schema, but refresh the random values locally
+// so this does not depend on AdsPower or its speech/fingerprint endpoints.
+static bool FpRefreshDeviceOrientation(const std::wstring& profileDir,
+    const std::wstring& browserDir, const std::string& extraSunParamsJson,
+    std::string& staticJson) {
+    const std::string switchRaw = FpJsonGet(extraSunParamsJson, "gyroscope");
+    const std::wstring os = FpJsonUnquote(FpJsonGet(extraSunParamsJson, "os"));
+    const std::wstring browser = FpJsonUnquote(FpJsonGet(extraSunParamsJson, "browser"));
+    const bool enabled = (switchRaw == "\"1\"" || switchRaw == "1") ||
+        ((switchRaw.empty() || switchRaw == "\"\"") &&
+         !FpJsonGet(staticJson, "gyroscope").empty());
+    if (!enabled || !FpOsSupportsMobileExtras(N(os)) || (!browser.empty() && browser != L"sun"))
+        return false;
+
+    double alpha1 = 0.0, beta1 = 0.0, gamma1 = 0.0;
+    double alpha2 = 0.0, beta2 = 0.0, gamma2 = 0.0;
+    if (!FpRandomBetweenOneDecimal(0.0, 360.0, alpha1) ||
+        !FpRandomBetweenOneDecimal(-10.0, 10.0, beta1) ||
+        !FpRandomBetweenOneDecimal(-5.0, 5.0, gamma1)) return false;
+
+    const std::wstring profileBrowserDir = FpJsonUnquote(FpJsonGet(extraSunParamsJson, "profBrowserDir"));
+    const std::wstring effectiveBrowserDir = profileBrowserDir.empty() ? browserDir : profileBrowserDir;
+    const std::wstring kernelDir = FpBrowserKernelDirectory(effectiveBrowserDir);
+    const size_t slash = kernelDir.find_last_of(L"\\/");
+    const std::wstring leaf = slash == std::wstring::npos
+        ? kernelDir : kernelDir.substr(slash + 1);
+    const int kernelVersion = FpBrowserKernelFromDirLeaf(N(leaf));
+    const int buildDate = FpBrowserBuildDate(effectiveBrowserDir);
+    std::string orientation;
+    if (FpShouldUseDeviceOrientationRanges(kernelVersion, buildDate)) {
+        if (!FpRandomBetweenOneDecimal(0.0, 360.0, alpha2) ||
+            !FpRandomBetweenOneDecimal(-10.0, 10.0, beta2) ||
+            !FpRandomBetweenOneDecimal(-5.0, 5.0, gamma2)) return false;
+        orientation = FpBuildDeviceOrientationRangeJson(alpha1, alpha2, beta1, beta2,
+            gamma1, gamma2);
+    } else {
+        orientation = FpBuildDeviceOrientationStaticJson(alpha1, beta1, gamma1);
+    }
+
+    if (staticJson.empty() || staticJson.front() != '{') staticJson = "{}";
+    staticJson = FpJsonSet(staticJson, "gyroscope", FpBuildGyroscopeStaticJson());
+    staticJson = FpJsonSet(staticJson, "deviceorientationdata", orientation);
+    staticJson = FpJsonSet(staticJson, "DeviceMotion", FpBuildDeviceMotionStaticJson());
+    if (staticJson.empty()) return false;
+    if (!FpSaveStaticJson(profileDir, staticJson)) {
+        LOG(L"陀螺仪随机参数写回 static 失败");
+        return false;
+    }
+    return true;
+}
+
 
 // ================= 启动命令行组装 =================
 // 冲突规则（以缓存为准，见 fingerprint.h）：
@@ -524,13 +616,14 @@ static std::wstring FpStartUrl() {
 //  - CLIENT_HOST cookie（指向已死的 20725）：启动参数层面不处理，由 UI 导出/导入时剥离；
 //    此处仅透传 CookiesFile 路径，SunBrowser 自己会重写 BROWSER_ID。
 std::wstring FpBuildCmdline(const std::wstring& profileDir, int port,
-    const std::string& extraSunParamsJson) {
+    const std::string& extraSunParamsJson, const std::wstring& browserDir) {
     std::string profileName = N(profileDir.substr(profileDir.find_last_of(L"\\/") + 1));
     std::string fbcc = FpFbccIdOf(profileDir.substr(profileDir.find_last_of(L"\\/") + 1));
 
     std::string staticJson, dynamicJson;
     FpLoadStaticJson(profileDir, staticJson);
     FpLoadDynamicJson(profileDir, dynamicJson);
+    FpRefreshDeviceOrientation(profileDir, browserDir, extraSunParamsJson, staticJson);
 
     // UserId：只从 static 取；取不到则用 fbcc hash 兜底（保证确定性，不用随机数污染指纹）
     std::string userId = FpJsonGet(staticJson, "UserId");
@@ -779,6 +872,23 @@ std::wstring FpBuildCmdline(const std::wstring& profileDir, int port,
         if (geo.empty()) geo = unq(raw(extraSunParamsJson, "location"));
         if (geo == "ask" || geo == "allow" || geo == "block")
             sp += ",\"GeolocationSetting\":\"" + geo + "\"";
+        // The sidecar is the profile's current UI data. Use its coordinate
+        // triple, and fall back to the cached official Geoposition only when
+        // those fields are absent/incomplete.
+        std::string geoposition = FpBuildGeopositionValue(
+            N(FpJsonUnquote(FpJsonGet(extraSunParamsJson, "lat"))),
+            N(FpJsonUnquote(FpJsonGet(extraSunParamsJson, "lng"))),
+            N(FpJsonUnquote(FpJsonGet(extraSunParamsJson, "accuracy"))));
+        if (geoposition.empty()) {
+            geoposition = FpNormalizeGeoposition(N(FpJsonUnquote(
+                FpJsonGet(dynamicJson, "Geoposition"))));
+        }
+        if (geoposition.empty()) {
+            geoposition = FpNormalizeGeoposition(N(FpJsonUnquote(
+                FpJsonGet(staticJson, "Geoposition"))));
+        }
+        if (!geoposition.empty())
+            sp += ",\"Geoposition\":" + FpBrowserConfigJsonQuote(geoposition);
         // CPU/RAM（official setDoNotTrack 内的两键，官方类型为数字；default=真实值不注入）
         const std::string cpu = unq(raw(staticJson, "HardwareConcurrency"));
         if (!cpu.empty() && cpu != "default") sp += ",\"HardwareConcurrency\":" + cpu;
@@ -900,6 +1010,15 @@ std::wstring FpBuildCmdline(const std::wstring& profileDir, int port,
         std::string langArg = FpResolveLangArg(extraSunParamsJson, staticJson);
         if (!langArg.empty())
             cmd += L" --lang=" + W(langArg);
+    }
+    // AdsPower's setUserAgent passes initBrowser.ua as a launch switch. The
+    // offline profile stores the same value in ui_fingerprint.json and, for
+    // older imported profiles, sometimes only in staticConfig.ua.
+    {
+        std::string uaRaw = FpJsonGet(extraSunParamsJson, "ua");
+        if (uaRaw.empty() || uaRaw == "\"\"") uaRaw = FpJsonGet(staticJson, "ua");
+        const std::wstring userAgent = FpJsonUnquote(uaRaw);
+        if (!userAgent.empty()) cmd += L" " + FpBuildUserAgentArg(userAgent);
     }
     {
         std::string mode = FpJsonGet(staticJson, "webrtc");

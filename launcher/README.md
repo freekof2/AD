@@ -10,7 +10,10 @@ profile，一键**指纹注入启动**/关闭。只读写本地缓存目录，**
 
 - `fingerprint.h/cpp`：换表 Base64（C1/C2 与 `main.min.js` 一致）、自包含 MD5、
   `md5(fbcc+"_static/_webrtc/_cookies")` 三件套读写、`FpBuildCmdline` 拼
-  `--extended-parameters` 注入、`FpKillProfileTree` 进程树关闭。
+  `--extended-parameters` 注入、从 profile 侧车/static 配置注入 UA、从动态预设注入
+  Geoposition、`FpKillProfileTree` 进程树关闭。
+- 预设数据优先：已有 profile 媒体设备、字体、语音等静态数据尽量原样复用；缺少的传感器值
+  使用本地随机源生成，不访问 AdsPower 云端，也不下载指纹数据。
 - 启动参数：`--user-data-dir=<数据目录>/<profile> --profile-directory=Default`
   `--remote-debugging-port=<自动分配> --extended-parameters=<注入>`
   `--no-first-run --no-default-browser-check about:blank`。

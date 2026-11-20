@@ -13,6 +13,7 @@ name: Build SunLauncher App
 #   - 导出/保存：写回三件套（md5 比对一致跳过）+ ui_fingerprint.json 明文侧车（35+ 参数全量）；
 #   - 启动：原生启动按钮 -> C++ FpBuildCmdline 注入 --extended-parameters（含
 #     StaticConfig/DynamicConfig/CookiesFile 三文件绝对路径 + UserId + fbcc 噪声种子），
+#     并从 profile 侧车/static 的 UA 注入 --user-agent；从 dynamic Geoposition 注入地理坐标；
 #     spawn SunBrowser.exe + --user-data-dir=<profile> --remote-debugging-port=0（官方随机端口，
 #     实际值读 profile 目录 DevToolsActivePort，无 ports.json）；
 #   - 停止：原生关闭按钮 -> FpKillProfileTree 按 user-data-dir 树杀 + 句柄兜底；
@@ -162,6 +163,15 @@ jobs:
                            '"listen_port"', '"external_controller"', '"cache_file"',
                            'StringValue("127.0.0.1")', 'cache_file.path')) {
             if ($sbConfig -notmatch [regex]::Escape($s)) { throw "sing-box config contract '$s' missing" }
+          }
+          foreach ($s in @("FpBuildUserAgentArg", 'FpJsonGet(extraSunParamsJson, "ua")',
+                           "FpBuildGeopositionValue", 'FpJsonGet(dynamicJson, "Geoposition")',
+                           "FpRefreshDeviceOrientation")) {
+            if ($cpp -notmatch [regex]::Escape($s)) { throw "offline preset launch symbol '$s' missing in fingerprint.cpp" }
+            Write-Host "offline preset launch ok: $s"
+          }
+          if ((Get-Content launcher\cpp\fp_ui.cpp -Raw) -notmatch "FpSelectMediaDevicesPreset") {
+            throw "offline media preset resolver missing in fp_ui.cpp"
           }
           $sbRuntime = Get-Content launcher\cpp\singbox.cpp -Raw
           foreach ($s in @('L"\\sing-box\\sing-box.exe"', 'L"\\config.json"',
@@ -431,8 +441,11 @@ jobs:
             if ($fpcProxy -notmatch [regex]::Escape($s)) { throw "system-ext contract '$s' missing in fp_ui.cpp" }
           }
           foreach ($s in @("FpResolveNoiseSwitch", "FpOsSupportsFlash", "FpBuildUserAgentMetadataJson",
-                           "FpBuildNoiseSunParams", "FpSeedFromFbcc", "FpNormalizeNetworkInformationType",
-                           "FpOsToOfficialPlatform", "FpOsToChPlatform", "FpOsToChModel", "FpChMatchesOs")) {
+                            "FpBuildNoiseSunParams", "FpSeedFromFbcc", "FpNormalizeNetworkInformationType",
+                            "FpOsToOfficialPlatform", "FpOsToChPlatform", "FpOsToChModel", "FpChMatchesOs",
+                            "FpBuildGeopositionValue", "FpNormalizeGeoposition", "FpBuildUserAgentArg",
+                            "FpShouldUseDeviceOrientationRanges", "FpBuildDeviceOrientationRangeJson",
+                            "FpBuildEmptyMediaDevicesJson", "FpSelectMediaDevicesPreset")) {
             if ($fpImportHeader -notmatch [regex]::Escape($s)) { throw "system-ext helper '$s' missing" }
           }
           foreach ($s in @("FpApplyChFromOs", "FpChMatchesOs(N(f.os)", "FpOsToChPlatform(os)")) {
@@ -491,9 +504,16 @@ jobs:
           }
           Write-Host "negative-noise ok"
           foreach ($s in @("FpOsSupportsFlash", "FpResolveNoiseSwitch(", "FpBuildNoiseSunParams(true",
-                           'FpOsToChPlatform("mac")', 'FpOsToChModel("android")', 'FpChMatchesOs("win"')) {
+                            'FpOsToChPlatform("mac")', 'FpOsToChModel("android")', 'FpChMatchesOs("win"')) {
             if ($fpModeTests -notmatch [regex]::Escape($s)) { throw "system-ext unit case '$s' missing" }
             Write-Host "system-ext test ok: $s"
+          }
+          foreach ($s in @("FpBuildGeopositionValue(", "FpNormalizeGeoposition(",
+                            "FpBuildUserAgentArg(", "FpShouldUseDeviceOrientationRanges(",
+                            "FpBuildDeviceOrientationRangeJson(", "FpBuildEmptyMediaDevicesJson(",
+                            "FpSelectMediaDevicesPreset(")) {
+            if ($fpModeTests -notmatch [regex]::Escape($s)) { throw "offline preset unit case '$s' missing" }
+            Write-Host "offline preset test ok: $s"
           }
           # (b) 地理三态 ask/allow/block + 时区 Asia/Shanghai 默认 + 默认经纬度
           foreach ($v in @("ask - ", "allow - ", "block - ", "Asia/Shanghai", "31.2304", "121.4737")) {

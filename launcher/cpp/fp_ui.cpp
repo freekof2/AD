@@ -1711,7 +1711,8 @@ static void FpCollect(FpWnd* w) {
 // 说明：FpConfigRemoveKey 是通用的“顶层删键”工具（名字沿用 Config.json 侧的实现）。
 
 // official m.createmediaDevices(fbccId)：按 fbcc 累加和生成确定性的假设备列表
-static std::string FpCreateMediaDevicesJson(const std::string& fbcc) {
+static std::string FpCreateMediaDevicesJson(const std::string& fbcc, bool emptyLabels) {
+    if (emptyLabels) return FpBuildEmptyMediaDevicesJson();
     struct P { const char* in; const char* out; };
     static const P kPairs[6] = {
         {"Microphone Array (2- Realtek High Definition Audio)", "Speaker/Headphone (2- Realtek High Definition Audio)"},
@@ -1765,16 +1766,26 @@ static void FpApplyStaticSystemKeys(std::string& sj, const FpFormData& f,
     const std::string os = N(f.os);
     const bool mobile = FpOsSupportsMobileExtras(os);
     const std::string fbcc = FpFbccIdOf(profileName);
+    const std::string targetPlatform = FpOsToOfficialPlatform(os);
+    const std::string cachedPlatform = N(FpJsonUnquote(FpJsonGet(sj, "Platform")));
+    const bool samePlatform = cachedPlatform.empty() || cachedPlatform == targetPlatform;
 
-    // 1) 字体：official setFonts -> DisabledFonts；setFakeFonts -> Fakefonts
+    // 1) 字体：已有 profile 预设优先；缺失时用离线内嵌字体表补齐。
     if (f.fontMode == L"all") {
-        const std::string dis = FpBuildDisabledFontsJson();
+        const std::string cached = FpJsonGet(sj, "DisabledFonts");
+        const std::string dis = cached.empty() || !samePlatform
+            ? FpBuildDisabledFontsJson() : cached;
         if (!dis.empty()) set(sj, "DisabledFonts", dis);
     } else if (!N(f.fonts).empty()) {
         set(sj, "DisabledFonts", FpFontsToJsonArray(f.fonts));
     }
-    if (FpOsToAsarPlatform(f.os) != L"Win32")
-        set(sj, "Fakefonts", FpBuildFakefontsJson(FpOsToAsarPlatform(f.os)));
+    const std::wstring fakefontPlatform = FpOsToAsarPlatform(f.os);
+    if (fakefontPlatform != L"Win32") {
+        const std::string cachedFakefonts = FpJsonGet(sj, "Fakefonts");
+        if (cachedFakefonts.empty() || !samePlatform) {
+            set(sj, "Fakefonts", FpBuildFakefontsJson(fakefontPlatform));
+        }
+    }
 
     // 2) 端口扫描：official setScanPort（close=禁扫描 open=白名单 default 不写）
     if (f.portScan == L"close") {
@@ -1806,9 +1817,19 @@ static void FpApplyStaticSystemKeys(std::string& sj, const FpFormData& f,
         set(sj, "DeviceName", "\"" + JEsc(f.devName) + "\"");
     else if (f.devNameMode == L"off") del(sj, "DeviceName");
 
-    // 6) 媒体设备（official setMediaDevices：0=真实不写；1/2=按 fbcc 确定性生成）
-    if (f.mediaDevices == L"0") del(sj, "MediaDevices");
-    else set(sj, "MediaDevices", FpCreateMediaDevicesJson(fbcc));
+    // 6) 媒体设备：与 official setMediaDevices 的 no-op 语义一致，先保留 profile
+    // 已有预设列表；只有缓存没有列表时才用 fbcc 离线生成固定三项设备。
+    const bool emptyMediaLabels = targetPlatform == "MacIntel" || FpOsIsMobile(os);
+    const std::string cachedMediaDevices =
+        (samePlatform || f.mediaDevices == L"0") ? FpJsonGet(sj, "MediaDevices") : "";
+    const std::string selectedMediaDevices = FpSelectMediaDevicesPreset(
+        N(f.mediaDevices), cachedMediaDevices, FpCreateMediaDevicesJson(fbcc, emptyMediaLabels));
+    if (!selectedMediaDevices.empty()) set(sj, "MediaDevices", selectedMediaDevices);
+    else if (f.mediaDevices == L"0") del(sj, "MediaDevices");
+
+    // TTSEngines is intentionally not synthesized here: the profile's cached
+    // voice list is passed through StaticConfig, matching the offline preset
+    // path without asking AdsPower for speechVoices.
 
     // 7) 移动端 MaxTouchPoints（official setMaxTouchPoints 只对 Android/iPhone 置 0）
     if (mobile) set(sj, "MaxTouchPoints", FpNormalizeMaxTouchPoints(N(f.maxTouchPoints)));
@@ -2345,7 +2366,11 @@ static LRESULT CALLBACK FpWndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
                 else
                     LOG(L"指纹载入 代理=无(static缺失且ui无代理) " + w->profile);
             }
-            if (!dj.empty()) {
+            const std::string uiGeoposition = FpBuildGeopositionValue(
+                N(FpJsonUnquote(FpJsonGet(ui, "lat"))),
+                N(FpJsonUnquote(FpJsonGet(ui, "lng"))),
+                N(FpJsonUnquote(FpJsonGet(ui, "accuracy"))));
+            if (uiGeoposition.empty() && !dj.empty()) {
                 std::string g = FpJsonGet(dj, "Geoposition");
                 if (g.size() >= 2 && g.front() == '"') {
                     std::string gs = N(WJ(g));
@@ -2926,8 +2951,11 @@ static LRESULT CALLBACK FpWndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
                         if (!v.empty() && v.front() == '"' && v != "\"\"")
                             w->form.whitePorts = WJ(v);
                     }
-                    std::string uiG = FpJsonGet(ui2, "lat");
-                    if ((uiG.empty() || uiG == "\"\"") && !dj2.empty()) {
+                    const std::string uiGeoposition = FpBuildGeopositionValue(
+                        N(FpJsonUnquote(FpJsonGet(ui2, "lat"))),
+                        N(FpJsonUnquote(FpJsonGet(ui2, "lng"))),
+                        N(FpJsonUnquote(FpJsonGet(ui2, "accuracy"))));
+                    if (uiGeoposition.empty() && !dj2.empty()) {
                         std::string g = FpJsonGet(dj2, "Geoposition");
                         if (g.size() >= 2 && g.front() == '"') {
                             std::string gs = N(WJ(g));
@@ -3518,6 +3546,16 @@ static LRESULT CALLBACK FpWndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
                 if (dynamic.empty() || dynamic.front() != '{') dynamic = "{}";
                 dynamic = FpJsonSet(dynamic, "DisableWebRTC", rtc.disableWebRtc ? "true" : "false");
                 dynamic = FpJsonSet(dynamic, "WebRTCAddress", "\"" + JEsc(rtc.address) + "\"");
+                const std::string geoposition = FpBuildGeopositionValue(
+                    N(w->form.lat), N(w->form.lng), N(w->form.accuracy));
+                // The browser kernel consumes dynamicConfig.Geoposition. Keep it in
+                // sync with the same effective form coordinates saved in the sidecar.
+                if (!geoposition.empty()) {
+                    dynamic = FpJsonSet(dynamic, "Geoposition", FpBrowserConfigJsonQuote(geoposition));
+                } else if (w->form.geoIp != L"ip") {
+                    dynamic = FpConfigRemoveKey(dynamic, "Geoposition");
+                    if (dynamic.empty()) dynamic = "{}";
+                }
                 const std::string timezone = (w->form.timezoneMode == L"ip")
                     ? "" : FpNormalizeTimezone(N(w->form.timezone));
                 dynamic = FpJsonSet(dynamic, "TimeZone", FpBrowserConfigJsonQuote(timezone));

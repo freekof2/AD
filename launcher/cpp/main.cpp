@@ -466,7 +466,7 @@ static bool StartOneLocked(const std::wstring& name) {
             L" socksPort=" + std::to_wstring(singBoxInstance->socksPort) +
             L" apiPort=" + std::to_wstring(singBoxInstance->apiPort));
     }
-    std::wstring args = FpBuildCmdline(dataDir, port, uiExtra);
+    std::wstring args = FpBuildCmdline(dataDir, port, uiExtra, effBrowserDir);
     // 命令行超限守卫：CreateProcess 上限 32767（err=206）。超限直接拒绝启动，
     // 记 ext.len 供判读（根因多为 uiExtra 大字段并入 ext，修 FpBuildCmdline 白名单）。
     {
