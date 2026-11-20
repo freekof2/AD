@@ -522,7 +522,7 @@ static bool FpRandomBetweenOneDecimal(double minValue, double maxValue, double& 
     if (!BCRYPT_SUCCESS(::BCryptGenRandom(NULL, (PUCHAR)&randomValue, sizeof(randomValue),
         BCRYPT_USE_SYSTEM_PREFERRED_RNG))) return false;
     const double unit = static_cast<double>(randomValue) /
-        (static_cast<double>(std::numeric_limits<ULONG>::max()) + 1.0);
+        (static_cast<double>((std::numeric_limits<ULONG>::max)()) + 1.0);
     valueOut = std::round((minValue + unit * (maxValue - minValue)) * 10.0) / 10.0;
     return true;
 }
