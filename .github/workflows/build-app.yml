@@ -164,14 +164,21 @@ jobs:
                            'StringValue("127.0.0.1")', 'cache_file.path')) {
             if ($sbConfig -notmatch [regex]::Escape($s)) { throw "sing-box config contract '$s' missing" }
           }
-          foreach ($s in @("FpBuildUserAgentArg", 'FpJsonGet(extraSunParamsJson, "ua")',
-                           "FpBuildGeopositionValue", 'FpJsonGet(dynamicJson, "Geoposition")',
-                           "FpRefreshDeviceOrientation")) {
+          $fpConfigHelpers = Get-Content launcher\cpp\fp_browser_config.h -Raw
+          foreach ($s in @("FpBuildUserAgentArg", "FpBuildGeopositionValue",
+                           "FpResolveGeolocationSetting", "FpShouldUseDeviceOrientationRanges")) {
+            if ($fpConfigHelpers -notmatch [regex]::Escape($s)) { throw "profile helper '$s' missing in fp_browser_config.h" }
+            Write-Host "offline profile helper ok: $s"
+          }
+          foreach ($s in @('FpJsonGet(extraSunParamsJson, "ua")',
+                           'FpJsonGet(dynamicJson, "Geoposition")', '"geoMode"',
+                           "FpRefreshDeviceOrientation", "ext.geolocation.position")) {
             if ($cpp -notmatch [regex]::Escape($s)) { throw "offline preset launch symbol '$s' missing in fingerprint.cpp" }
             Write-Host "offline preset launch ok: $s"
           }
-          if ((Get-Content launcher\cpp\fp_ui.cpp -Raw) -notmatch "FpSelectMediaDevicesPreset") {
-            throw "offline media preset resolver missing in fp_ui.cpp"
+          $fpUiHelpers = Get-Content launcher\cpp\fp_ui.cpp -Raw
+          foreach ($s in @("FpSelectMediaDevicesPreset", "FpBuildEmptyMediaDevicesJson")) {
+            if ($fpUiHelpers -notmatch [regex]::Escape($s)) { throw "offline media preset helper '$s' missing in fp_ui.cpp" }
           }
           $sbRuntime = Get-Content launcher\cpp\singbox.cpp -Raw
           foreach ($s in @('L"\\sing-box\\sing-box.exe"', 'L"\\config.json"',
@@ -445,7 +452,8 @@ jobs:
                             "FpOsToOfficialPlatform", "FpOsToChPlatform", "FpOsToChModel", "FpChMatchesOs",
                             "FpBuildGeopositionValue", "FpNormalizeGeoposition", "FpBuildUserAgentArg",
                             "FpShouldUseDeviceOrientationRanges", "FpBuildDeviceOrientationRangeJson",
-                            "FpBuildEmptyMediaDevicesJson", "FpSelectMediaDevicesPreset")) {
+                            "FpBuildEmptyMediaDevicesJson", "FpSelectMediaDevicesPreset",
+                            "FpResolveGeolocationSetting")) {
             if ($fpImportHeader -notmatch [regex]::Escape($s)) { throw "system-ext helper '$s' missing" }
           }
           foreach ($s in @("FpApplyChFromOs", "FpChMatchesOs(N(f.os)", "FpOsToChPlatform(os)")) {
@@ -511,7 +519,7 @@ jobs:
           foreach ($s in @("FpBuildGeopositionValue(", "FpNormalizeGeoposition(",
                             "FpBuildUserAgentArg(", "FpShouldUseDeviceOrientationRanges(",
                             "FpBuildDeviceOrientationRangeJson(", "FpBuildEmptyMediaDevicesJson(",
-                            "FpSelectMediaDevicesPreset(")) {
+                            "FpSelectMediaDevicesPreset(", "FpResolveGeolocationSetting(")) {
             if ($fpModeTests -notmatch [regex]::Escape($s)) { throw "offline preset unit case '$s' missing" }
             Write-Host "offline preset test ok: $s"
           }

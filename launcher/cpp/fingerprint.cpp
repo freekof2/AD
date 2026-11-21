@@ -868,9 +868,11 @@ std::wstring FpBuildCmdline(const std::wstring& profileDir, int port,
         if (allow == "0") sp += ",\"AllowScanPorts\":\"0\"";
         else if (!allow.empty()) sp += ",\"AllowScanPorts\":\"" + JsonEscapeStr(allow) + "\"";
         // 地理（official setGEO -> GeolocationSetting）
-        std::string geo = unq(raw(staticJson, "GeolocationSetting"));
-        if (geo.empty()) geo = unq(raw(extraSunParamsJson, "location"));
-        if (geo == "ask" || geo == "allow" || geo == "block")
+        const std::string geo = FpResolveGeolocationSetting(
+            unq(raw(extraSunParamsJson, "geoMode")),
+            unq(raw(staticJson, "GeolocationSetting")),
+            unq(raw(extraSunParamsJson, "location")));
+        if (!geo.empty())
             sp += ",\"GeolocationSetting\":\"" + geo + "\"";
         // The sidecar is the profile's current UI data. Use its coordinate
         // triple, and fall back to the cached official Geoposition only when
@@ -1247,6 +1249,12 @@ std::string FpDiagDumpLaunch(const std::wstring& exe, const std::wstring& workDi
             std::string wrAddress = FpJsonGet(dec, "WebRTCAddress");
             o << "\n[diag] ext.webrtc.disabled=" << (wrDisabled.empty() ? "(absent)" : wrDisabled)
               << " address=" << (!wrAddress.empty() && wrAddress != "\"\"" ? "set" : "empty");
+            const std::string geoPosition = FpJsonGet(dec, "Geoposition");
+            const std::string geoPermission = FpJsonGet(dec, "GeolocationSetting");
+            o << "\n[diag] ext.geolocation.position="
+              << (!geoPosition.empty() && geoPosition != "\"\"" ? "set" : "empty")
+              << " permission="
+              << (!geoPermission.empty() && geoPermission != "\"\"" ? geoPermission : "(absent)");
             std::string tz = FpJsonGet(dec, "TimeZone");
             std::string webglFp = FpJsonGet(dec, "WebGLFP");
             o << "\n[diag] ext.settings.timezone=" << (tz.empty() || tz == "\"\"" ? "empty" : tz)

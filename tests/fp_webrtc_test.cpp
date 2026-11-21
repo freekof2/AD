@@ -149,6 +149,10 @@ int main() {
     CHECK(FpNormalizeGeoposition("31.2304,121.4737,1000") ==
         "31.2304,121.4737,1000");
     CHECK(FpNormalizeGeoposition("invalid,121.4737,1000").empty());
+    CHECK(FpResolveGeolocationSetting("allow", "block", "ask") == "allow");
+    CHECK(FpResolveGeolocationSetting("invalid", "block", "ask") == "block");
+    CHECK(FpResolveGeolocationSetting("", "invalid", "ask") == "ask");
+    CHECK(FpResolveGeolocationSetting("", "invalid", "unset").empty());
 
     const std::wstring ua = L"Mozilla/5.0 (Windows NT 10.0; Win64; x64)";
     CHECK(FpBuildUserAgentArg(ua) == L"\"--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64)\"");

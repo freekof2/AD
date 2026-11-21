@@ -51,6 +51,17 @@ inline std::string FpBuildTimeZoneSunParam(const std::string& timezone) {
     return "\"TimeZone\":" + FpBrowserConfigJsonQuote(normalized);
 }
 
+inline std::string FpResolveGeolocationSetting(const std::string& uiMode,
+    const std::string& staticMode, const std::string& legacyLocation) {
+    auto supported = [](const std::string& value) {
+        return value == "ask" || value == "allow" || value == "block";
+    };
+    if (supported(uiMode)) return uiMode;
+    if (supported(staticMode)) return staticMode;
+    if (supported(legacyLocation)) return legacyLocation;
+    return "";
+}
+
 inline std::string FpTrimAsciiWhitespace(const std::string& value) {
     const size_t first = value.find_first_not_of(" \t\r\n");
     if (first == std::string::npos) return "";
