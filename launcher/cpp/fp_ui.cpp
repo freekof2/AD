@@ -1820,8 +1820,9 @@ static void FpApplyStaticSystemKeys(std::string& sj, const FpFormData& f,
     // 6) 媒体设备：与 official setMediaDevices 的 no-op 语义一致，先保留 profile
     // 已有预设列表；只有缓存没有列表时才用 fbcc 离线生成固定三项设备。
     const bool emptyMediaLabels = targetPlatform == "MacIntel" || FpOsIsMobile(os);
-    const std::string cachedMediaDevices =
-        (samePlatform || f.mediaDevices == L"0") ? FpJsonGet(sj, "MediaDevices") : "";
+    const std::string cachedMediaDevices = f.mediaDevices == L"0"
+        ? FpJsonGet(sj, "MediaDevices")
+        : (samePlatform && !emptyMediaLabels ? FpJsonGet(sj, "MediaDevices") : "");
     const std::string selectedMediaDevices = FpSelectMediaDevicesPreset(
         N(f.mediaDevices), cachedMediaDevices, FpCreateMediaDevicesJson(fbcc, emptyMediaLabels));
     if (!selectedMediaDevices.empty()) set(sj, "MediaDevices", selectedMediaDevices);
