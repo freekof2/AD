@@ -190,7 +190,8 @@ bool FpBuildProxySaveJson(const std::string& existingUiJson,
 std::string FpBuildSpeechVoicesJson(const std::string& cachedVoicesJson,
     const std::string& language, bool mobile) {
     size_t first = cachedVoicesJson.find_first_not_of(" \t\r\n");
-    if (first == std::string::npos || cachedVoicesJson[first] != '[') return "";
+    if (first == std::string::npos || cachedVoicesJson[first] != '[')
+        return mobile ? "[]" : "";
 
     const std::vector<std::string> voices = FpCookieArraySplit(cachedVoicesJson);
     if (voices.empty()) {
