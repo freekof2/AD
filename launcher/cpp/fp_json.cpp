@@ -1,4 +1,5 @@
 #include "fp_json.h"
+#include "fp_cookies.h"
 
 #include <utility>
 #include <vector>
@@ -184,4 +185,58 @@ bool FpBuildProxySaveJson(const std::string& existingUiJson,
     result.uiJson = std::move(ui);
     result.staticJson = updatedStatic;
     return true;
+}
+
+std::string FpBuildSpeechVoicesJson(const std::string& cachedVoicesJson,
+    const std::string& language, bool mobile) {
+    size_t first = cachedVoicesJson.find_first_not_of(" \t\r\n");
+    if (first == std::string::npos || cachedVoicesJson[first] != '[') return "";
+
+    const std::vector<std::string> voices = FpCookieArraySplit(cachedVoicesJson);
+    if (voices.empty()) {
+        const size_t last = cachedVoicesJson.find_last_not_of(" \t\r\n");
+        const std::string trimmed = cachedVoicesJson.substr(first, last - first + 1);
+        return trimmed == "[]" ? "[]" : "";
+    }
+
+    std::string locale = language;
+    const size_t separator = locale.find_first_of(",; \t\r\n");
+    if (separator != std::string::npos) locale.resize(separator);
+    if (locale.size() >= 2 && locale.front() == '"' && locale.back() == '"')
+        locale = FpCookieUnescape(locale.substr(1, locale.size() - 2));
+
+    size_t selected = voices.size();
+    if (!locale.empty()) {
+        for (size_t i = 0; i < voices.size(); ++i) {
+            if (FpCookieGetStr(voices[i], "lang").find(locale) != std::string::npos) {
+                selected = i;
+                break;
+            }
+        }
+        if (selected == voices.size()) {
+            const size_t dash = locale.find('-');
+            if (dash != std::string::npos) {
+                const std::string base = locale.substr(0, dash);
+                for (size_t i = 0; i < voices.size(); ++i) {
+                    if (FpCookieGetStr(voices[i], "lang").find(base) != std::string::npos) {
+                        selected = i;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    if (mobile && selected == voices.size()) return "[]";
+
+    std::string result = "[";
+    for (size_t i = 0; i < voices.size(); ++i) {
+        if (i != 0) result += ",";
+        std::string voice = FpJsonSet(voices[i], "default", i == selected ? "true" : "false");
+        if (voice.empty()) return "";
+        voice = FpJsonSet(voice, "localService", i == selected ? "true" : "false");
+        if (voice.empty()) return "";
+        result += voice;
+    }
+    result += "]";
+    return result;
 }

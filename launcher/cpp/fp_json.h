@@ -19,3 +19,8 @@ bool FpBuildProxySaveJson(const std::string& existingUiJson,
     const std::string& proxyHost, const std::string& proxyPort,
     const std::string& proxyUser, const std::string& proxyPass,
     FpProxyJsonPair& result, std::string& error);
+
+// Apply the offline equivalent of setSpeechVoices to the voice list already
+// stored in a profile. Empty return means there was no usable cached list.
+std::string FpBuildSpeechVoicesJson(const std::string& cachedVoicesJson,
+    const std::string& language, bool mobile);

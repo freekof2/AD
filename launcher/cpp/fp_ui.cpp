@@ -1828,9 +1828,20 @@ static void FpApplyStaticSystemKeys(std::string& sj, const FpFormData& f,
     if (!selectedMediaDevices.empty()) set(sj, "MediaDevices", selectedMediaDevices);
     else if (f.mediaDevices == L"0") del(sj, "MediaDevices");
 
-    // TTSEngines is intentionally not synthesized here: the profile's cached
-    // voice list is passed through StaticConfig, matching the offline preset
-    // path without asking AdsPower for speechVoices.
+    // setSpeechVoices works from the profile's existing voice preset. Re-mark
+    // the default/local voice for the current language without fetching the
+    // cloud speech list. If a mobile profile has no cached list, official
+    // behavior is an explicit empty list.
+    if (f.swSpeech) {
+        const std::string cachedVoices = FpJsonGet(sj, "TTSEngines");
+        if (!cachedVoices.empty()) {
+            const std::string voices = FpBuildSpeechVoicesJson(
+                cachedVoices, FpSingleLangTag(N(f.langList)), mobile);
+            if (!voices.empty()) set(sj, "TTSEngines", voices);
+        } else if (mobile) {
+            set(sj, "TTSEngines", "[]");
+        }
+    }
 
     // 7) 移动端 MaxTouchPoints（official setMaxTouchPoints 只对 Android/iPhone 置 0）
     if (mobile) set(sj, "MaxTouchPoints", FpNormalizeMaxTouchPoints(N(f.maxTouchPoints)));

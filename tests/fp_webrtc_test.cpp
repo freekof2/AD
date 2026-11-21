@@ -180,6 +180,22 @@ int main() {
     CHECK(FpSelectMediaDevicesPreset("1", "[]", generatedMedia) == generatedMedia);
     CHECK(FpSelectMediaDevicesPreset("1", "", generatedMedia) == generatedMedia);
 
+    const std::string cachedVoices =
+        "[{\"voiceURI\":\"voice-en\",\"lang\":\"en-US\",\"default\":true,\"localService\":true},"
+        "{\"voiceURI\":\"voice-fr\",\"lang\":\"fr-FR\",\"default\":true,\"localService\":true}]";
+    CHECK(FpBuildSpeechVoicesJson(cachedVoices, "en-US,en", false) ==
+        "[{\"voiceURI\":\"voice-en\",\"lang\":\"en-US\",\"default\":true,\"localService\":true},"
+        "{\"voiceURI\":\"voice-fr\",\"lang\":\"fr-FR\",\"default\":false,\"localService\":false}]");
+    CHECK(FpBuildSpeechVoicesJson(cachedVoices, "en-AU,en", false) ==
+        "[{\"voiceURI\":\"voice-en\",\"lang\":\"en-US\",\"default\":true,\"localService\":true},"
+        "{\"voiceURI\":\"voice-fr\",\"lang\":\"fr-FR\",\"default\":false,\"localService\":false}]");
+    CHECK(FpBuildSpeechVoicesJson(cachedVoices, "zh-CN", true) == "[]");
+    CHECK(FpBuildSpeechVoicesJson(cachedVoices, "zh-CN", false) ==
+        "[{\"voiceURI\":\"voice-en\",\"lang\":\"en-US\",\"default\":false,\"localService\":false},"
+        "{\"voiceURI\":\"voice-fr\",\"lang\":\"fr-FR\",\"default\":false,\"localService\":false}]");
+    CHECK(FpBuildSpeechVoicesJson("", "en-US", true) == "[]");
+    CHECK(FpBuildSpeechVoicesJson("invalid", "en-US", false).empty());
+
     // ClientHints -> UserAgentMetadata（official setClientHints）
     CHECK(FpBuildUserAgentMetadataJson("Windows", "10.0.0", "x86", "", "0", "", "") ==
         "{\"platform\":\"Windows\",\"platformVersion\":\"10.0.0\",\"architecture\":\"x86\","
