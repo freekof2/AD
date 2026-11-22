@@ -2,6 +2,8 @@
 
 #include "fp_browser_config.h"
 
+#include <charconv>
+#include <system_error>
 #include <string>
 
 // Return a canonical HTTP(S) origin or an empty string for opaque/invalid URLs.
@@ -111,12 +113,33 @@ inline std::string FpCdpWebSocketPath(const std::string& url, int expectedPort) 
     return path;
 }
 
-inline std::string FpCdpBuildPermissionCommand(int id, const std::string& origin) {
-    if (id <= 0 || origin.empty() || FpCdpOriginFromUrl(origin) != origin) return "";
+inline std::string FpCdpPermissionSettingForMode(const std::string& mode) {
+    if (mode == "allow") return "granted";
+    if (mode == "ask") return "prompt";
+    if (mode == "block") return "denied";
+    return "";
+}
+
+inline std::string FpCdpBuildPermissionCommand(int id, const std::string& origin,
+    const std::string& setting) {
+    if (id <= 0 || origin.empty() || FpCdpOriginFromUrl(origin) != origin ||
+        (setting != "granted" && setting != "prompt" && setting != "denied")) return "";
     return "{\"id\":" + std::to_string(id) +
         ",\"method\":\"Browser.setPermission\",\"params\":{" +
         "\"permission\":{\"name\":\"geolocation\"}," +
-        "\"setting\":\"granted\",\"origin\":" + FpBrowserConfigJsonQuote(origin) + "}}";
+        "\"setting\":" + FpBrowserConfigJsonQuote(setting) +
+        ",\"origin\":" + FpBrowserConfigJsonQuote(origin) + "}}";
+}
+
+inline bool FpCdpJsonNumber(const std::string& value, std::string& result) {
+    double parsed = 0.0;
+    if (!FpParseFiniteNumber(value, parsed)) return false;
+    char buffer[64];
+    const auto converted = std::to_chars(buffer, buffer + sizeof(buffer), parsed,
+        std::chars_format::general);
+    if (converted.ec != std::errc()) return false;
+    result.assign(buffer, converted.ptr);
+    return true;
 }
 
 inline std::string FpCdpBuildGeolocationCommand(int id, const std::string& geoposition) {
@@ -125,9 +148,13 @@ inline std::string FpCdpBuildGeolocationCommand(int id, const std::string& geopo
     if (normalized.empty()) return "";
     const size_t first = normalized.find(',');
     const size_t second = normalized.find(',', first + 1);
+    std::string latitude, longitude, accuracy;
+    if (!FpCdpJsonNumber(normalized.substr(0, first), latitude) ||
+        !FpCdpJsonNumber(normalized.substr(first + 1, second - first - 1), longitude) ||
+        !FpCdpJsonNumber(normalized.substr(second + 1), accuracy)) return "";
     return "{\"id\":" + std::to_string(id) +
         ",\"method\":\"Emulation.setGeolocationOverride\",\"params\":{" +
-        "\"latitude\":" + normalized.substr(0, first) +
-        ",\"longitude\":" + normalized.substr(first + 1, second - first - 1) +
-        ",\"accuracy\":" + normalized.substr(second + 1) + "}}";
+        "\"latitude\":" + latitude +
+        ",\"longitude\":" + longitude +
+        ",\"accuracy\":" + accuracy + "}}";
 }

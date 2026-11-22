@@ -181,11 +181,18 @@ jobs:
           $cdpProtocol = Get-Content launcher\cpp\fp_cdp_protocol.h -Raw
           foreach ($s in @("WINHTTP_ACCESS_TYPE_NO_PROXY", 'L"127.0.0.1"',
                            'L"/json/list"', 'L"/json/version"',
-                           "WinHttpWebSocketCompleteUpgrade")) {
+                           "WINHTTP_DISABLE_REDIRECTS", "WinHttpWebSocketCompleteUpgrade")) {
             if ($cdp -notmatch [regex]::Escape($s)) { throw "local CDP transport '$s' missing" }
           }
+          if ($cdp -notmatch 'const bool redirectsDisabled = request && ::WinHttpSetOption') {
+            throw "CDP HTTP request must fail closed when redirects cannot be disabled"
+          }
+          if ($cdp -notmatch '!::WinHttpSetOption\(request_,\s*WINHTTP_OPTION_DISABLE_FEATURE') {
+            throw "CDP WebSocket handshake must fail closed when redirects cannot be disabled"
+          }
           foreach ($s in @("Browser.setPermission", "Emulation.setGeolocationOverride",
-                           "FpCdpOriginFromUrl", "FpCdpWebSocketPath")) {
+                           "FpCdpOriginFromUrl", "FpCdpWebSocketPath",
+                           "FpCdpPermissionSettingForMode")) {
             if ($cdpProtocol -notmatch [regex]::Escape($s)) { throw "CDP protocol helper '$s' missing" }
           }
           if ($cdp -match 'https?://(?!127\.0\.0\.1|localhost)') { throw "CDP transport must remain loopback-only" }
@@ -538,7 +545,7 @@ jobs:
           foreach ($s in @("FpBuildGeopositionValue(", "FpNormalizeGeoposition(",
                             "FpResolveGeoposition(", "FpCdpOriginFromUrl(",
                             "FpCdpWebSocketPath(", "FpCdpBuildPermissionCommand(",
-                            "FpCdpBuildGeolocationCommand(",
+                            "FpCdpBuildGeolocationCommand(", "FpCdpPermissionSettingForMode(",
                             "FpBuildUserAgentArg(", "FpShouldUseDeviceOrientationRanges(",
                             "FpBuildDeviceOrientationRangeJson(", "FpBuildEmptyMediaDevicesJson(",
                             "FpSelectMediaDevicesPreset(", "FpResolveGeolocationSetting(",

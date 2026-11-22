@@ -49,9 +49,9 @@ static bool HttpGetLocal(int port, const wchar_t* path, std::string& body) {
     HINTERNET request = connection ? ::WinHttpOpenRequest(connection, L"GET", path,
         NULL, WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, 0) : NULL;
     DWORD disableRedirects = WINHTTP_DISABLE_REDIRECTS;
-    if (request) ::WinHttpSetOption(request, WINHTTP_OPTION_DISABLE_FEATURE,
-        &disableRedirects, sizeof(disableRedirects));
-    bool ok = request && ::WinHttpSendRequest(request, WINHTTP_NO_ADDITIONAL_HEADERS,
+    const bool redirectsDisabled = request && ::WinHttpSetOption(request,
+        WINHTTP_OPTION_DISABLE_FEATURE, &disableRedirects, sizeof(disableRedirects));
+    bool ok = redirectsDisabled && ::WinHttpSendRequest(request, WINHTTP_NO_ADDITIONAL_HEADERS,
         0, WINHTTP_NO_REQUEST_DATA, 0, 0, 0) && ::WinHttpReceiveResponse(request, NULL);
     DWORD status = 0;
     DWORD statusBytes = sizeof(status);
@@ -108,9 +108,9 @@ public:
         request_ = ::WinHttpOpenRequest(connection_, L"GET", widePath.c_str(),
             NULL, WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, 0);
         DWORD disableRedirects = WINHTTP_DISABLE_REDIRECTS;
-        if (request_) ::WinHttpSetOption(request_, WINHTTP_OPTION_DISABLE_FEATURE,
-            &disableRedirects, sizeof(disableRedirects));
         if (!request_ || !::WinHttpSetOption(request_,
+                WINHTTP_OPTION_DISABLE_FEATURE, &disableRedirects, sizeof(disableRedirects)) ||
+            !::WinHttpSetOption(request_,
                 WINHTTP_OPTION_UPGRADE_TO_WEB_SOCKET, NULL, 0) ||
             !::WinHttpSendRequest(request_, WINHTTP_NO_ADDITIONAL_HEADERS, 0,
                 WINHTTP_NO_REQUEST_DATA, 0, 0, 0) ||
@@ -200,7 +200,7 @@ public:
     GeolocationCdpWorker(std::wstring profileDir, std::string geoposition,
         std::string permissionMode, HANDLE process)
         : profileDir_(std::move(profileDir)), geoposition_(std::move(geoposition)),
-          allowOrigin_(permissionMode == "allow"), process_(process) {}
+          permissionSetting_(FpCdpPermissionSettingForMode(permissionMode)), process_(process) {}
 
     void Run() {
         while (IsProcessRunning(process_)) {
@@ -244,7 +244,8 @@ public:
                     }
                 }
                 if (!origin.empty() && page.origin != origin) {
-                    if (!allowOrigin_ || GrantOrigin(origin)) page.origin = origin;
+                    if (permissionSetting_.empty() || ApplyOriginPermission(origin))
+                        page.origin = origin;
                 }
             }
 
@@ -267,44 +268,45 @@ private:
         auto socket = std::make_unique<CdpWebSocket>();
         if (!socket->Connect(port_, browserUrl)) return false;
         browserSocket_ = std::move(socket);
-        grantedOrigins_.clear();
+        appliedOrigins_.clear();
         return true;
     }
 
-    bool GrantOrigin(const std::string& origin) {
-        if (grantedOrigins_.find(origin) != grantedOrigins_.end()) return true;
+    bool ApplyOriginPermission(const std::string& origin) {
+        if (appliedOrigins_.find(origin) != appliedOrigins_.end()) return true;
         if (!EnsureBrowserSocket()) return false;
         const int id = nextCommandId_++;
-        if (!browserSocket_->SendCommand(id, FpCdpBuildPermissionCommand(id, origin))) {
+        if (!browserSocket_->SendCommand(id,
+                FpCdpBuildPermissionCommand(id, origin, permissionSetting_))) {
             ResetPermissionState();
             return false;
         }
-        grantedOrigins_.insert(origin);
+        appliedOrigins_.insert(origin);
         return true;
     }
 
     void ResetConnections() {
         pages_.clear();
         browserSocket_.reset();
-        grantedOrigins_.clear();
+        appliedOrigins_.clear();
     }
 
     void ResetPermissionState() {
         browserSocket_.reset();
-        grantedOrigins_.clear();
+        appliedOrigins_.clear();
         for (auto& page : pages_) page.second.origin.clear();
     }
 
     std::wstring profileDir_;
     std::string geoposition_;
-    bool allowOrigin_ = false;
+    std::string permissionSetting_;
     HANDLE process_ = NULL;
     int port_ = 0;
     int nextCommandId_ = 1;
     bool loggedOverride_ = false;
     std::map<std::string, PageConnection> pages_;
     std::unique_ptr<CdpWebSocket> browserSocket_;
-    std::set<std::string> grantedOrigins_;
+    std::set<std::string> appliedOrigins_;
 };
 
 } // namespace
