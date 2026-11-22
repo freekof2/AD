@@ -4,6 +4,8 @@
 // 指纹配置原生窗口见 fp_ui.h/cpp（web-ui/index.html 单页版 1:1 纯原生重写，Tab 5 页）。
 #include "SunLauncher.h"
 #include "fingerprint.h"
+#include "fp_browser_config.h"
+#include "fp_cdp.h"
 #include "fp_ui.h"
 #include <tlhelp32.h> // diag-04 失败现场取证：CreateToolhelp32Snapshot 枚举残留进程
 #include <climits>
@@ -433,6 +435,24 @@ static bool StartOneLocked(const std::wstring& name) {
     LOG(L"diag port=官方随机(--remote-debugging-port=0)，实际值启动后读 DevToolsActivePort");
     std::string uiExtra;
     FpLoadUiExtra(dataDir, uiExtra);
+    std::string geoStaticJson, geoDynamicJson;
+    FpLoadStaticJson(dataDir, geoStaticJson);
+    FpLoadDynamicJson(dataDir, geoDynamicJson);
+    const std::string profileGeoposition = FpResolveGeoposition(
+        N(FpJsonUnquote(FpJsonGet(uiExtra, "lat"))),
+        N(FpJsonUnquote(FpJsonGet(uiExtra, "lng"))),
+        N(FpJsonUnquote(FpJsonGet(uiExtra, "accuracy"))),
+        N(FpJsonUnquote(FpJsonGet(geoDynamicJson, "Geoposition"))),
+        N(FpJsonUnquote(FpJsonGet(geoStaticJson, "Geoposition"))));
+    const std::string geoPermissionMode = FpResolveGeolocationSetting(
+        N(FpJsonUnquote(FpJsonGet(uiExtra, "geoMode"))),
+        N(FpJsonUnquote(FpJsonGet(geoStaticJson, "GeolocationSetting"))),
+        N(FpJsonUnquote(FpJsonGet(uiExtra, "location"))));
+    if (!profileGeoposition.empty()) {
+        LOG(L"diag profile 固定坐标已就绪；CDP worker 只连接本地 DevTools，不记录坐标值");
+    } else {
+        LOG(L"diag profile 没有有效固定坐标；跳过 CDP 地理位置覆盖");
+    }
     std::unique_ptr<SingBoxInstance> singBoxInstance;
     const std::string proxyMode = N(FpJsonUnquote(FpJsonGet(uiExtra, "proxyType")));
     if (proxyMode == "sing-box") {
@@ -495,6 +515,10 @@ static bool StartOneLocked(const std::wstring& name) {
         std::wstring m = L"CreateProcess 失败 err=" + std::to_wstring(err) + L"，见 debug.log";
         SbStopInstance(singBoxInstance);
         LOG(m); SetStatus(m); return false;
+    }
+    if (!profileGeoposition.empty()) {
+        FpStartGeolocationCdpWorker(dataDir, profileGeoposition,
+            geoPermissionMode, hProc);
     }
     // diag-02: 诊断块（exe/三件套/sp/ext/三键/env/hint/manual，一次启动全部现场）
     LOG(W(FpDiagDumpLaunch(exe, effBrowserDir, dataDir, port, uiExtra, args, pid)));

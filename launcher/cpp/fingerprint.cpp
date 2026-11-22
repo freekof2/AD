@@ -877,18 +877,12 @@ std::wstring FpBuildCmdline(const std::wstring& profileDir, int port,
         // The sidecar is the profile's current UI data. Use its coordinate
         // triple, and fall back to the cached official Geoposition only when
         // those fields are absent/incomplete.
-        std::string geoposition = FpBuildGeopositionValue(
+        const std::string geoposition = FpResolveGeoposition(
             N(FpJsonUnquote(FpJsonGet(extraSunParamsJson, "lat"))),
             N(FpJsonUnquote(FpJsonGet(extraSunParamsJson, "lng"))),
-            N(FpJsonUnquote(FpJsonGet(extraSunParamsJson, "accuracy"))));
-        if (geoposition.empty()) {
-            geoposition = FpNormalizeGeoposition(N(FpJsonUnquote(
-                FpJsonGet(dynamicJson, "Geoposition"))));
-        }
-        if (geoposition.empty()) {
-            geoposition = FpNormalizeGeoposition(N(FpJsonUnquote(
-                FpJsonGet(staticJson, "Geoposition"))));
-        }
+            N(FpJsonUnquote(FpJsonGet(extraSunParamsJson, "accuracy"))),
+            N(FpJsonUnquote(FpJsonGet(dynamicJson, "Geoposition"))),
+            N(FpJsonUnquote(FpJsonGet(staticJson, "Geoposition"))));
         if (!geoposition.empty())
             sp += ",\"Geoposition\":" + FpBrowserConfigJsonQuote(geoposition);
         // CPU/RAM（official setDoNotTrack 内的两键，官方类型为数字；default=真实值不注入）

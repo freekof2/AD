@@ -46,6 +46,7 @@
     <ClInclude Include="..\launcher\cpp\fp_webrtc.h" />
     <ClInclude Include="..\launcher\cpp\fp_browser_config.h" />
     <ClInclude Include="..\launcher\cpp\fp_cookies.h" />
+    <ClInclude Include="..\launcher\cpp\fp_cdp_protocol.h" />
     <ClInclude Include="..\launcher\cpp\fp_json.h" />
     <ClInclude Include="..\launcher\cpp\singbox_config.h" />
   </ItemGroup>

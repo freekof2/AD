@@ -85,7 +85,7 @@ jobs:
                       "acczing.com", "login-token", "apiKey", "api-key", "get-token",
                       "/api/v1/", "/api/v2/", "/api/tabAssistant", "ENV-",
                       "activeProfile", "page-profiles", "page-groups", "xrkClientAPI")
-          foreach ($f in @("launcher/cpp/main.cpp", "launcher/cpp/fp_ui.cpp", "launcher/cpp/fingerprint.cpp", "launcher/cpp/util.cpp")) {
+          foreach ($f in @("launcher/cpp/main.cpp", "launcher/cpp/fp_ui.cpp", "launcher/cpp/fingerprint.cpp", "launcher/cpp/fp_cdp.cpp", "launcher/cpp/util.cpp")) {
             $t = Get-Content $f -Raw
             foreach ($b in $banned) {
               if ($t -match [regex]::Escape($b)) { throw "banned string '$b' in $f" }
@@ -166,7 +166,8 @@ jobs:
           }
           $fpConfigHelpers = Get-Content launcher\cpp\fp_browser_config.h -Raw
           foreach ($s in @("FpBuildUserAgentArg", "FpBuildGeopositionValue",
-                           "FpResolveGeolocationSetting", "FpShouldUseDeviceOrientationRanges")) {
+                           "FpResolveGeoposition", "FpResolveGeolocationSetting",
+                           "FpShouldUseDeviceOrientationRanges")) {
             if ($fpConfigHelpers -notmatch [regex]::Escape($s)) { throw "profile helper '$s' missing in fp_browser_config.h" }
             Write-Host "offline profile helper ok: $s"
           }
@@ -176,6 +177,19 @@ jobs:
             if ($cpp -notmatch [regex]::Escape($s)) { throw "offline preset launch symbol '$s' missing in fingerprint.cpp" }
             Write-Host "offline preset launch ok: $s"
           }
+          $cdp = Get-Content launcher\cpp\fp_cdp.cpp -Raw
+          $cdpProtocol = Get-Content launcher\cpp\fp_cdp_protocol.h -Raw
+          foreach ($s in @("WINHTTP_ACCESS_TYPE_NO_PROXY", 'L"127.0.0.1"',
+                           'L"/json/list"', 'L"/json/version"',
+                           "WinHttpWebSocketCompleteUpgrade")) {
+            if ($cdp -notmatch [regex]::Escape($s)) { throw "local CDP transport '$s' missing" }
+          }
+          foreach ($s in @("Browser.setPermission", "Emulation.setGeolocationOverride",
+                           "FpCdpOriginFromUrl", "FpCdpWebSocketPath")) {
+            if ($cdpProtocol -notmatch [regex]::Escape($s)) { throw "CDP protocol helper '$s' missing" }
+          }
+          if ($cdp -match 'https?://(?!127\.0\.0\.1|localhost)') { throw "CDP transport must remain loopback-only" }
+          Write-Host "profile geolocation CDP loopback contract ok"
           $fpUiHelpers = Get-Content launcher\cpp\fp_ui.cpp -Raw
           foreach ($s in @("FpSelectMediaDevicesPreset", "FpBuildEmptyMediaDevicesJson")) {
             if ($fpUiHelpers -notmatch [regex]::Escape($s)) { throw "offline media preset helper '$s' missing in fp_ui.cpp" }
@@ -198,6 +212,10 @@ jobs:
           foreach ($s in @('L"sing-box"', "FpApplySingBoxProxy", "SbReadProfileConfig",
                            'f.proxyType == L"sing-box" ? L"socks5"')) {
             if ($fpcProxy -notmatch [regex]::Escape($s)) { throw "sing-box proxy UI contract '$s' missing" }
+          }
+          foreach ($s in @("FpResolveGeoposition(", "FpStartGeolocationCdpWorker(",
+                            "geoPermissionMode")) {
+            if ($mainSb -notmatch [regex]::Escape($s)) { throw "profile geolocation runtime contract '$s' missing in main.cpp" }
           }
           $fpJson = Get-Content launcher\cpp\fp_json.cpp -Raw
           foreach ($s in @("FpBuildProxySaveJson", "FpBuildSpeechVoicesJson",
@@ -518,6 +536,9 @@ jobs:
             Write-Host "system-ext test ok: $s"
           }
           foreach ($s in @("FpBuildGeopositionValue(", "FpNormalizeGeoposition(",
+                            "FpResolveGeoposition(", "FpCdpOriginFromUrl(",
+                            "FpCdpWebSocketPath(", "FpCdpBuildPermissionCommand(",
+                            "FpCdpBuildGeolocationCommand(",
                             "FpBuildUserAgentArg(", "FpShouldUseDeviceOrientationRanges(",
                             "FpBuildDeviceOrientationRangeJson(", "FpBuildEmptyMediaDevicesJson(",
                             "FpSelectMediaDevicesPreset(", "FpResolveGeolocationSetting(",
@@ -556,14 +577,16 @@ jobs:
           # 2c. vcxproj 必须编译新模块
           $vcx = Get-Content launcher\cpp\SunLauncher.vcxproj -Raw
           foreach ($s in @("fp_ui.cpp", "fp_ui.h", "fp_webrtc.h", "fp_browser_config.h",
-                           "fp_json.cpp", "fp_json.h",
+                           "fp_json.cpp", "fp_json.h", "fp_cdp.cpp", "fp_cdp.h",
+                           "fp_cdp_protocol.h",
                            "singbox.cpp", "singbox.h", "singbox_config.cpp", "singbox_config.h",
                            "winhttp.lib")) {
             if ($vcx -notmatch [regex]::Escape($s)) { throw "missing '$s' in vcxproj" }
             Write-Host "vcxproj ok: $s"
           }
           $testProject = Get-Content tests\fp_webrtc_test.vcxproj -Raw
-          foreach ($s in @("fp_json.cpp", "fp_json.h", "singbox_config.cpp", "singbox_config.h")) {
+          foreach ($s in @("fp_json.cpp", "fp_json.h", "fp_cdp_protocol.h",
+                           "singbox_config.cpp", "singbox_config.h")) {
             if ($testProject -notmatch [regex]::Escape($s)) { throw "sing-box test project missing '$s'" }
           }
           # 2d. 注释溯源：关键函数名必须出现在 fp_ui.cpp（防实现漂移）

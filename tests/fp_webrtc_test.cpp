@@ -1,6 +1,7 @@
 #include "fp_webrtc.h"
 #include "fp_browser_config.h"
 #include "fp_cookies.h"
+#include "fp_cdp_protocol.h"
 #include "fp_json.h"
 #include "singbox_config.h"
 #include <iostream>
@@ -16,6 +17,22 @@ static int Check(bool condition, int line) {
 int main() {
     WSADATA wsa{};
     if (::WSAStartup(MAKEWORD(2, 2), &wsa) != 0) return 1;
+
+    CHECK(FpCdpOriginFromUrl("https://Example.COM:443/path?q=1") == "https://example.com");
+    CHECK(FpCdpOriginFromUrl("http://127.0.0.1:8080/path") == "http://127.0.0.1:8080");
+    CHECK(FpCdpOriginFromUrl("https://[ABCD::1]:443/path") == "https://[abcd::1]");
+    CHECK(FpCdpOriginFromUrl("about:blank").empty());
+    CHECK(FpCdpOriginFromUrl("https://user@example.com/").empty());
+    CHECK(FpCdpOriginFromUrl("https://example.com:99999/").empty());
+    CHECK(FpCdpWebSocketPath("ws://127.0.0.1:9222/devtools/page/abc", 9222) ==
+        "/devtools/page/abc");
+    CHECK(FpCdpWebSocketPath("ws://example.com:9222/devtools/page/abc", 9222).empty());
+    CHECK(FpCdpWebSocketPath("ws://127.0.0.1:9223/devtools/page/abc", 9222).empty());
+    CHECK(FpCdpBuildPermissionCommand(4, "https://example.com") ==
+        "{\"id\":4,\"method\":\"Browser.setPermission\",\"params\":{\"permission\":{\"name\":\"geolocation\"},\"setting\":\"granted\",\"origin\":\"https://example.com\"}}");
+    CHECK(FpCdpBuildGeolocationCommand(5, "31.2304,121.4737,1000") ==
+        "{\"id\":5,\"method\":\"Emulation.setGeolocationOverride\",\"params\":{\"latitude\":31.2304,\"longitude\":121.4737,\"accuracy\":1000}}");
+    CHECK(FpCdpBuildGeolocationCommand(5, "91,0,100").empty());
 
     const FpWebRtcResolution forward = FpResolveWebRtc(L"forward", L"104.28.152.166");
     // official setWebRTC：["proxy","forward"] 共用 t.ip -> ext WebRTCAddress（转发也覆盖候选地址）
@@ -149,6 +166,11 @@ int main() {
     CHECK(FpNormalizeGeoposition("31.2304,121.4737,1000") ==
         "31.2304,121.4737,1000");
     CHECK(FpNormalizeGeoposition("invalid,121.4737,1000").empty());
+    CHECK(FpResolveGeoposition("31.2304", "121.4737", "1000",
+        "0,0,10", "1,1,10") == "31.2304,121.4737,1000");
+    CHECK(FpResolveGeoposition("", "", "", "31.2304,121.4737,1000",
+        "1,1,10") == "31.2304,121.4737,1000");
+    CHECK(FpResolveGeoposition("", "", "", "invalid", "1,1,10") == "1,1,10");
     CHECK(FpResolveGeolocationSetting("allow", "block", "ask") == "allow");
     CHECK(FpResolveGeolocationSetting("invalid", "block", "ask") == "block");
     CHECK(FpResolveGeolocationSetting("", "invalid", "ask") == "ask");

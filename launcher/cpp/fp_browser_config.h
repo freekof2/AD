@@ -105,6 +105,16 @@ inline std::string FpNormalizeGeoposition(const std::string& value) {
         value.substr(first + 1, second - first - 1), value.substr(second + 1));
 }
 
+inline std::string FpResolveGeoposition(const std::string& uiLatitude,
+    const std::string& uiLongitude, const std::string& uiAccuracy,
+    const std::string& dynamicGeoposition, const std::string& staticGeoposition) {
+    std::string value = FpBuildGeopositionValue(uiLatitude, uiLongitude, uiAccuracy);
+    if (!value.empty()) return value;
+    value = FpNormalizeGeoposition(dynamicGeoposition);
+    if (!value.empty()) return value;
+    return FpNormalizeGeoposition(staticGeoposition);
+}
+
 inline std::wstring FpQuoteWindowsCommandLineArg(const std::wstring& arg) {
     std::wstring quoted = L"\"";
     size_t backslashes = 0;

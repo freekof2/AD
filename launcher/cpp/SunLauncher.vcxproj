@@ -42,6 +42,7 @@
     <ClCompile Include="fp_ui.cpp" />
     <ClCompile Include="fp_cookies.cpp" />
     <ClCompile Include="fp_json.cpp" />
+    <ClCompile Include="fp_cdp.cpp" />
     <ClCompile Include="singbox_config.cpp" />
     <ClCompile Include="singbox.cpp" />
     <ClCompile Include="third_party\sqlite\sqlite3.c">
@@ -55,6 +56,8 @@
     <ClInclude Include="fp_browser_config.h" />
     <ClInclude Include="fp_cookies.h" />
     <ClInclude Include="fp_json.h" />
+    <ClInclude Include="fp_cdp.h" />
+    <ClInclude Include="fp_cdp_protocol.h" />
     <ClInclude Include="singbox_config.h" />
     <ClInclude Include="singbox.h" />
     <ClInclude Include="third_party\sqlite\sqlite3.h" />
