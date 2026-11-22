@@ -244,6 +244,8 @@ public:
                     }
                 }
                 if (!origin.empty() && page.origin != origin) {
+                    // For ask, leave the browser's native permission UI in charge;
+                    // an explicit DevTools ASK override suppresses that prompt.
                     if (permissionSetting_.empty() || ApplyOriginPermission(origin))
                         page.origin = origin;
                 }

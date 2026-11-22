@@ -29,16 +29,15 @@ int main() {
     CHECK(FpCdpWebSocketPath("ws://example.com:9222/devtools/page/abc", 9222).empty());
     CHECK(FpCdpWebSocketPath("ws://127.0.0.1:9223/devtools/page/abc", 9222).empty());
     CHECK(FpCdpPermissionSettingForMode("allow") == "granted");
-    CHECK(FpCdpPermissionSettingForMode("ask") == "prompt");
+    CHECK(FpCdpPermissionSettingForMode("ask").empty());
     CHECK(FpCdpPermissionSettingForMode("block") == "denied");
     CHECK(FpCdpPermissionSettingForMode("invalid").empty());
     CHECK(FpCdpBuildPermissionCommand(4, "https://example.com", "granted") ==
         "{\"id\":4,\"method\":\"Browser.setPermission\",\"params\":{\"permission\":{\"name\":\"geolocation\"},\"setting\":\"granted\",\"origin\":\"https://example.com\"}}");
-    CHECK(FpCdpBuildPermissionCommand(4, "https://example.com", "prompt") ==
-        "{\"id\":4,\"method\":\"Browser.setPermission\",\"params\":{\"permission\":{\"name\":\"geolocation\"},\"setting\":\"prompt\",\"origin\":\"https://example.com\"}}");
     CHECK(FpCdpBuildPermissionCommand(4, "https://example.com", "denied") ==
         "{\"id\":4,\"method\":\"Browser.setPermission\",\"params\":{\"permission\":{\"name\":\"geolocation\"},\"setting\":\"denied\",\"origin\":\"https://example.com\"}}");
     CHECK(FpCdpBuildPermissionCommand(4, "https://example.com", "allow").empty());
+    CHECK(FpCdpBuildPermissionCommand(4, "https://example.com", "prompt").empty());
     CHECK(FpCdpBuildGeolocationCommand(5, "31.2304,121.4737,1000") ==
         "{\"id\":5,\"method\":\"Emulation.setGeolocationOverride\",\"params\":{\"latitude\":31.2304,\"longitude\":121.4737,\"accuracy\":1000}}");
     CHECK(FpCdpBuildGeolocationCommand(5, "+1,01,.5") ==

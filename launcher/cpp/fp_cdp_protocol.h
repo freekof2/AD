@@ -115,15 +115,16 @@ inline std::string FpCdpWebSocketPath(const std::string& url, int expectedPort) 
 
 inline std::string FpCdpPermissionSettingForMode(const std::string& mode) {
     if (mode == "allow") return "granted";
-    if (mode == "ask") return "prompt";
     if (mode == "block") return "denied";
+    // Do not use Browser.setPermission("prompt") for ask: DevTools' ASK
+    // override bypasses Chromium's normal permission-request UI path.
     return "";
 }
 
 inline std::string FpCdpBuildPermissionCommand(int id, const std::string& origin,
     const std::string& setting) {
     if (id <= 0 || origin.empty() || FpCdpOriginFromUrl(origin) != origin ||
-        (setting != "granted" && setting != "prompt" && setting != "denied")) return "";
+        (setting != "granted" && setting != "denied")) return "";
     return "{\"id\":" + std::to_string(id) +
         ",\"method\":\"Browser.setPermission\",\"params\":{" +
         "\"permission\":{\"name\":\"geolocation\"}," +
